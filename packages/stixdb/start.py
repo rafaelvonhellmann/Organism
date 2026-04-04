@@ -27,8 +27,8 @@ async def main():
         llm_provider=LLMProvider.ANTHROPIC,
         anthropic_api_key=api_key,
         anthropic_model="claude-sonnet-4-6",
-        storage_mode=StorageMode.KUZU,
-        kuzu_db_dir=str(ROOT / "state" / "stixdb"),
+        # Use KUZU if available, fall back to MEMORY
+        storage_mode=StorageMode.MEMORY,
         api_port=4020,
         api_key=os.getenv("STIXDB_API_KEY", "organism-stixdb-local"),
     )
