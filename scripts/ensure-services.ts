@@ -125,8 +125,8 @@ export async function ensureStixDB(): Promise<boolean> {
       child.unref();
     }
 
-    // Wait for health
-    for (let i = 0; i < 15; i++) {
+    // Wait for health (45s — first run downloads embedding model)
+    for (let i = 0; i < 45; i++) {
       await sleep(1000);
       if (await fetchHealth('http://localhost:4020/health')) {
         console.log('  StixDB ready on :4020');
@@ -134,7 +134,7 @@ export async function ensureStixDB(): Promise<boolean> {
       }
     }
 
-    console.log('  StixDB did not become healthy in 15s. Continuing without it.');
+    console.log('  StixDB did not become healthy in 45s. Continuing without it.');
     return false;
   } catch (err) {
     console.log(`  StixDB failed to start: ${err}. Continuing without it.`);
