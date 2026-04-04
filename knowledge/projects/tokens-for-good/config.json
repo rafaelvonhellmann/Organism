@@ -1,0 +1,26 @@
+{
+  "id": "tokens-for-good",
+  "name": "Tokens for Good",
+  "phase": "BUILD",
+  "description": "A project applying AI for social good purposes. Full details to be defined by Rafael — placeholder config created to wire multi-project architecture.",
+  "techStack": [],
+  "qualityStandards": ["RESEARCH"],
+  "riskOverrides": {
+    "keywords": [
+      "publish", "release", "claim", "evidence", "study", "research",
+      "statistics", "data", "impact", "outcome"
+    ],
+    "note": "RESEARCH standard means any output making factual claims requires citation. Tasks involving publishable content are HIGH risk."
+  },
+  "agents": {
+    "generalist": [
+      "ceo", "product-manager", "quality-agent", "grill-me",
+      "engineering", "design", "devops", "legal"
+    ],
+    "specialist": []
+  },
+  "notes": {
+    "status": "Placeholder — Rafael to fill in product description, tech stack, and specialist agents once project is more defined.",
+    "knowledgePath": "knowledge/projects/tokens-for-good/"
+  }
+}

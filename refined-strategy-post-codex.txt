@@ -1,0 +1,123 @@
+ORGANISM — REFINED STRATEGY (Post-Codex Review)
+=================================================
+
+After Codex's critical review, here are the 4 key refinements:
+
+
+1. WEEKLY AGENT INTRODUCTION SCHEDULE (10 weeks)
+=================================================
+
+Week  | Agents Added                                  | Cumulative | Focus
+------|-----------------------------------------------|------------|------
+1     | CEO/Planner, Product Manager, Quality Agent   | 3          | Core loop — plan, prioritize, review
+2     | Engineering, Grill-Me Gate                     | 5          | Build + review loop end-to-end
+3     | Marketing Strategist, SEO                      | 7          | First revenue agents
+4     | Design, Codex Review                           | 9          | Full build pipeline
+5     | Marketing Executor, Sales                      | 11         | Revenue execution
+6     | CFO, DevOps/SRE                                | 13         | Financial tracking + deployment
+7     | Quality Guardian, Copyright                    | 15         | Deep quality audits + IP protection
+8     | Legal, Security (Offensive)                    | 17         | Compliance + pen testing
+9     | Competitive Intel, Community Manager, PR       | 20         | Full revenue stack
+10    | Security (Audit+Knowledge), Obsidian Scribe, Tool Evaluator | 23 | Full Organism
+
+RULE: An agent only gets added if the previous week's agents are stable and within budget.
+
+
+2. FREQUENCY TIERS (Kill 24/7, Use Smart Scheduling)
+=====================================================
+
+Tier          | Frequency                    | Agents
+--------------|------------------------------|-------
+Always-on     | Event-triggered              | Engineering, DevOps, Customer Support
+Daily         | 1x/day scheduled             | CEO, Marketing Executor, SEO
+2-3x/week     | Scheduled                    | Marketing Strategist, Sales, Community, PR
+Weekly        | 1x/week                      | CFO, Security Offensive, Security Audit, Competitive Intel
+On-demand     | Only when pipeline triggers  | Grill-Me, Quality Agent, Quality Guardian, Codex Review, Copyright, Legal, Tool Evaluator
+Monthly       | 1x/month                     | Obsidian Scribe (knowledge synthesis)
+
+GNHF changes: No 24/7 loops. Overnight BATCH only — processes queued tasks from the day.
+Morning dashboard shows what completed overnight.
+
+
+3. REVIEW PIPELINE — RISK-BASED LANES
+=======================================
+
+Instead of 7 serial gates for everything, a risk classifier (cheap Haiku call) sorts
+each task into one of 3 lanes:
+
+LOW RISK (50% of tasks)
+  Internal docs, data updates, routine content
+  -> Quality Agent (1 pass) -> Auto-ship
+
+MEDIUM RISK (35% of tasks)
+  Code changes, marketing content, feature additions
+  -> Grill-Me -> Quality Agent -> Codex Review -> Auto-ship
+
+HIGH RISK (15% of tasks)
+  Deploys, spending, legal/security, customer-facing, pricing, auth changes
+  -> Grill-Me -> Quality Agent -> Copyright -> Legal -> Security
+  -> Quality Guardian (full 6-phase audit) -> Codex Review
+  -> G4 Board Gate (Rafael approves)
+
+Key: Most tasks DON'T go through the full pipeline. Only ~15% get the full treatment.
+
+
+4. BUDGET MATH — REAL NUMBERS
+===============================
+
+TOKEN PRICING:
+  Opus 4.6:   $15/M input, $75/M output
+  Sonnet 4.6: $3/M input, $15/M output
+  Haiku 4.5:  $0.80/M input, $4/M output
+
+MODEL ROUTING STRATEGY:
+  Risk classification, routing    -> Haiku (pennies)
+  Planning, strategy (CEO, PM)    -> Sonnet (5x cheaper than Opus)
+  Execution (Marketing, SEO, etc) -> Sonnet
+  Engineering (code writing)      -> Sonnet
+  Grill-Me interrogation          -> Sonnet
+  Quality Agent (autoresearch)    -> Sonnet
+  Quality Guardian (full audit)   -> OPUS (the ONE place we need it)
+  Codex Review                    -> GPT (different model = different blind spots)
+  Copyright/Legal                 -> Sonnet
+  Security scans                  -> Sonnet + tools
+
+DAILY COST AT WEEK 5 (11 agents active):
+  CEO (1x/day, Sonnet, ~50K tokens)                     $0.45
+  PM (1x/day, Sonnet, ~40K)                              $0.36
+  Marketing Strategist (3x/week, Sonnet, ~60K)           $0.22
+  Marketing Executor (1x/day, Sonnet, ~80K)              $0.72
+  SEO (1x/day, Sonnet, ~40K)                             $0.36
+  Sales (3x/week, Sonnet, ~50K)                          $0.19
+  Engineering (event ~3x/day, Sonnet, ~100K)             $2.70
+  Design (event ~1x/day, Sonnet, ~80K)                   $0.72
+  Grill-Me (~2x/day, Sonnet, ~30K)                       $0.27
+  Quality Agent (~3x/day, Sonnet, ~40K)                  $0.54
+  Codex Review (~2x/day, GPT, ~50K)                      $0.50
+  Risk classifier (~10x/day, Haiku, ~2K)                 $0.01
+  SUBTOTAL ROUTINE:                                      ~$7.04/day
+
+QUALITY GUARDIAN (HIGH risk only):
+  Full audit (~1x/day, Opus, ~200K tokens)               $8.25/run
+  Weekly deep scan (1x/week, Opus, ~500K tokens)         $20.63/run
+
+OVERNIGHT BATCH (GNHF — queued tasks):
+  3-5 queued tasks per night                             ~$3-5/night
+
+
+BUDGET SUMMARY BY PHASE:
+  Weeks 1-2  (3-5 agents)    $3-5/day      $90-150/mo
+  Weeks 3-4  (7-9 agents)    $7-10/day     $210-300/mo
+  Weeks 5-6  (11-13 agents)  $12-18/day    $360-540/mo
+  Weeks 7-8  (15-17 agents)  $20-30/day    $600-900/mo
+  Weeks 9-10 (all 23 agents) $30-45/day    $900-1,350/mo
+
+FULL ORGANISM STEADY STATE: ~$35/day ($1,050/mo) — under your $50/day cap.
+
+KEY BUDGET RULES:
+  1. Hard cap per agent per day — no runaway spending
+  2. Quality Guardian only fires on HIGH risk (~15% of tasks)
+  3. Weekly deep scan on Saturdays (Guardian does full platform audit)
+  4. Sonnet by default, Opus ONLY for Guardian
+  5. Overnight batch, NOT 24/7 loops
+  6. Model routing via PraisonAI sidecar — auto-selects cheapest capable model

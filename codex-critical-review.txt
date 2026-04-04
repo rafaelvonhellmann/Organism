@@ -1,0 +1,99 @@
+CODEX CRITICAL REVIEW — ORGANISM ARCHITECTURE
+================================================
+
+Verdict: "Do not build as-is. Simplify dramatically."
+
+The core idea (governance spine + provider sidecar + specialized agents) is viable.
+The current design is optimized for breadth, not operational coherence.
+
+
+1. ARCHITECTURE — CRITICAL
+--------------------------
+Split-brain risk: Paperclip and PraisonAI both partially orchestrate. Nobody can say
+which system is authoritative for planning, memory, retries, budgets, task state.
+A2A across 22 agents = up to 462 communication edges.
+
+Fix: Make Paperclip the only orchestrator. Demote PraisonAI to tool/runtime sidecar
+only (provider routing, RAG, memory, guardrails). Ban free-form A2A — use hub-and-spoke.
+
+
+2. COMPLEXITY — CRITICAL
+------------------------
+22 agents + 38 repos + 12 infra components is an integration backlog disguised as
+architecture. Every extra agent adds prompt surface area, every extra repo adds version
+drift, every extra review layer multiplies latency and false positives.
+
+Fix: Cut to 6-8 agents max for phase 1. Expand only after proving the core works.
+
+
+3. BUDGET — CRITICAL
+--------------------
+Review pipeline alone requires 17-23 model calls per output. At 5 major outputs/day
+with 30k tokens average per call = 2.55M-3.45M tokens/day BEFORE adding 24/7 GNHF,
+ARIS overnight review, doom-loop checks, and background monitoring.
+This is NOT a $50/day architecture.
+
+Fix: Set real budget of $10-25/day. Limit full review pipeline to high-risk outputs only.
+Hard token ceilings per task and per agent. Disable 24/7 loops until proven valuable.
+
+
+4. REVIEW PIPELINE — CRITICAL
+------------------------------
+7 serial review layers are not quality — they are queueing delay. Either nothing ships,
+humans bypass the process, or reviews become rubber stamps.
+
+Fix: Collapse to 3 risk-based lanes. Low risk: 1 reviewer + auto-ship. Medium risk:
+planner + reviewer. High risk: full pipeline + human approval.
+
+
+5. QUALITY GUARDIAN — CRITICAL
+-------------------------------
+9+ expensive operations per audited output (5 subagents + synthesis + cross-validation +
+root cause + auto-fix + browser execution). Dominant cost and latency center.
+Auto-fix introduces risk: auditor mutates the system it is judging.
+
+Fix: Restrict to release candidates, production incidents, and scheduled nightly audits.
+Remove auto-fix in phase 1 (create patches, don't apply them). Replace 5 parallel
+subagents with 1 reviewer pass + optional Playwright only for UI changes.
+
+
+6. AGENT LIGHTNING RL FROM DAY ONE — HIGH
+------------------------------------------
+RL needs reward signals, stable environments, and enough repeated episodes. On day one
+you lack all of these. Optimizing on weak proxy metrics hardens bad behavior.
+
+Fix: Instrumentation only for weeks 1-8. Track metrics. Consider RL after hundreds of
+human-scored task episodes.
+
+
+7. DEPLOYMENT — HIGH
+--------------------
+5 weeks is not realistic. Bottleneck is integration validation, not coding speed.
+
+Fix: 8 weeks minimum. Prove one narrow workflow end-to-end before expanding.
+
+
+8. TOP 5 FAILURE MODES
+-----------------------
+1. Control-plane conflict (TS vs Python both trying to orchestrate)
+2. Review paralysis (too many gates, nothing ships)
+3. Budget exhaustion before meaningful work happens
+4. State inconsistency across 22 agents with A2A mesh
+5. False confidence from stacked quality agents
+
+
+9. MISSING
+----------
+- Observability dashboard (what agent acted, why, what it cost, whether it succeeded)
+- Capability registry / task routing contract (who owns what task type)
+
+
+10. CODEX RECOMMENDED PHASE 1
+-------------------------------
+| Control plane  | Paperclip only                                        |
+| Sidecar        | PraisonAI as MCP tool gateway only (no orchestration) |
+| Agents         | 6 total: CEO, Product, Engineering, Marketing, Ops, Reviewer |
+| Review         | Normal: 1 reviewer. Risky: + human. Deploy/legal: mandatory human |
+| Budget         | $300-750/mo with hard caps                            |
+| Timeline       | 8 weeks, not 5                                        |
+| Expansion rule | 80%+ tasks complete without manual repair              |

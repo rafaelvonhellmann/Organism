@@ -1,0 +1,430 @@
+{
+  "capabilities": [
+    {
+      "id": "strategy.business_model",
+      "owner": "ceo",
+      "collaborators": [
+        "cfo",
+        "product-manager"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Business Model Canvas definition, ROI framework decisions, unit economics. References knowledge/business-model/roi-framework.md.",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "weekly",
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/business-model/roi-framework.md"
+      ]
+    },
+    {
+      "id": "strategy.mission",
+      "owner": "ceo",
+      "collaborators": [
+        "product-manager"
+      ],
+      "reviewerLane": "LOW",
+      "description": "Defines company mission, vision, OKRs, and strategic priorities",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "daily",
+      "projectScope": "all"
+    },
+    {
+      "id": "strategy.roadmap",
+      "owner": "ceo",
+      "collaborators": [
+        "product-manager",
+        "engineering"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Company roadmap and quarterly planning",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "daily",
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/business-model/roi-framework.md"
+      ]
+    },
+    {
+      "id": "product.prd",
+      "owner": "product-manager",
+      "collaborators": [
+        "ceo",
+        "engineering",
+        "design"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Product requirements documents, feature specifications, user stories",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "daily",
+      "projectScope": "all"
+    },
+    {
+      "id": "product.prioritization",
+      "owner": "product-manager",
+      "collaborators": [
+        "ceo"
+      ],
+      "reviewerLane": "LOW",
+      "description": "Feature prioritization and backlog management",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "daily",
+      "projectScope": "all"
+    },
+    {
+      "id": "quality.review",
+      "owner": "quality-agent",
+      "collaborators": [],
+      "reviewerLane": "LOW",
+      "description": "Autoresearch quality review — generates 3+ approaches and scores them",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "on-demand",
+      "projectScope": "all"
+    },
+    {
+      "id": "quality.interrogation",
+      "owner": "grill-me",
+      "collaborators": [],
+      "reviewerLane": "LOW",
+      "description": "Socratic interrogation of decisions — challenges assumptions and blind spots",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "on-demand",
+      "projectScope": "all"
+    },
+    {
+      "id": "quality.codex_review",
+      "owner": "codex-review",
+      "collaborators": [],
+      "reviewerLane": "LOW",
+      "description": "GPT-4o code review for different-model blind spot coverage",
+      "status": "active",
+      "model": "gpt4o",
+      "frequencyTier": "on-demand",
+      "projectScope": "all"
+    },
+    {
+      "id": "quality.deep_audit",
+      "owner": "quality-guardian",
+      "collaborators": [
+        "quality-agent",
+        "grill-me"
+      ],
+      "reviewerLane": "HIGH",
+      "description": "Full 6-phase quality audit with Playwright browser verification. Fires on HIGH-risk tasks and Saturday deep audit.",
+      "status": "active",
+      "model": "opus",
+      "frequencyTier": "on-demand",
+      "projectScope": "all"
+    },
+    {
+      "id": "engineering.code",
+      "owner": "engineering",
+      "collaborators": [
+        "devops",
+        "quality-agent"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Code writing, bug fixes, refactoring, technical implementation",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "always-on",
+      "projectScope": "all"
+    },
+    {
+      "id": "marketing.strategy",
+      "owner": "marketing-strategist",
+      "collaborators": [
+        "ceo",
+        "seo",
+        "pr-comms"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Campaign strategy, channel selection, keyword research, positioning. Uses the 80/20 popularize playbook. References knowledge/marketing/popularize-playbook.md.",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "2-3x-week",
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/marketing/popularize-playbook.md",
+        "knowledge/business-model/roi-framework.md"
+      ]
+    },
+    {
+      "id": "marketing.growth",
+      "owner": "marketing-strategist",
+      "collaborators": [
+        "marketing-executor",
+        "seo",
+        "community-manager"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Growth strategy using the popularize playbook: multi-channel distribution, community building, content-led SEO, sustained promotion.",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "2-3x-week",
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/marketing/popularize-playbook.md"
+      ]
+    },
+    {
+      "id": "marketing.execution",
+      "owner": "marketing-executor",
+      "collaborators": [
+        "marketing-strategist",
+        "seo"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Content creation, email campaigns, social media posts",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "daily",
+      "projectScope": "all"
+    },
+    {
+      "id": "marketing.seo",
+      "owner": "seo",
+      "collaborators": [
+        "marketing-executor"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "SEO optimization, keyword research, content strategy",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "daily",
+      "projectScope": "all"
+    },
+    {
+      "id": "marketing.blog_post",
+      "owner": "marketing-executor",
+      "collaborators": [
+        "seo",
+        "pr-comms"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Blog post writing for the company blog",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "2-3x-week",
+      "projectScope": "all"
+    },
+    {
+      "id": "design.ui",
+      "owner": "design",
+      "collaborators": [
+        "engineering"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "UI/UX design, wireframes, component specifications",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "always-on",
+      "projectScope": "all"
+    },
+    {
+      "id": "finance.tracking",
+      "owner": "cfo",
+      "collaborators": [
+        "ceo"
+      ],
+      "reviewerLane": "HIGH",
+      "description": "Financial tracking, budget reporting, cost optimization",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "weekly",
+      "projectScope": "all"
+    },
+    {
+      "id": "devops.deploy",
+      "owner": "devops",
+      "collaborators": [
+        "engineering"
+      ],
+      "reviewerLane": "HIGH",
+      "description": "Deployment, infrastructure management, CI/CD",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "always-on",
+      "projectScope": "all"
+    },
+    {
+      "id": "sales.outreach",
+      "owner": "sales",
+      "collaborators": [
+        "marketing-strategist"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Sales outreach, lead qualification, pipeline management",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "2-3x-week",
+      "projectScope": "all"
+    },
+    {
+      "id": "support.customer",
+      "owner": "customer-support",
+      "collaborators": [],
+      "reviewerLane": "MEDIUM",
+      "description": "Customer support, issue resolution, user communication",
+      "status": "shadow",
+      "model": "sonnet",
+      "frequencyTier": "always-on",
+      "projectScope": "all"
+    },
+    {
+      "id": "security.audit",
+      "owner": "security-audit",
+      "collaborators": [
+        "security-knowledge"
+      ],
+      "reviewerLane": "HIGH",
+      "description": "Security audits, OWASP scanning, vulnerability assessment",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "weekly",
+      "projectScope": "all"
+    },
+    {
+      "id": "legal.compliance",
+      "owner": "legal",
+      "collaborators": [
+        "copyright"
+      ],
+      "reviewerLane": "HIGH",
+      "description": "Legal compliance, terms of service, privacy policy",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "on-demand",
+      "projectScope": "all"
+    },
+    {
+      "id": "intel.competitive",
+      "owner": "competitive-intel",
+      "collaborators": [
+        "marketing-strategist"
+      ],
+      "reviewerLane": "LOW",
+      "description": "Competitive intelligence, market research, competitor analysis",
+      "status": "shadow",
+      "model": "sonnet",
+      "frequencyTier": "weekly",
+      "projectScope": "all"
+    },
+    {
+      "id": "knowledge.obsidian",
+      "owner": "obsidian-scribe",
+      "collaborators": [],
+      "reviewerLane": "LOW",
+      "description": "Knowledge synthesis and Obsidian vault integration",
+      "status": "shadow",
+      "model": "sonnet",
+      "frequencyTier": "monthly",
+      "projectScope": "all"
+    },
+    {
+      "id": "content.medical_review",
+      "owner": "medical-content-reviewer",
+      "collaborators": [
+        "quality-agent"
+      ],
+      "reviewerLane": "HIGH",
+      "description": "Specialist review of medical education content for Synapse. Validates grading rubrics, answer keys, and benchmark answers against college syllabi (ANZCA, ACEM, CICM). All output is HIGH risk.",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "on-demand",
+      "projectScope": [
+        "synapse"
+      ]
+    },
+    {
+      "id": "strategy.technology",
+      "owner": "cto",
+      "collaborators": [
+        "engineering",
+        "devops"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Technology strategy, architecture decisions, build-vs-buy, scalability assessment",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "weekly",
+      "projectScope": "all"
+    },
+    {
+      "id": "people.hr",
+      "owner": "hr",
+      "collaborators": [
+        "ceo"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Agent lifecycle management, shadow promotion oversight, hiring strategy, team structure",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "weekly",
+      "projectScope": "all"
+    },
+    {
+      "id": "success.customer",
+      "owner": "customer-success",
+      "collaborators": [
+        "product-manager",
+        "community-manager"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "User retention, onboarding, NPS, churn prevention, feedback loops",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "daily",
+      "projectScope": "all"
+    },
+    {
+      "id": "analytics.data",
+      "owner": "data-analyst",
+      "collaborators": [
+        "product-manager",
+        "engineering"
+      ],
+      "reviewerLane": "LOW",
+      "description": "Metrics, funnel analysis, cohort analysis, SQL generation, data-driven insights",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "daily",
+      "projectScope": "all"
+    },
+    {
+      "id": "comms.pr",
+      "owner": "pr-comms",
+      "collaborators": [
+        "marketing-strategist",
+        "community-manager",
+        "ceo"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Press releases, media pitches, founder narrative, crisis communications",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "on-demand",
+      "projectScope": "all"
+    },
+    {
+      "id": "community.management",
+      "owner": "community-manager",
+      "collaborators": [
+        "marketing-strategist",
+        "pr-comms"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Community strategy, trust cultivation, engagement in professional networks",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "2-3x-week",
+      "projectScope": "all"
+    }
+  ]
+}

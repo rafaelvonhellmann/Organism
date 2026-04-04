@@ -1,0 +1,142 @@
+{
+  "version": "1.0.0",
+  "description": "Canonical error taxonomy for Organism. Mirrors packages/shared/src/error-taxonomy.ts. Used by Agent Lightning (Week 9) as reward signal labels.",
+  "errors": [
+    {
+      "code": "E001",
+      "name": "TASK_CHECKOUT_CONFLICT",
+      "category": "orchestration",
+      "description": "Two agents tried to check out the same task",
+      "cause": "Race condition in task assignment or duplicate task creation",
+      "remediation": "Atomic SQLite checkout prevents this — investigate if it still occurs"
+    },
+    {
+      "code": "E002",
+      "name": "BUDGET_CAP_EXCEEDED",
+      "category": "orchestration",
+      "description": "Agent hit its daily hard budget ceiling",
+      "cause": "Too many tasks, expensive model, or unexpected token usage",
+      "remediation": "Check agent spend in dashboard. Raise cap if justified. Check for doom loops."
+    },
+    {
+      "code": "E003",
+      "name": "GATE_BLOCKED",
+      "category": "orchestration",
+      "description": "G1-G4 gate rejected the output",
+      "cause": "Tests failed, quality below threshold, or Rafael rejected at G4",
+      "remediation": "Read gate rejection reason. Fix the underlying issue. Resubmit."
+    },
+    {
+      "code": "E004",
+      "name": "DOOM_LOOP_DETECTED",
+      "category": "orchestration",
+      "description": "PraisonAI detected infinite retry sequence",
+      "cause": "Agent calling same action 3+ times with no progress",
+      "remediation": "Break the loop: add stop condition. Escalate to CEO if stuck."
+    },
+    {
+      "code": "E005",
+      "name": "MCP_CONTRACT_VIOLATION",
+      "category": "orchestration",
+      "description": "PraisonAI attempted to perform orchestration (task creation, scheduling, budget write)",
+      "cause": "PraisonAI sidecar exceeded its authorized tool surface",
+      "remediation": "Check server.py for unauthorized tools. This should never happen."
+    },
+    {
+      "code": "E101",
+      "name": "LOW_CONFIDENCE_FINDING",
+      "category": "quality",
+      "description": "Quality Guardian found something it could not verify from 2+ independent angles",
+      "cause": "Insufficient evidence for a reported issue",
+      "remediation": "Guardian should discard, not report. Update Guardian prompts if this fires."
+    },
+    {
+      "code": "E102",
+      "name": "QUALITY_SCORE_BELOW_THRESHOLD",
+      "category": "quality",
+      "description": "Output quality score below the lane's minimum threshold",
+      "cause": "Poor output from executing agent",
+      "remediation": "Return to executing agent for rework. Check agent CLAUDE.md."
+    },
+    {
+      "code": "E103",
+      "name": "BROWSER_VERIFICATION_FAILED",
+      "category": "quality",
+      "description": "Guardian Playwright spec failed or timed out",
+      "cause": "Dev server not running, page error, or spec written incorrectly",
+      "remediation": "Check if dev server is running. Clean up tmp_guardian_*.spec.ts."
+    },
+    {
+      "code": "E104",
+      "name": "AUTO_FIX_REGRESSION",
+      "category": "quality",
+      "description": "Guardian's auto-fix made the platform health score worse",
+      "cause": "Guardian applied a fix that introduced a new issue",
+      "remediation": "Revert the patch. Flag to G4 gate. Update Guardian's safe-fix criteria."
+    },
+    {
+      "code": "E201",
+      "name": "MCP_SIDECAR_UNREACHABLE",
+      "category": "infrastructure",
+      "description": "PraisonAI MCP server did not respond",
+      "cause": "Python sidecar crashed or not started",
+      "remediation": "Restart: cd packages/mcp-sidecar && python server.py"
+    },
+    {
+      "code": "E202",
+      "name": "SECRET_MISSING",
+      "category": "infrastructure",
+      "description": "A declared required secret is not present",
+      "cause": "API key not set in environment or .secrets.json",
+      "remediation": "Add the secret to .env or .secrets.json. Never commit it."
+    },
+    {
+      "code": "E203",
+      "name": "SECRET_EXPIRED",
+      "category": "infrastructure",
+      "description": "A secret is older than 90 days",
+      "cause": "API key rotation overdue",
+      "remediation": "Rotate the key and update .secrets.json"
+    },
+    {
+      "code": "E204",
+      "name": "STATE_DB_LOCKED",
+      "category": "infrastructure",
+      "description": "SQLite tasks.db is locked by another process",
+      "cause": "Another process has an exclusive lock",
+      "remediation": "WAL mode should prevent this. Kill stale processes if it persists."
+    },
+    {
+      "code": "E301",
+      "name": "AGENT_TIMEOUT",
+      "category": "agent",
+      "description": "Agent session exceeded its maximum run time (30 minutes default)",
+      "cause": "Agent stuck, doom loop, or task too large",
+      "remediation": "Check audit log for last action. Break task into smaller pieces."
+    },
+    {
+      "code": "E302",
+      "name": "SUBAGENT_SPAWN_FAILED",
+      "category": "agent",
+      "description": "Quality Guardian couldn't spawn one of its 6 parallel subagents",
+      "cause": "Resource constraints or Agent tool failure",
+      "remediation": "Check budget. Check if Opus token ceiling was hit."
+    },
+    {
+      "code": "E303",
+      "name": "SHADOW_PROMOTION_BELOW_THRESHOLD",
+      "category": "agent",
+      "description": "Agent didn't meet the quality bar after 10 shadow runs",
+      "cause": "Agent CLAUDE.md instructions unclear or agent model insufficient",
+      "remediation": "Review shadow run outputs. Improve CLAUDE.md. Re-run shadow promotion."
+    },
+    {
+      "code": "E304",
+      "name": "DEAD_LETTER_TIMEOUT",
+      "category": "agent",
+      "description": "Task was in_progress for >30 minutes with no heartbeat",
+      "cause": "Agent crashed, timed out, or lost connectivity",
+      "remediation": "CEO reviews dead letter queue daily. Re-route or cancel the task."
+    }
+  ]
+}

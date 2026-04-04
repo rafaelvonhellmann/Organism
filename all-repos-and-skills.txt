@@ -1,0 +1,107 @@
+ORGANISM — ALL REPOS & SKILLS REFERENCE
+=========================================
+
+USE (CORE SYSTEM) — 38 repos/skills
+=====================================
+
+P0 — Foundation (must have)
+  paperclipai/paperclip           — Governance spine (org chart, budgets, gates)
+  paperclipai/companies           — Agent templates (167 agents, 10 divisions)
+  MervinPraison/PraisonAI         — MCP sidecar (100+ LLMs, RAG, guardrails)
+  kunchenguid/gnhf                — Overnight batch engine (rollback + caps)
+  a2aproject/A2A                  — Inter-agent protocol
+  msitarzewski/agency-agents      — 150+ agent persona definitions
+  mattpocock/skills               — Grill-me + prd-to-plan + tdd
+  alirezarezvani/claude-skills    — 220+ business skills
+  ataraxy-labs/opensessions       — Dashboard (task + % per agent)
+  microsoft/agent-lightning       — RL optimization (instrumentation first)
+  kepano/obsidian-skills          — Obsidian vault integration
+  yamadashy/repomix               — Pack codebases into AI-friendly context
+
+P1 — Core agents
+  coreyhaines31/marketingskills   — Marketing execution (CRO, SEO, copywriting)
+  kostja94/marketing-skills       — 160+ marketing skills
+  deanpeters/Product-Manager-Skills — PM skills (PRD, RICE, roadmaps)
+  VoltAgent/awesome-design-md     — 55 design system files
+  browser-use/browser-use         — Web research via MCP bridge
+  vercel-labs/agent-browser       — Browser for TS agents
+  obra/superpowers                — Engineering methodology
+  gsd-build/get-shit-done         — Feature delivery orchestration
+  wanshuiyin/Auto-claude-code-research-in-sleep — Overnight cross-model review patterns
+  anthropics/skills (frontend-design) — Design quality gate
+  nextlevelbuilder/ui-ux-pro-max-skill — Design system data (50+ styles, 161 palettes)
+  schwepps/skills                 — SEO + GEO/AEO optimization
+  shanraisshan/claude-code-best-practice — Pattern library for agent topology
+  langchain-ai/langchain          — Python tool abstraction for MCP bridges
+
+P2 — Expansion
+  usestrix/strix                  — Security testing (Docker)
+  aliasrobotics/CAI               — Offensive security (MCP)
+  mukul975/Anthropic-Cybersecurity-Skills — 753 cybersec skills (MITRE + NIST)
+  microsoft/agent-governance-toolkit — Compliance framework
+  agentation                      — Visual UI feedback overlay
+  vas3k/TaxHacker                 — Expense/invoice tracking
+  meteroid-oss/meteroid           — SaaS billing
+  huginn/huginn                   — Real-world event triggers
+  langchain-ai/social-media-agent — Community management
+  AJaySi/ALwrity                  — Content platform
+  hexstrike-ai                    — 150+ security MCP tools
+  agent-audit                     — OWASP scanning
+
+P1 — Business Model & Marketing (added 2026-04-04)
+  github.com/topics/business-model    — Topic index of BMC tools, ROI frameworks, financial templates
+                                        Key repos extracted to knowledge/business-model/roi-framework.md
+                                        Wired into: CEO agent, CFO agent, PM agent
+  rdp/open-source-how-to-popularize-your-project — Strategic marketing guide for projects
+                                        Core principle: functionality is 20%, marketing is 80%
+                                        Full playbook extracted to knowledge/marketing/popularize-playbook.md
+                                        Wired into: Marketing Strategist, Marketing Executor, SEO, PR/Comms, Community Manager
+
+REFERENCE ONLY (patterns, not runtime)
+=======================================
+  santosomar/AI-agents-for-cybersecurity — Security agent cookbook
+  NVISOsecurity/cyber-security-llm-agents — SOC automation patterns
+  openai/openai-cs-agents-demo    — Customer support reference architecture
+  affaan-m/everything-claude-code — Config/agent bootstrap reference
+  sickn33/antigravity-awesome-skills — 1,340 skill discovery catalog
+  platform.claude.com cookbooks   — Multimodal crop, tool eval, SRE patterns
+  brightdata/competitive-intelligence — CI agent reference
+  brightdata/trendscan            — Multi-source intel reference
+
+SKIP
+====
+  OpenBMB/ChatDev     — Software-only, not full company
+  FoundationAgents/MetaGPT — Software-only, not full company
+
+
+SKILLS INSTALLATION COMMANDS
+============================
+
+# Core methodology
+npx skills add mattpocock/skills
+npx skills add obra/superpowers
+npx skills add gsd-build/get-shit-done
+
+# Marketing & Content
+npx skills add coreyhaines31/marketingskills
+npx skills add kostja94/marketing-skills
+npx skills add schwepps/skills
+
+# Design
+npx skills add shadcn/ui
+npx skills add emilkowalski/skill
+npx skills add anthropics/skills --skill frontend-design
+npx skills add nextlevelbuilder/ui-ux-pro-max-skill
+
+# Product
+npx skills add deanpeters/Product-Manager-Skills
+
+# Business & Compliance
+npx skills add alirezarezvani/claude-skills
+
+# Security
+npx skills add mukul975/Anthropic-Cybersecurity-Skills
+
+# Knowledge & Meta
+npx skills add kepano/obsidian-skills
+npx skills add vercel-labs/skills --skill find-skills

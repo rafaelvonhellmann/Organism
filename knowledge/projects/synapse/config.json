@@ -1,0 +1,46 @@
+{
+  "id": "synapse",
+  "name": "Synapse",
+  "phase": "BUILD",
+  "description": "AI-powered primary exam preparation platform for anaesthesia and emergency medicine trainees. Covers ANZCA, ACEM, and CICM primaries. Assessment modes: MCQ (typed/voice), SAQ (photo → AI transcription + grading), VIVA (voice). All grading is based on each college's own materials and curated benchmark answers from the internet.",
+  "techStack": ["Next.js", "TypeScript", "Supabase", "OpenAI Whisper (transcription)", "Claude (grading)"],
+  "qualityStandards": ["MEDICAL"],
+  "colleges": ["ANZCA", "ACEM", "CICM"],
+  "riskOverrides": {
+    "keywords": [
+      "grade", "grading", "mark", "marking", "score", "scoring",
+      "feedback", "assessment", "exam", "question bank",
+      "medical", "clinical", "pharmacology", "physiology", "anatomy",
+      "answer key", "benchmark", "rubric", "correct answer"
+    ],
+    "note": "Any task involving grading content or answer keys is automatically HIGH risk — medical education errors can cause real harm."
+  },
+  "agents": {
+    "generalist": [
+      "ceo", "product-manager", "quality-agent", "grill-me",
+      "engineering", "design", "devops", "legal", "security-audit"
+    ],
+    "specialist": [
+      "medical-content-reviewer"
+    ]
+  },
+  "tasklist": "C:/Users/rafae/OneDrive/Desktop/synapse/tasks/master_tasklist.md",
+  "dbState": {
+    "asOf": "2026-04-03",
+    "learning_objectives": "ANZCA 330/330 done, CICM 76/247 (31%, needs reset+redo), ACEM 0/609",
+    "saqs": "ANZCA 551/551 enriched but 458 missing citations — re-enrichment in progress (~$85 Sonnet). CICM 558/657 (85%, 6 have confidence scores).",
+    "mcq_questions": "ANZCA 1,427/1,427 done. CICM 264/264 done. ACEM 1,161/1,543 (75%, 382 missing answers).",
+    "viva_questions": "ANZCA 0/1,764 model_answer (only outlines exist — full enrichment ~$380 Sonnet). ACEM 0/117.",
+    "document_chunks": "~333,804 rows. ANZCA 301K + ACEM 32K (10 books).",
+    "enrichmentOrder": "LOs (done) → SAQ re-enrichment (in progress) → VIVA model_answer (next) → MCQ (done)"
+  },
+  "notes": {
+    "contentStrategy": "Grading is done by Claude against each college's published syllabus and benchmark answers sourced from the internet. Rafael provides domain expertise but does not manually grade every response — Organism handles scale.",
+    "assessmentModes": {
+      "mcq": "Standard multiple choice — text or voice input",
+      "saq": "Student photographs handwritten answer → OCR + AI grading against rubric",
+      "viva": "Voice conversation — AI plays examiner, assesses spoken answer in real-time"
+    },
+    "knowledgePath": "knowledge/projects/synapse/"
+  }
+}
