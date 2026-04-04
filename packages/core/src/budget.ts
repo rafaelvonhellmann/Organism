@@ -103,6 +103,7 @@ const MODEL_COSTS = {
   sonnet: { input: 3.00, output: 15.00 },
   opus: { input: 15.00, output: 75.00 },
   gpt4o: { input: 2.50, output: 10.00 },
+  'gpt5.4': { input: 5.00, output: 20.00 },
 } as const;
 
 export function estimateCost(model: keyof typeof MODEL_COSTS, tokensIn: number, tokensOut: number): number {

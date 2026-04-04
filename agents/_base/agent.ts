@@ -18,7 +18,7 @@ const TASKLIST_CANDIDATES = [
   'TODO.md',
 ];
 
-export type AgentModel = 'haiku' | 'sonnet' | 'opus' | 'gpt4o';
+export type AgentModel = 'haiku' | 'sonnet' | 'opus' | 'gpt4o' | 'gpt5.4';
 
 export interface AgentConfig {
   name: string;

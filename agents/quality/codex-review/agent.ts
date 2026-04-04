@@ -2,7 +2,7 @@ import { BaseAgent } from '../../_base/agent.js';
 import { Task } from '../../../packages/shared/src/types.js';
 import { getSecretOrNull } from '../../../packages/shared/src/secrets.js';
 
-const CODEX_REVIEW_SYSTEM = `You are a senior engineering reviewer powered by GPT-4o. You review code and agent outputs from a different model's perspective — your job is to catch what Claude missed.
+const CODEX_REVIEW_SYSTEM = `You are a senior engineering reviewer powered by GPT-5.4. You review code and agent outputs from a different model's perspective — your job is to catch what Claude missed.
 
 For every review, check:
 1. **Logic errors** — off-by-one, wrong conditionals, missing null checks, unreachable code
@@ -40,7 +40,7 @@ interface OpenAIResponse {
 }
 
 // Uses OpenAI REST API directly via fetch — no SDK dependency required
-async function callGpt4o(prompt: string, apiKey: string): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+async function callGpt(prompt: string, apiKey: string): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -48,8 +48,8 @@ async function callGpt4o(prompt: string, apiKey: string): Promise<{ text: string
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'gpt-4o',
-      max_tokens: 1024,
+      model: 'gpt-5.4',
+      max_tokens: 2048,
       messages: [
         { role: 'system', content: CODEX_REVIEW_SYSTEM },
         { role: 'user', content: prompt },
@@ -74,15 +74,15 @@ export default class CodexReviewAgent extends BaseAgent {
   constructor() {
     super({
       name: 'codex-review',
-      model: 'gpt4o',
+      model: 'gpt5.4',
       capability: {
         id: 'quality.codex_review',
         owner: 'codex-review',
         collaborators: [],
         reviewerLane: 'MEDIUM',
-        description: 'GPT-4o code review — cross-model perspective for logic errors, security, edge cases, performance',
+        description: 'GPT-5.4 code review — cross-model perspective for logic errors, security, edge cases, performance',
         status: 'shadow',
-        model: 'gpt4o',
+        model: 'gpt5.4',
         frequencyTier: 'on-demand',
         projectScope: 'all',
       },
@@ -122,7 +122,7 @@ ${originalOutput}
 
 Apply your code and quality review checklist. Produce the structured review.`;
 
-    const result = await callGpt4o(prompt, apiKey);
+    const result = await callGpt(prompt, apiKey);
 
     const approved = result.text.includes('**Decision:** APPROVED') ||
                      result.text.includes('Decision: APPROVED');

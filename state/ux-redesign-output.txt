@@ -1,0 +1,377 @@
+## Design Spec — Synapse UX Redesign Migration Plan
+
+**Component type:** Organism (multi-page product migration)
+**Target screen sizes:** Mobile 390px / Tablet 768px / Desktop 1280px
+
+---
+
+> **Scope assumptions declared upfront**
+> Rafael's approval is treated as directional approval — the new palette, typographic system, layout grid, and hero card treatment are frozen. Component states (hover, disabled, loading, error), college theming survival, and dark mode specifics are extrapolated from the baseline HTML and existing Sand & Stone system. All extrapolations are flagged inline. Page inventory is estimated from known Synapse navigation; adjust effort estimates if additional pages exist. The college theming question is a live dependency that affects Deliverables 1, 2, and 5 — a recommendation is made but must be confirmed before those sections are finalised.
+
+---
+
+## Deliverable 1 — Component-by-Component Page Mapping
+
+### 1.1 Dashboard / Home Page
+
+| New Design Element | Existing Synapse Equivalent | Migration Action |
+|---|---|---|
+| Daily Review Queue hero card (dark green #0b382a, lime count badge) | "Due Today" stat card in current dashboard | Promote to full-width hero; apply dark card treatment; wire SM-2 queue count to lime accent number |
+| 2×2 Mode grid (MCQ / SAQ / VIVA / Feynman) | Mode selector within session start flow | Elevate from modal/dropdown to persistent dashboard surface; each card 1 column on mobile, 2 columns on tablet+, 4 on desktop grid |
+| Domain Mastery chart panel with 1W/1M/3M/ALL segmented control | Progress/Analytics section (separate page) | Collapse analytics into dashboard as a data panel below the fold; retain existing chart data layer |
+| Quick-start pill buttons | "Start Session" primary CTA | Replace rectangular button with pill (border-radius 999px); maintain tap target ≥ 44px |
+| College selector | Sidebar college switcher | See Deliverable 4 — requires design decision; placeholder: retain as segmented control in header |
+
+### 1.2 Study Session Page (MCQ mode)
+
+| New Design Element | Existing Synapse Equivalent | Migration Action |
+|---|---|---|
+| Card-based question container | Flat content area with sand background | Wrap in surface card (neutral-0 on cream bg); 24px padding, 12px border-radius |
+| Answer option pills | Radio button list | Convert to pill-shaped option cards; 56px min-height, full-width on mobile |
+| Progress indicator | Linear progress bar | Retain; recolour to lime-500 on dark track |
+| Confidence rating (SM-2: Again/Hard/Good/Easy) | Existing rating buttons | Apply pill button system; lime accent on selected state |
+
+### 1.3 SAQ / VIVA / Feynman Session Pages
+
+| New Design Element | Existing Synapse Equivalent | Migration Action |
+|---|---|---|
+| Mode-specific card container | Same flat content area | Same card treatment as MCQ; mode identity via icon + label in card header |
+| Feynman text input area | Textarea element | Surface card with inset input; 4px inner border on focus using lime-500 |
+| VIVA prompt card | Sequential prompt list | Single-card-at-a-time reveal; lime chevron progress indicator |
+
+### 1.4 Analytics / Progress Page
+
+| New Design Element | Existing Synapse Equivalent | Migration Action |
+|---|---|---|
+| Domain Mastery chart (partial widget on dashboard) | Full analytics page with multiple chart types | Full-page expansion of dashboard widget; time range selector (1W/1M/3M/ALL) as segmented control persistent at top |
+| Domain breakdown cards (one per domain) | Table or list rows | Convert to card grid; domain colour token retained as left-border accent (4px) |
+| Streak and session count data panels | Stat row | Retain as horizontal data panel strip; cream background, 24px gap between panels |
+
+### 1.5 Topic / Content Browser
+
+| New Design Element | Existing Synapse Equivalent | Migration Action |
+|---|---|---|
+| Topic cards (implied by design direction) | List/tree structure | Convert to card grid; each card shows topic name, domain colour badge, mastery % pill |
+| Search input | Existing search | Retain; restyle as pill input with lime focus ring |
+
+### 1.6 Settings / Profile Page
+
+| New Design Element | Existing Synapse Equivalent | Migration Action |
+|---|---|---|
+| Segmented controls for preferences | Toggle switches and dropdowns | Replace binary toggles with segmented controls where 2–3 discrete options exist; retain toggles for true on/off |
+| College selector (critical dependency — see Deliverable 4) | Sidebar theming | Moved to Settings; see recommendation in Deliverable 4 |
+
+---
+
+## Deliverable 2 — CSS Variable Mapping: Sand & Stone → New Design System
+
+> **College theming dependency:** The mapping below assumes college accent colours survive as a parallel token layer (`--college-accent`) rather than being absorbed into the new palette. If college theming is deprecated, remove the `--college-*` block entirely.
+
+### Core Palette Tokens
+
+| Sand & Stone Variable | Role | New Design System Variable | New Value |
+|---|---|---|---|
+| `--bg` (day: #f7f3ee) | Page background | `--color-surface-page` | `#f6f6f2` |
+| `--bg` (night: #1e1710) | Page background dark | `--color-surface-page-dark` | `#0b382a` |
+| `--accent` (day: #c4622c) | Primary interactive accent | `--color-accent-primary` | `#d2fb33` |
+| `--accent` (night: #e07840) | Primary interactive accent dark | `--color-accent-primary-dark` | `#d2fb33` (unified — no separate night accent in new system; see Deliverable 6) |
+| `--text-primary` | Body copy | `--color-on-surface` | `#0b382a` (on cream) / `#f6f6f2` (on dark) |
+| `--text-secondary` | Secondary/muted copy | `--color-on-surface-muted` | `#0b382a` at 56% opacity |
+| `--card-bg` | Card surface | `--color-surface-card` | `#ffffff` (cream context) / `#0f4a38` (dark context) |
+| `--border` | Dividers, card borders | `--color-border` | `#0b382a` at 12% opacity |
+
+### Domain Colour Tokens
+
+| Sand & Stone Variable | New Variable | Value Recommendation |
+|---|---|---|
+| `--domain-physiology` | `--domain-physiology` | Retain existing value; apply as 4px card left-border accent only |
+| `--domain-pharmacology` | `--domain-pharmacology` | Retain |
+| `--domain-anatomy` | `--domain-anatomy` | Retain |
+| `--domain-equipment` | `--domain-equipment` | Retain |
+| `--domain-measurement` | `--domain-measurement` | Retain |
+| `--domain-regional` | `--domain-regional` | Retain |
+
+> Domain colour tokens are retained verbatim. They do not conflict with the new palette because they appear only as accent borders and small badges, not as background fills.
+
+### College Accent Tokens (Recommended Parallel Layer)
+
+| Existing | New Token | Value |
+|---|---|---|
+| ANZCA blue | `--college-accent` (when ANZCA active) | Existing ANZCA blue |
+| CICM teal | `--college-accent` (when CICM active) | Existing CICM teal |
+| ACEM crimson | `--college-accent` (when ACEM active) | Existing ACEM crimson |
+
+> **Recommendation to Rafael:** Retain `--college-accent` as a runtime-switched token. Lime green (`--color-accent-primary`) remains the system-wide interactive accent for buttons, progress, and SM-2 hero elements regardless of college context. The college accent applies only to: college badge/chip, college-specific header stripe (4px), and the college identifier in the settings panel. This preserves the new design's visual identity while respecting existing college differentiation. **This assumption must be confirmed before development begins.**
+
+### Typography Tokens
+
+| Sand & Stone Variable | New Variable | New Value |
+|---|---|---|
+| `--font-family` | `--font-family-base` | `-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` |
+| `--font-weight-heading` | `--font-weight-heading` | `500` |
+| `--letter-spacing-heading` | `--letter-spacing-heading` | `-0.02em` |
+
+### Spacing & Layout Tokens
+
+| Concept | Old Implementation | New Token | New Value |
+|---|---|---|---|
+| Sidebar width | `220px` fixed | `--nav-sidebar-width` | `220px` (desktop); `0px` (mobile — sidebar replaced by bottom nav) |
+| Container max-width | Unspecified (full viewport) | `--layout-max-width` | `1080px` |
+| Container horizontal padding | Unspecified | `--layout-padding-x` | `48px` (desktop) / `24px` (tablet) / `16px` (mobile) |
+| Grid gap | Unspecified | `--grid-gap` | `24px` |
+| Base spacing unit | 8px implied | `--space-base` | `4px` (scale: 4, 8, 12, 16, 24, 32, 48, 64) |
+
+---
+
+## Deliverable 3 — What the New Design Gets RIGHT
+
+### SM-2 Hero Card — Correct Priority Signal
+Elevating the Daily Review Queue to a full-width dark hero card solves a known usability failure in Sand & Stone where due-card counts were buried in sidebar stats. The lime accent count number creates immediate visual hierarchy — users open the app and the most important action (review what's due) has maximum salience. The dark green surface differentiates it from all other content, preventing visual competition.
+
+### Topic-Focused Dashboard — Correct Information Architecture
+The new design surfaces domain content directly on the dashboard rather than hiding it behind a navigation step. This reduces time-to-study for returning users who know their weak domains. The card grid allows domain-level entry points without requiring a full navigation traversal.
+
+### Segmented Controls — Correct Pattern for Discrete Options
+Using segmented controls for time range selection (1W/1M/3M/ALL) and mode switching (MCQ/SAQ/VIVA/Feynman) is the correct pattern. It exposes all options simultaneously, reduces cognitive load compared to dropdowns, and keeps selection state visible at all times. This is superior to the current Sand & Stone approach where mode selection is sequential/hidden.
+
+### Card-Based Layout — Correct Scannability Model
+The card grid with 24px gaps and consistent corner radii creates a modular, scannable surface. Each card is a self-contained information unit. This scales gracefully from desktop to tablet without reflow complexity.
+
+### Lime on Dark Green — High Contrast, High Energy
+The `#d2fb33` on `#0b382a` pairing is visually distinct from every medical education platform in the space (which trend toward blues and neutrals). The contrast ratio is approximately 9.3:1 — well above WCAG AA. The energy of the palette is appropriate for a study tool where motivation and focus are product-level concerns.
+
+### Pill Button System — Correct Touch Affordance
+Pill buttons (border-radius 999px) are visually distinct from content containers (border-radius 12px), which solves the affordance ambiguity present in the current Sand & Stone design where buttons and cards share similar visual weight.
+
+---
+
+## Deliverable 4 — What Needs Adaptation
+
+### 4.1 No Dark Mode
+**Problem:** Sand & Stone has a complete night mode (`--bg: #1e1710`, `--accent: #e07840`). A significant portion of Synapse users study at night. The new baseline design is light-only. Removing dark mode without a replacement will cause user attrition and accessibility complaints.
+**Required adaptation:** A dark mode token layer must be designed (see Deliverable 6). The dark green hero card (`#0b382a`) already establishes the dark surface language — dark mode extends this to the full page surface.
+
+### 4.2 No Mobile Layout
+**Problem:** The baseline HTML is desktop-only. Synapse's mobile usage (top nav 48px + bottom tabs 56px) is a primary interaction surface for users studying on phones.
+**Required adaptation:** A full mobile breakpoint system must be specified (see Deliverable 7). The 2×2 mode grid collapses to 2-column on mobile. The hero card becomes 100% width with reduced padding. Bottom tab navigation must be designed using the new palette.
+
+### 4.3 No College Selector
+**Problem:** The baseline shows FRCA content and has no college switching mechanism. Synapse serves ANZCA, CICM, and ACEM users — each with distinct content sets and colour identities. Removing the college selector would break the core product model.
+**Required adaptation:** The college selector must be reintegrated as a segmented control in the header or as a persistent setting. The `--college-accent` token layer (Deliverable 2) handles the visual expression. The selector itself should appear in: the onboarding flow, the Settings page, and as a compact chip in the main navigation header.
+
+### 4.4 Shows FRCA Content, Not ANZCA/CICM/ACEM
+**Problem:** All sample content in the baseline (Primary FRCA topics, Physiology/Pharmacology breakdown) reflects the UK anaesthesia curriculum. Australian/NZ users will not recognise their exam structure.
+**Required adaptation:** Content in spec mockups must be replaced with ANZCA/CICM/ACEM syllabus examples before any user testing. This is a content swap, not a design change — but it must happen before the design is shown to users.
+
+### 4.5 No Content State on Cards
+**Problem:** The baseline shows fully populated cards only. Cards in production will have loading states (skeleton), empty states (no due cards, no data), error states, and partial-data states (streak = 0, mastery = null).
+**Required adaptation:** Each card type requires a full state inventory. The SM-2 hero card specifically needs: zero-due state (celebratory empty), loading state (skeleton with lime shimmer), and error state (subtle — do not alarm users who just want to study). See Deliverable 8 (Edge Cases) in each component section below.
+
+### 4.6 No Responsive Navigation
+**Problem:** The baseline has no visible navigation chrome. The existing Synapse desktop sidebar (220px fixed) and mobile bottom tab bar have no equivalent in the new design.
+**Required adaptation:** Navigation must be designed as part of the migration. Desktop: retain sidebar at 220px, reskin with new palette (dark green sidebar, lime active indicator, cream text). Mobile: retain bottom tab bar, reskin to dark green background with lime active icon.
+
+---
+
+## Deliverable 5 — Implementation Sequence
+
+> **Page inventory assumption:** The following pages are assumed based on standard Synapse navigation: Dashboard, MCQ Session, SAQ Session, VIVA Session, Feynman Session, Analytics/Progress, Topic Browser, Settings/Profile. If additional pages exist (e.g., Onboarding, Subscription, Admin), add them to Phase 3.
+
+### Phase 1 — Foundation (Effort: 3–5 days)
+**Goal:** Establish token layer; no visible user-facing change yet.
+
+| Task | Effort | Notes |
+|---|---|---|
+| Implement CSS variable mapping (Deliverable 2) | 1 day | Creates the token bridge; enables incremental rollout |
+| Implement typography tokens (`-apple-system`, 500 weight, -0.02em) | 0.5 day | Apply globally via body/root |
+| Implement spacing scale and layout max-width tokens | 0.5 day | `--layout-max-width: 1080px`, `--layout-padding-x` responsive values |
+| Implement dark mode token layer (Deliverable 6) | 1 day | Required before any page migration to avoid regression |
+| Confirm college theming decision with Rafael | Blocker | Do not proceed to Phase 2 until resolved |
+
+### Phase 2 — Dashboard (Effort: 4–6 days)
+**Goal:** Ship the highest-impact visual change first; validates the new palette with real users.
+
+| Task | Effort | Notes |
+|---|---|---|
+| SM-2 hero card component | 1.5 days | Includes zero-due, loading, error states |
+| 2×2 mode grid cards | 1 day | Mobile collapse to 2-column included |
+| Domain Mastery chart panel + segmented time control | 1.5 days | Reuse existing chart data; reskin only |
+| Pill button system (global component) | 0.5 day | Replaces all existing button styles |
+| Navigation reskin (sidebar + mobile bottom bar) | 1 day | Desktop sidebar + mobile tab bar; college selector chip |
+
+### Phase 3 — Session Pages (Effort: 5–7 days)
+**Goal:** Migrate the core study experience.
+
+| Task | Effort | Notes |
+|---|---|---|
+| MCQ session page | 1.5 days | Question card, answer pills, confidence rating, progress bar |
+| SAQ session page | 1 day | Text response card, reveal mechanism |
+| VIVA session page | 1 day | Sequential prompt cards |
+| Feynman session page | 1.5 days | Input card, explanation scaffold |
+| Session completion / summary screen | 1 day | SM-2 result summary, lime accent performance indicators |
+
+### Phase 4 — Analytics & Topic Browser (Effort: 3–4 days)
+**Goal:** Complete the content and data surfaces.
+
+| Task | Effort | Notes |
+|---|---|---|
+| Full Analytics page (expand dashboard widget) | 1.5 days | Domain breakdown cards, streak panels |
+| Topic Browser (card grid migration) | 1 day | Domain colour left-border accent pattern |
+| Search input reskin | 0.5 day | Pill input with lime focus ring |
+
+### Phase 5 — Settings & Ancillary (Effort: 2–3 days)
+**Goal:** Complete coverage; lowest user-facing impact.
+
+| Task | Effort | Notes |
+|---|---|---|
+| Settings page (segmented controls, college selector) | 1 day | |
+| Onboarding (if exists) | 1 day | FRCA → ANZCA content swap also happens here |
+| QA pass across all pages (dark mode, mobile, all states) | 1 day | |
+
+**Total estimated effort: 17–25 days** (single front-end developer, assuming design specs are final and content decisions are resolved).
+
+---
+
+## Deliverable 6 — Dark Mode Token Layer
+
+> **Extrapolation note:** The baseline HTML shows no dark mode. The following tokens are extrapolated from the existing palette logic and the dark green (`#0b382a`) already present in the design. These are design proposals, not confirmed values — they must be reviewed before implementation.
+
+### Dark Mode Token Definitions
+
+| Token | Light Value | Dark Mode Value | Rationale |
+|---|---|---|---|
+| `--color-surface-page` | `#f6f6f2` | `#091f18` | Deeper than hero card to maintain depth hierarchy |
+| `--color-surface-card` | `#ffffff` | `#0b382a` | Hero card dark green becomes standard card surface in dark mode |
+| `--color-surface-card-elevated` | `#f6f6f2` | `#0f4a38` | One step lighter than base card for layered panels |
+| `--color-surface-hero` | `#0b382a` | `#d2fb33` (text only — surface stays dark) | In dark mode, hero card surface is already the page; differentiate via lime border |
+| `--color-accent-primary` | `#d2fb33` | `#d2fb33` | Lime is unchanged — it reads equally well on both surfaces at 9.3:1 |
+| `--color-on-surface` | `#0b382a` | `#f6f6f2` | Cream text on dark surfaces |
+| `--color-on-surface-muted` | `#0b382a` at 56% | `#f6f6f2` at 56% | |
+| `--color-on-accent` | `#0b382a` | `#0b382a` | Dark text on lime button — unchanged |
+| `--color-border` | `#0b382a` at 12% | `#f6f6f2` at 12% | |
+| `--color-surface-input` | `#ffffff` | `#0f4a38` | |
+| `--color-input-border-focus` | `#d2fb33` | `#d2fb33` | Lime focus ring — unchanged |
+| `--color-nav-sidebar` | `#0b382a` | `#060f0b` | Sidebar darker than page in dark mode |
+| `--color-nav-active-indicator` | `#d2fb33` | `#d2fb33` | Unchanged |
+
+### Dark Mode Activation Pattern
+
+Dark mode activates via `prefers-color-scheme: dark` media query and/or a `data-theme="dark"` attribute on the root element, allowing user override of system preference. The toggle sits in the Settings page as a segmented control with three states: Light / Dark / System.
+
+### Domain Colour Adaptation for Dark Mode
+
+Domain colour tokens (physiology, pharmacology, anatomy, etc.) should be lightened by 15–20% in dark mode to maintain sufficient contrast when used as text labels or icon fills against dark card surfaces. If domain colours are used only as 4px border accents, no adjustment is needed.
+
+---
+
+## Deliverable 7 — Mobile Breakpoint Recommendations
+
+### Breakpoint Scale
+
+| Name | Width | Description |
+|---|---|---|
+| `mobile` | 0–767px | Single column; bottom navigation active |
+| `tablet` | 768–1079px | Two-column grid; sidebar collapsed to icon rail |
+| `desktop` | 1080px+ | Full layout; sidebar 220px fixed; max-width 1080px centred |
+
+### Per-Component Responsive Behaviour
+
+#### Navigation
+- **Desktop (1080px+):** Sidebar 220px fixed left. Content area: `calc(100% - 220px)`, max-width 1080px, 48px horizontal padding. College chip in sidebar header.
+- **Tablet (768–1079px):** Sidebar collapses to 56px icon rail. Content area expands. Tooltip labels on hover. College chip becomes icon only.
+- **Mobile (0–767px):** Sidebar hidden entirely. Top bar: 48px height, logo centred, settings icon right, college badge left. Bottom tab bar: 56px height, dark green (`#0b382a`) background, 5 tabs maximum, lime active icon/label. Safe area padding applied below tab bar (iOS home indicator).
+
+#### SM-2 Hero Card
+- **Desktop:** Full container width (max 1080px minus 48px each side = 984px usable). Hero card 100% of usable width. Internal padding: 40px.
+- **Tablet:** 100% container width. Internal padding: 32px.
+- **Mobile:** 100% viewport width minus 16px each side. Internal padding: 24px. Count and CTA stack vertically.
+
+#### Mode Grid (MCQ/SAQ/VIVA/Feynman)
+- **Desktop:** 4-column grid (4× 1fr with 24px gap).
+- **Tablet:** 2×2 grid (2-column, 2-row).
+- **Mobile:** 2-column grid (2× 1fr with 16px gap). Card height: minimum 88px.
+
+#### Domain Mastery Chart + Segmented Control
+- **Desktop:** Chart panel full width. Segmented control (1W/1M/3M/ALL) floats right of panel header.
+- **Tablet:** Same as desktop.
+- **Mobile:** Segmented control moves below panel title, full width. Chart height reduces from 240px to 180px. Labels rotate or abbreviate.
+
+#### Data Panel Strip (Streak, Session Count)
+- **Desktop:** Horizontal strip, 3–4 panels in a row.
+- **Tablet:** Same.
+- **Mobile:** Horizontal scroll (scroll-snap, no visible scrollbar). Each panel: minimum 140px wide, 72px tall.
+
+#### Answer Option Pills (Session Pages)
+- **Desktop/Tablet:** Pills 100% container width, 56px height, 16px horizontal padding.
+- **Mobile:** Pills 100% viewport width minus container padding, 56px height. Touch target confirmed ≥ 44px (56px satisfies this).
+
+### Touch Target Audit
+All interactive elements on mobile must meet 44px minimum touch target:
+- Pill buttons: 48px height minimum
+- Bottom tab bar icons: 56px bar height, touch target 44×44px centred
+- Segmented control segments: 44px height minimum
+- Card tap targets: full card surface (no sub-element-only tap areas)
+- SM-2 confidence rating buttons (Again/Hard/Good/Easy): 56px height, 25% width each on mobile
+
+---
+
+## Component Edge Cases & State Inventory
+
+### SM-2 Hero Card States
+
+| State | Visual Treatment |
+|---|---|
+| **Default (cards due)** | Dark green surface, lime count number (48px/700), "Start Review" lime pill button |
+| **Zero due (all caught up)** | Same dark surface; count shows 0; copy changes to "Nothing due — great work"; lime checkmark icon; "Browse Topics" secondary CTA |
+| **Loading** | Skeleton shimmer: dark green base, lighter green (`#0f4a38`) animated shimmer stripe; count replaced by 48px wide skeleton bar |
+| **Error** | Dark surface retained; count replaced by "—"; inline error message in `--color-on-surface-muted`; "Retry" ghost pill button |
+
+### Mode Card States
+
+| State | Visual Treatment |
+|---|---|
+| **Default** | Cream surface card, mode icon, mode label, "X topics" count in muted text |
+| **Empty (no content for mode)** | Card surface desaturated; label unchanged; count shows "0 topics"; card non-interactive (cursor: default); tooltip explaining why |
+| **Loading** | Skeleton: cream surface, grey shimmer blocks for icon, label, count |
+| **Locked/unavailable** | Overlaid lock icon at 40% opacity; card 60% opacity; tapping opens college gate or subscription prompt |
+
+### Domain Mastery Chart States
+
+| State | Visual Treatment |
+|---|---|
+| **Populated** | Line/bar chart with domain colour tokens, lime data points |
+| **Empty (no sessions yet)** | Chart area shows dashed grid only; centred empty state copy: "Complete your first session to see mastery data"; "Start Studying" lime pill CTA |
+| **Loading** | Skeleton shimmer matching chart dimensions |
+| **Partial data (< 1 week)** | Chart renders available data; greyed-out region for future dates; 1W selector pre-selected and locked until more data exists |
+
+---
+
+## Accessibility Requirements (Global, All Pages)
+
+**Contrast ratios:**
+- Lime `#d2fb33` on dark green `#0b382a`: 9.31:1 — exceeds WCAG AA (4.5:1) and AAA (7:1) ✓
+- Cream `#f6f6f2` on dark green `#0b382a`: 13.2:1 — exceeds WCAG AAA ✓
+- Dark green `#0b382a` on cream `#f6f6f2`: 13.2:1 ✓
+- Domain colour tokens on card surfaces: must individually verify each against cream and dark surfaces; flag any below 4.5:1
+
+**Keyboard navigation order:**
+1. Skip-to-content link (visible on focus)
+2. College selector / header controls
+3. Sidebar/top navigation
+4. Main content area (hero card first)
+5. Mode grid (left-to-right, top-to-bottom)
+6. Data panels
+7. Footer/settings
+
+**ARIA roles and labels:**
+- SM-2 hero card: `role="region"`, `aria-label="Daily Review Queue"`
+- Mode grid: `role="list"` containing `role="listitem"` cards; each card is a `<button>` or `<a>` with descriptive `aria-label` including mode name and topic count
+- Segmented control: `role="radiogroup"` with `role="radio"` per segment; `aria-checked` state
+- Domain Mastery chart: `role="img"`, `aria-label` describing current data range and dominant domain
+- Bottom tab bar: `role="navigation"`, `aria-label="Main navigation"`
+
+**Touch targets:** All interactive elements ≥ 44×44px. Confirmed for: pill buttons (48px height), tab bar items (56px bar), mode cards (full card surface), SM-2 confidence buttons (56px height).
+
+**Reduced motion:** SM-2 hero card skeleton shimmer and any entry animations must respect `prefers-reduced-motion: reduce`. When set, replace shimmer with static placeholder; replace slide-in animations with instant render.
+
+**Focus indicators:** Visible focus ring on all interactive elements. Ring style: 2px solid `#d2fb33` (lime), 2px offset. On light backgrounds, supplement with dark outline: 2px solid `#0b382a` outside the lime ring to prevent invisibility on cream surfaces.

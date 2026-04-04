@@ -58,7 +58,7 @@ export interface AgentCapability {
   reviewerLane: RiskLane;
   description: string;
   status: AgentStatus;
-  model: 'haiku' | 'sonnet' | 'opus' | 'gpt4o';
+  model: 'haiku' | 'sonnet' | 'opus' | 'gpt4o' | 'gpt5.4';
   frequencyTier: 'always-on' | 'daily' | '2-3x-week' | 'weekly' | 'on-demand' | 'monthly';
   projectScope?: string[] | 'all';  // 'all' = generalist, string[] = scoped to listed project IDs
   knowledgeSources?: string[];      // paths to reference documents read at session start

@@ -1,0 +1,131 @@
+<html lang="en"><head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Synapse - Anaesthesia Study Platform</title>
+    <style>
+        :root {
+            --bg-page: #f6f6f2;
+            --bg-panel: #efefe6;
+            --bg-card: #ffffff;
+            --bg-control: #eaeae5;
+            --text-main: #1a201d;
+            --text-secondary: #78827d;
+            --text-tertiary: #9ca3a0;
+            --brand-dark: #0b382a;
+            --brand-lime: #d2fb33;
+            --brand-lime-hover: #c4ec2a;
+            --border-subtle: #e4e4df;
+            --chart-line: #5c85d6;
+            --radius-sm: 4px;
+            --radius-md: 8px;
+            --radius-lg: 12px;
+            --radius-pill: 999px;
+            --shadow-card: 0 4px 12px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.02);
+            --shadow-control: 0 2px 8px rgba(0, 0, 0, 0.04);
+            --font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }
+        body { background-color: var(--bg-page); color: var(--text-main); font-family: var(--font-family); line-height: 1.5; font-size: 15px; }
+        h1, h2, h3, h4 { color: var(--text-main); font-weight: 500; letter-spacing: -0.02em; line-height: 1.2; }
+        h1 { font-size: 32px; } h2 { font-size: 24px; } h3 { font-size: 18px; }
+        p { color: var(--text-secondary); }
+        .text-small { font-size: 13px; color: var(--text-secondary); }
+        .header { padding: 24px 48px; display: flex; justify-content: space-between; align-items: center; }
+        .logo { font-size: 24px; font-weight: 500; color: var(--brand-dark); letter-spacing: -0.04em; text-decoration: none; }
+        .nav-links { display: flex; gap: 32px; align-items: center; }
+        .nav-link { text-decoration: none; color: var(--text-secondary); font-size: 14px; transition: color 0.2s; }
+        .nav-link:hover, .nav-link.active { color: var(--text-main); }
+        .btn-primary { background-color: var(--brand-lime); color: var(--brand-dark); text-decoration: none; padding: 10px 24px; border-radius: var(--radius-pill); font-weight: 500; font-size: 14px; transition: background-color 0.2s; display: inline-block; }
+        .btn-primary:hover { background-color: var(--brand-lime-hover); }
+        .container { max-width: 1080px; margin: 0 auto; padding: 48px; }
+        .segmented-control { background-color: var(--bg-card); border-radius: var(--radius-md); display: inline-flex; padding: 4px; border: 1px solid var(--border-subtle); box-shadow: var(--shadow-control); }
+        .segment { padding: 6px 16px; font-size: 13px; color: var(--text-secondary); cursor: pointer; border-radius: var(--radius-sm); user-select: none; transition: all 0.2s ease; }
+        .segment.active { background-color: var(--bg-control); color: var(--text-main); font-weight: 500; }
+        .dashboard-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 40px; }
+        .grid-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 48px; }
+        .card { background-color: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 32px; box-shadow: var(--shadow-card); display: flex; flex-direction: column; gap: 16px; }
+        .card.actionable { cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s; }
+        .card.actionable:hover { border-color: #d0d0c8; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06); }
+        .card-header { display: flex; justify-content: space-between; align-items: flex-start; }
+        .card-title { font-size: 18px; color: var(--text-main); margin-bottom: 4px; }
+        .status-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); background: var(--bg-page); padding: 4px 8px; border-radius: var(--radius-sm); }
+        .text-action { color: var(--brand-dark); font-size: 14px; font-weight: 500; text-decoration: none; display: inline-flex; align-items: center; margin-top: auto; padding-top: 16px; }
+        .data-panel { background-color: var(--bg-panel); border-radius: var(--radius-lg); padding: 40px; display: flex; flex-direction: column; gap: 32px; }
+        .panel-header { display: flex; justify-content: space-between; align-items: center; }
+        .panel-title { color: var(--brand-dark); font-size: 14px; font-weight: 500; }
+        .chart-container { height: 180px; width: 100%; position: relative; border-bottom: 1px solid rgba(0,0,0,0.05); border-left: 1px solid rgba(0,0,0,0.05); }
+        .chart-line { position: absolute; bottom: 0; left: 0; right: 0; top: 0; }
+        .chart-line svg { width: 100%; height: 100%; overflow: visible; }
+        .chart-path { fill: none; stroke: var(--chart-line); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <a href="#" class="logo">synapse</a>
+        <nav class="nav-links">
+            <a href="#" class="nav-link active">Curriculum</a>
+            <a href="#" class="nav-link">Performance</a>
+            <a href="#" class="nav-link">History</a>
+            <a href="#" class="btn-primary">Continue Session</a>
+        </nav>
+    </header>
+    <main class="container">
+        <div class="dashboard-header">
+            <div>
+                <p class="text-small font-medium" style="margin-bottom: 8px;">ANZCA Primary Preparation</p>
+                <h1>Cardiovascular Physiology</h1>
+            </div>
+            <div class="segmented-control">
+                <div class="segment active">Learn</div>
+                <div class="segment">Simulate</div>
+                <div class="segment">Review</div>
+            </div>
+        </div>
+        <div class="card actionable" style="margin-bottom: 24px; background-color: var(--brand-dark); color: white;">
+            <div class="card-header">
+                <div>
+                    <h2 style="color: white; margin-bottom: 8px;">Daily Review Queue</h2>
+                    <p style="color: rgba(255,255,255,0.7);">SM-2 Spaced Repetition Algorithm</p>
+                </div>
+                <div class="status-label" style="background: rgba(255,255,255,0.1); color: white;">42 Items Due</div>
+            </div>
+            <a href="#" class="text-action" style="color: var(--brand-lime); border-top: 1px solid rgba(255,255,255,0.1); padding-top: 16px;">Begin Review Session</a>
+        </div>
+        <div class="grid-layout">
+            <div class="card actionable">
+                <div><h3 class="card-title">Multiple Choice</h3></div>
+                <a href="#" class="text-action">Start MCQ Block</a>
+            </div>
+            <div class="card actionable">
+                <div><h3 class="card-title">Short Answer</h3></div>
+                <a href="#" class="text-action">Start SAQ Block</a>
+            </div>
+            <div class="card actionable">
+                <div><h3 class="card-title">VIVA Oral</h3></div>
+                <a href="#" class="text-action">Launch Simulator</a>
+            </div>
+            <div class="card actionable">
+                <div><h3 class="card-title">Feynman Mode</h3></div>
+                <a href="#" class="text-action">Start Explanation</a>
+            </div>
+        </div>
+        <div class="data-panel">
+            <div class="panel-header">
+                <div class="panel-title">Domain Mastery: Cardiovascular</div>
+                <div class="segmented-control">
+                    <div class="segment">1W</div>
+                    <div class="segment">1M</div>
+                    <div class="segment active">3M</div>
+                    <div class="segment">ALL</div>
+                </div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-line">
+                    <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+                        <path class="chart-path" d="M 0,80 L 20,75 L 40,50 L 60,60 L 80,30 L 100,10"></path>
+                    </svg>
+                </div>
+            </div>
+        </div>
+    </main>
+</body></html>
