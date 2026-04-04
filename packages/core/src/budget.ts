@@ -3,32 +3,38 @@ import { OrganismError } from '../../shared/src/error-taxonomy.js';
 
 // Per-agent daily budget caps (USD). Override via BUDGET_<AGENT_NAME> env var.
 // Weeks 1-2 defaults — adjust upward as Organism grows.
-// Caps set high for initial test run — tighten after baseline costs are known
+// Calibrated from 3 review runs (v1: $0.33, v1.5: $1.43, v2: $2.70)
+// Each agent gets ~10x their observed per-task cost as daily headroom
 const DEFAULT_CAPS: Record<string, number> = {
-  'ceo': 50.00,
-  'product-manager': 50.00,
-  'engineering': 50.00,
-  'marketing-strategist': 50.00,
-  'marketing-executor': 50.00,
-  'seo': 50.00,
-  'sales': 50.00,
-  'design': 50.00,
-  'devops': 50.00,
-  'cfо': 50.00,
-  'customer-support': 50.00,
-  'competitive-intel': 50.00,
-  'community-manager': 50.00,
-  'pr-comms': 50.00,
-  'copyright': 50.00,
-  'legal': 50.00,
-  'security-offensive': 50.00,
-  'security-audit': 50.00,
-  'security-knowledge': 50.00,
-  'quality-agent': 50.00,
-  'grill-me': 50.00,
-  'codex-review': 50.00,
-  'quality-guardian': 100.00,
-  'risk-classifier': 50.00,
+  'ceo': 2.00,
+  'cto': 1.00,
+  'cfo': 1.00,
+  'product-manager': 1.00,
+  'engineering': 2.00,
+  'marketing-strategist': 1.00,
+  'marketing-executor': 1.00,
+  'seo': 1.00,
+  'sales': 1.00,
+  'design': 1.00,
+  'devops': 1.00,
+  'hr': 1.00,
+  'customer-success': 1.00,
+  'data-analyst': 1.00,
+  'customer-support': 1.00,
+  'competitive-intel': 0.50,
+  'community-manager': 1.00,
+  'pr-comms': 1.00,
+  'copyright': 0.50,
+  'legal': 2.00,
+  'security-audit': 1.00,
+  'security-offensive': 1.00,
+  'security-knowledge': 0.50,
+  'medical-content-reviewer': 1.00,
+  'quality-agent': 3.00,       // runs on every task — highest volume
+  'grill-me': 2.00,            // runs on every MEDIUM/HIGH task
+  'codex-review': 2.00,        // GPT-4o, auto-chained on MEDIUM/HIGH
+  'quality-guardian': 5.00,    // Opus — one deep audit per day
+  'risk-classifier': 0.50,
 };
 
 const SYSTEM_DAILY_CAP = parseFloat(process.env.SYSTEM_DAILY_CAP_USD ?? '50');

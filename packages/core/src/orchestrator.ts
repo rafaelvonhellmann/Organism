@@ -94,9 +94,9 @@ export async function submitTask(
 
 // Pipeline routing based on risk lane
 async function routeToPipeline(taskId: string, agent: string, lane: RiskLane): Promise<void> {
-  // Budget pre-check disabled for initial test runs — re-enable once baseline costs are known
-  // const estimatedCost = lane === 'HIGH' ? 2.00 : lane === 'MEDIUM' ? 0.50 : 0.10;
-  // assertBudget(agent, estimatedCost);
+  // Pre-flight budget check — estimates from observed costs (v2 review: ~$0.04-0.08/task)
+  const estimatedCost = lane === 'HIGH' ? 0.30 : lane === 'MEDIUM' ? 0.10 : 0.05;
+  assertBudget(agent, estimatedCost);
 
   writeAudit({
     agent,

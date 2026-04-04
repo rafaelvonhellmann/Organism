@@ -98,17 +98,17 @@ Apply the Socratic method. Produce your scrutiny report.`;
         projectId,
       });
     } else {
-      // Reclassify — create HIGH-risk task routed through the full pipeline
-      // For now, create the task at HIGH lane for CEO to handle re-routing
+      // Reclassify — route to the INTENDED agent at HIGH lane, not CEO
+      // The intended agent handles it with the reclassification context
       createTask({
-        agent: 'ceo',
+        agent: intendedAgent,
         lane: 'HIGH',
         description: `[RECLASSIFIED HIGH] ${originalDescription}`,
         input: {
           ...originalInput as Record<string, unknown>,
           grillMeScrutiny: result.text,
+          grillMeVerdict: verdict,
           reclassifiedFrom: 'MEDIUM',
-          originalAgent: intendedAgent,
         },
         parentTaskId: task.id,
         projectId,
