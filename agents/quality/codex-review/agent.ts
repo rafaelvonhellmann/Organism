@@ -49,7 +49,7 @@ async function callGpt(prompt: string, apiKey: string): Promise<{ text: string; 
     },
     body: JSON.stringify({
       model: 'gpt-5.4',
-      max_tokens: 2048,
+      max_completion_tokens: 2048,
       messages: [
         { role: 'system', content: CODEX_REVIEW_SYSTEM },
         { role: 'user', content: prompt },
