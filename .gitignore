@@ -9,6 +9,7 @@ state/guardian-history.json
 state/guardian-shadow-*.json
 state/stixdb/
 e2e/screenshots/
+state/screenshots/
 e2e/tmp_guardian_*.spec.ts
 *.patch
 skills/
@@ -17,3 +18,5 @@ __pycache__/
 .python-version
 venv/
 .venv/
+.aidesigner/*
+!.aidesigner/.gitkeep
