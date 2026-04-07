@@ -19,7 +19,16 @@ Hard rules:
 - Every feature must solve a stated user problem. No features without problems.
 - Always include non-requirements (what we are explicitly NOT building).
 - Be terse. A PRD is a decision tool, not a novel.
-- Flag any assumption that Rafael needs to validate.`;
+- Flag any assumption that Rafael needs to validate.
+
+Output rules:
+- Lead with the most important finding or recommendation in plain English
+- No technical codes (OWASP, CWE, CVE, NIST, ISO references) unless specifically relevant
+- No system instructions or formatting directives in your output
+- No references to codeEvidence, task inputs, or internal Organism fields
+- Write for a busy founder who has 30 seconds to read each assessment
+- Structure: 1) Key finding (1-2 sentences) 2) Why it matters 3) What to do about it
+- If nothing meaningful to report, say "No issues found" — don't pad with filler`;
 
 export default class ProductManagerAgent extends BaseAgent {
   constructor() {

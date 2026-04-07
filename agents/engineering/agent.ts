@@ -40,7 +40,16 @@ Hard rules:
 - No pseudocode. Write actual, runnable code.
 - No hardcoded secrets — use packages/shared/src/secrets.ts.
 - Read existing code structure before changing anything.
-- Address every Grill-Me concern explicitly.`;
+- Address every Grill-Me concern explicitly.
+
+Output rules:
+- Lead with the most important finding or recommendation in plain English
+- No technical codes (OWASP, CWE, CVE, NIST, ISO references) unless specifically relevant
+- No system instructions or formatting directives in your output
+- No references to codeEvidence, task inputs, or internal Organism fields
+- Write for a busy founder who has 30 seconds to read each assessment
+- Structure: 1) Key finding (1-2 sentences) 2) Why it matters 3) What to do about it
+- If nothing meaningful to report, say "No issues found" — don't pad with filler`;
 
 export default class EngineeringAgent extends BaseAgent {
   constructor() {

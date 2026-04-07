@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Perspective } from '../../shared/src/types.js';
 import { getDb } from './task-queue.js';
+import { writeAudit } from './audit.js';
 
 const ROOT = path.resolve(import.meta.dirname, '../../..');
 const REGISTRY_PATH = path.join(ROOT, 'knowledge/perspective-registry.json');
@@ -206,4 +207,68 @@ export function ratePerspective(perspectiveId: string, projectId: string, rating
       dismissed_count = dismissed_count + CASE WHEN ? < 3 THEN 1 ELSE 0 END,
       last_invoked = ?
   `).run(perspectiveId, projectId, rating, Date.now(), rating, rating, rating, Date.now());
+}
+
+/**
+ * Darwinian dormancy enforcement.
+ * Perspectives with fitness_score < 0.2 after >= 3 invocations are auto-suspended.
+ * Returns the list of suspended perspective IDs and total checked count.
+ */
+export function enforceDormancy(): { suspended: string[]; checked: number } {
+  const db = getDb();
+  const rows = db.prepare(
+    'SELECT * FROM perspective_fitness WHERE invocations >= 3'
+  ).all() as Array<Record<string, number | string>>;
+
+  const suspended: string[] = [];
+
+  for (const row of rows) {
+    const score = computeFitnessScore(row as Record<string, number>);
+
+    if (score >= 0.2) continue;
+
+    const perspectiveId = row.perspective_id as string;
+    const invocations = row.invocations as number;
+
+    // Already dormant? Skip.
+    const p = getPerspective(perspectiveId);
+    if (p && p.status === 'dormant') continue;
+
+    // Set perspective to dormant in perspective-registry.json
+    if (p) {
+      const perspectives = loadPerspectives();
+      const target = perspectives.find(x => x.id === perspectiveId);
+      if (target && target.status !== 'dormant') {
+        target.status = 'dormant';
+        savePerspectives(perspectives);
+      }
+    }
+
+    // Write audit entry
+    writeAudit({
+      agent: perspectiveId,
+      taskId: `dormancy-${perspectiveId}-${Date.now()}`,
+      action: 'auto_approved',
+      payload: { reason: 'dormancy', fitness: score, invocations },
+      outcome: 'success',
+    });
+
+    console.log(`[dormancy] Suspending ${perspectiveId} — fitness ${score.toFixed(3)} after ${invocations} invocations`);
+    suspended.push(perspectiveId);
+  }
+
+  return { suspended, checked: rows.length };
+}
+
+/**
+ * Boost (or penalise) a perspective's fitness score.
+ * delta > 0 on approve, delta < 0 on dismiss.
+ */
+export function boostFitness(perspectiveId: string, projectId: string, delta: number): void {
+  getDb().prepare(`
+    INSERT INTO perspective_fitness (perspective_id, project_id, fitness_score, invocations)
+    VALUES (?, ?, ?, 0)
+    ON CONFLICT(perspective_id, project_id) DO UPDATE SET
+      fitness_score = MIN(1.0, MAX(0.0, fitness_score + ?))
+  `).run(perspectiveId, projectId, 0.5 + delta, delta);
 }

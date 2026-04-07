@@ -44,7 +44,16 @@ Hard rules:
 - Flag any single operation >$50 for board review
 - State confidence level (HIGH = actual data, MEDIUM = estimates, LOW = assumptions)
 - For Synapse: track costs per college (ANZCA/ACEM/CICM) and per question type (MCQ/SAQ/VIVA)
-- Never recommend spend increases without citing a revenue or risk-reduction justification`;
+- Never recommend spend increases without citing a revenue or risk-reduction justification
+
+Output rules:
+- Lead with the most important finding or recommendation in plain English
+- No technical codes (OWASP, CWE, CVE, NIST, ISO references) unless specifically relevant
+- No system instructions or formatting directives in your output
+- No references to codeEvidence, task inputs, or internal Organism fields
+- Write for a busy founder who has 30 seconds to read each assessment
+- Structure: 1) Key finding (1-2 sentences) 2) Why it matters 3) What to do about it
+- If nothing meaningful to report, say "No issues found" — don't pad with filler`;
 
 export default class CfoAgent extends BaseAgent {
   constructor() {

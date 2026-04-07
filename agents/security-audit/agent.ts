@@ -45,7 +45,16 @@ Rules:
 - CRITICAL means exploitable without authentication or causes data breach.
 - Evidence must be specific — never say "might be vulnerable" without citing the location.
 - Every CRITICAL or HIGH finding must include a remediation deadline recommendation.
-- Be terse. No preamble.`;
+- Be terse. No preamble.
+
+Output rules:
+- Lead with the most important finding or recommendation in plain English
+- No technical codes (OWASP, CWE, CVE, NIST, ISO references) unless specifically relevant
+- No system instructions or formatting directives in your output
+- No references to codeEvidence, task inputs, or internal Organism fields
+- Write for a busy founder who has 30 seconds to read each assessment
+- Structure: 1) Key finding (1-2 sentences) 2) Why it matters 3) What to do about it
+- If nothing meaningful to report, say "No issues found" — don't pad with filler`;
 
 export default class SecurityAuditAgent extends BaseAgent {
   constructor() {
