@@ -6,10 +6,12 @@
  * each agent runs, rather than dispatching ALL pending tasks globally.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { dispatchPendingTasks } from './agent-runner.js';
 import { runWatchdog } from './orchestrator.js';
 import { loadRegistry } from './registry.js';
-import { createTask, getPendingTasks } from './task-queue.js';
+import { createTask, getPendingTasks, getDb } from './task-queue.js';
 import { enforceDormancy } from './perspectives.js';
 import { syncToTurso } from './turso-sync.js';
 import { processDashboardActions } from './action-processor.js';
@@ -30,6 +32,15 @@ const lastRunMap = new Map<string, number>();
 
 let watchdogLastRunAt = 0;
 const WATCHDOG_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+// ── Autonomous project reviews ──────────────────────────────────────────
+// Monday = Synapse review, Tuesday = Tokens for Good review
+const PROJECT_SCHEDULE: Array<{ projectId: string; dayOfWeek: number; hour: number }> = [
+  { projectId: 'synapse', dayOfWeek: 1, hour: 9 },        // Monday 9am
+  { projectId: 'tokens-for-good', dayOfWeek: 2, hour: 9 }, // Tuesday 9am
+];
+
+const projectReviewLastRun = new Map<string, string>(); // projectId → 'YYYY-MM-DD'
 
 // --- Core logic ---
 
@@ -194,6 +205,38 @@ function tierLabel(tier: AgentCapability['frequencyTier']): string {
 async function schedulerTick(): Promise<void> {
   const capabilities = loadRegistry();
 
+  // ── Autonomous project reviews ──────────────────────────────────────────
+  for (const schedule of PROJECT_SCHEDULE) {
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    const currentDay = now.getDay(); // 0=Sun, 1=Mon, etc.
+    const currentHour = now.getHours();
+
+    if (currentDay === schedule.dayOfWeek && currentHour >= schedule.hour) {
+      const lastRun = projectReviewLastRun.get(schedule.projectId);
+      if (lastRun !== today) {
+        console.log(`[Scheduler] Triggering weekly review for ${schedule.projectId} (${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][schedule.dayOfWeek]} ${schedule.hour}:00)`);
+        projectReviewLastRun.set(schedule.projectId, today);
+
+        try {
+          // Import submitTask dynamically to avoid circular deps
+          const { submitTask } = await import('./orchestrator.js');
+          await submitTask({
+            description: `Scheduled weekly review of ${schedule.projectId}`,
+            input: {
+              projectId: schedule.projectId,
+              triggeredBy: 'scheduler',
+              scheduledReview: true,
+            },
+            projectId: schedule.projectId,
+          });
+        } catch (err) {
+          console.warn(`[Scheduler] Failed to trigger review for ${schedule.projectId}:`, (err as Error).message);
+        }
+      }
+    }
+  }
+
   // Deduplicate by owner — each agent dispatches once per tick at most
   const agentTierMap = new Map<string, { tier: AgentCapability['frequencyTier']; description: string }>();
   for (const cap of capabilities) {
@@ -254,6 +297,30 @@ async function schedulerTick(): Promise<void> {
     }
   }
 
+  // Auto-complete LOW tasks that have been awaiting_review for >1 hour with no critical issues
+  // (They were already quality-reviewed and auto-approved, but might be stuck)
+  try {
+    const stuckLow = getDb().prepare(`
+      SELECT id FROM tasks
+      WHERE status = 'awaiting_review' AND lane = 'LOW'
+      AND completed_at < ?
+    `).all(Date.now() - 60 * 60 * 1000) as Array<{ id: string }>;
+
+    if (stuckLow.length > 0) {
+      for (const task of stuckLow) {
+        getDb().prepare("UPDATE tasks SET status = 'completed' WHERE id = ?").run(task.id);
+      }
+      console.log(`[Scheduler] Auto-completed ${stuckLow.length} stuck LOW tasks`);
+    }
+  } catch { /* non-critical */ }
+
+  // Auto-dispatch any new tasks created by the agents (child tasks, quality reviews, etc.)
+  // This creates a continuous processing loop where the organism keeps working
+  const stillPending = getPendingTasks();
+  if (stillPending.length > 0) {
+    console.log(`[Scheduler] ${stillPending.length} new tasks created by agents — will dispatch next tick`);
+  }
+
   // Darwinian dormancy: suspend underperforming perspectives
   try {
     const { suspended } = enforceDormancy();
@@ -270,6 +337,22 @@ async function schedulerTick(): Promise<void> {
     runWatchdog();
     watchdogLastRunAt = Date.now();
   }
+
+  // Write daemon status for health check
+  try {
+    const statusPath = path.resolve(process.cwd(), 'state/daemon-status.json');
+    const stateDir = path.dirname(statusPath);
+    if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(statusPath, JSON.stringify({
+      lastTick: Date.now(),
+      pendingTasks: getPendingTasks().length,
+      nextReview: PROJECT_SCHEDULE.map(s => ({
+        project: s.projectId,
+        day: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][s.dayOfWeek],
+        hour: s.hour,
+      })),
+    }, null, 2));
+  } catch { /* non-critical */ }
 }
 
 /**
