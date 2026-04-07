@@ -272,7 +272,7 @@
       "collaborators": [],
       "reviewerLane": "MEDIUM",
       "description": "Customer support, issue resolution, user communication",
-      "status": "shadow",
+      "status": "suspended",
       "model": "sonnet",
       "frequencyTier": "always-on",
       "projectScope": "all"
@@ -311,7 +311,7 @@
       ],
       "reviewerLane": "LOW",
       "description": "Competitive intelligence, market research, competitor analysis",
-      "status": "shadow",
+      "status": "suspended",
       "model": "sonnet",
       "frequencyTier": "weekly",
       "projectScope": "all"
@@ -364,7 +364,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "Agent lifecycle management, shadow promotion oversight, hiring strategy, team structure",
-      "status": "active",
+      "status": "suspended",
       "model": "sonnet",
       "frequencyTier": "weekly",
       "projectScope": "all"
@@ -407,7 +407,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "Press releases, media pitches, founder narrative, crisis communications",
-      "status": "active",
+      "status": "suspended",
       "model": "sonnet",
       "frequencyTier": "on-demand",
       "projectScope": "all"
@@ -421,7 +421,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "Community strategy, trust cultivation, engagement in professional networks",
-      "status": "active",
+      "status": "suspended",
       "model": "sonnet",
       "frequencyTier": "2-3x-week",
       "projectScope": "all"

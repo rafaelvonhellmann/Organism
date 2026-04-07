@@ -58,6 +58,12 @@ export async function GET(req: NextRequest) {
   // Performance: only SELECT columns needed for the card display,
   // skip the heavy 'input' column.
 
+  // AUTO-APPROVAL: LOW-lane tasks auto-ship after quality review (per CLAUDE.md).
+  // They are excluded from Rafael's review queue in two ways:
+  // 1. Future tasks: quality-agent writes 'auto_approved' audit entry on approval
+  // 2. Historical tasks: LOW-lane + completed status are excluded entirely
+  // Only MEDIUM/HIGH completed tasks and all awaiting_review tasks appear.
+
   const [tasksResult, reviewedResult] = await Promise.all([
     client.execute({
       sql: `SELECT t.id, t.agent, t.status, t.lane, t.description,
@@ -66,7 +72,10 @@ export async function GET(req: NextRequest) {
                    t.created_at
             FROM tasks t
             WHERE t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent')
-              AND t.status IN ('awaiting_review', 'completed')${projectFilter}
+              AND (
+                t.status = 'awaiting_review'
+                OR (t.status = 'completed' AND t.lane != 'LOW')
+              )${projectFilter}
               AND NOT EXISTS (
                 SELECT 1 FROM review_decisions rd
                 WHERE rd.task_id = t.id
@@ -76,6 +85,10 @@ export async function GET(req: NextRequest) {
                 SELECT 1 FROM gates g
                 WHERE g.task_id = t.id AND g.gate = 'G4'
                   AND g.decision != 'pending'
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM audit_log al
+                WHERE al.task_id = t.id AND al.action = 'auto_approved'
               )
             ORDER BY
               CASE WHEN t.status = 'awaiting_review' THEN 0 ELSE 1 END,
@@ -99,6 +112,11 @@ export async function GET(req: NextRequest) {
                   WHERE g.task_id = t.id AND g.gate = 'G4'
                     AND g.decision != 'pending'
                 )
+                OR EXISTS (
+                  SELECT 1 FROM audit_log al
+                  WHERE al.task_id = t.id AND al.action = 'auto_approved'
+                )
+                OR (t.status = 'completed' AND t.lane = 'LOW')
               )`,
       args: projectArgs,
     }),

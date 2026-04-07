@@ -12,17 +12,10 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { href: '/', label: 'Review Queue', icon: '>' },
-  { href: '/bets', label: 'Shape Up', icon: '^' },
-  { href: '/assessments', label: 'Assessments', icon: '&' },
-  { href: '/plan', label: 'Action Plan', icon: '!' },
-  { href: '/roadmap', label: 'Roadmap', icon: '~' },
-  { href: '/progress', label: 'Progress', icon: '%' },
-  { href: '/history', label: 'History', icon: '#' },
-  { href: '/budget', label: 'Budget', icon: '$' },
-  { href: '/feedback', label: 'Feedback', icon: '?' },
-  { href: '/palate', label: 'Palate', icon: '*' },
-  { href: '/agents', label: 'Agents', icon: '@' },
+  { href: '/', label: 'Inbox', icon: '>' },
+  { href: '/plan', label: 'Plan', icon: '!' },
+  { href: '/insights', label: 'Insights', icon: '&' },
+  { href: '/system', label: 'System', icon: '#' },
 ];
 
 export function Sidebar() {

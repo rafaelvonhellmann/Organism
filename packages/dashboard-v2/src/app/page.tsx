@@ -353,6 +353,17 @@ function ReviewQueueInner() {
   const [error, setError] = useState<string | null>(null);
   const replyRef = useRef<HTMLTextAreaElement>(null);
 
+  // Browser notification tracking
+  const prevQueueLenRef = useRef(0);
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission | 'unsupported'>('unsupported');
+
+  // Check notification permission on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      setNotifPermission(Notification.permission);
+    }
+  }, []);
+
   // Track which task the user is looking at so polling doesn't replace it
   const stableQueueRef = useRef<QueueTask[]>([]);
   const currentTaskIdRef = useRef<string | null>(null);
@@ -437,6 +448,20 @@ function ReviewQueueInner() {
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   });
+
+  // Browser notification when new HIGH items arrive
+  useEffect(() => {
+    if (queue.length > prevQueueLenRef.current && prevQueueLenRef.current > 0) {
+      const newHighItems = queue.filter(t => t.lane === 'HIGH').length;
+      if (newHighItems > 0 && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification('Organism — Attention needed', {
+          body: `${newHighItems} HIGH priority item${newHighItems > 1 ? 's' : ''} in your inbox`,
+          icon: '/favicon.ico',
+        });
+      }
+    }
+    prevQueueLenRef.current = queue.length;
+  }, [queue]);
 
   // ── Actions ────────────────────────────────────────────────────
 
@@ -574,11 +599,25 @@ function ReviewQueueInner() {
                   <span className="text-zinc-600"> &middot; {queue.length} remaining</span>
                 )}
               </span>
-              {perspectiveFilter && (
-                <Link href="/" className="text-xs text-emerald-400 hover:text-emerald-300">
-                  Clear filter
-                </Link>
-              )}
+              <div className="flex items-center gap-2">
+                {notifPermission === 'default' && (
+                  <button
+                    onClick={() => {
+                      Notification.requestPermission().then(perm => {
+                        setNotifPermission(perm);
+                      });
+                    }}
+                    className="text-xs text-emerald-400 hover:text-emerald-300 px-3 py-1 rounded bg-emerald-500/10 border border-emerald-500/20"
+                  >
+                    Enable notifications
+                  </button>
+                )}
+                {perspectiveFilter && (
+                  <Link href="/" className="text-xs text-emerald-400 hover:text-emerald-300">
+                    Clear filter
+                  </Link>
+                )}
+              </div>
             </div>
             <div className="w-full h-1 bg-zinc-800 rounded-full overflow-hidden">
               <div

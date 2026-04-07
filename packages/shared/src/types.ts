@@ -71,7 +71,7 @@ export interface AuditEntry {
   ts: number;
   agent: string;
   taskId: string;
-  action: 'task_created' | 'task_checkout' | 'task_completed' | 'task_failed' | 'gate_eval' | 'budget_check' | 'mcp_call' | 'shadow_run' | 'source_injection' | 'error';
+  action: 'task_created' | 'task_checkout' | 'task_completed' | 'task_failed' | 'gate_eval' | 'budget_check' | 'mcp_call' | 'shadow_run' | 'source_injection' | 'auto_approved' | 'error';
   payload: unknown;
   outcome: 'success' | 'failure' | 'blocked';
   errorCode?: string;
