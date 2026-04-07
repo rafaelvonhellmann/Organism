@@ -185,6 +185,26 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_bet_scopes_bet ON bet_scopes(bet_id)`,
   `CREATE INDEX IF NOT EXISTS idx_hill_updates_bet ON hill_updates(bet_id)`,
   `CREATE INDEX IF NOT EXISTS idx_bet_decisions_bet ON bet_decisions(bet_id)`,
+  // ── Palate tables ──────────────────────────────────────────────
+  `CREATE TABLE IF NOT EXISTS source_fitness (
+    source_id TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT 'all',
+    fitness_score REAL DEFAULT 0.5,
+    injections INTEGER DEFAULT 0,
+    cited_in_good INTEGER DEFAULT 0,
+    cited_in_bad INTEGER DEFAULT 0,
+    last_injected INTEGER,
+    PRIMARY KEY (source_id, project_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS wiki_ratings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    page TEXT NOT NULL,
+    rating INTEGER NOT NULL,
+    notes TEXT,
+    rated_by TEXT NOT NULL DEFAULT 'rafael',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_wiki_ratings_page ON wiki_ratings(page)`,
 ];
 
 async function sync() {
@@ -425,6 +445,41 @@ async function sync() {
     }
     console.log(`  Bet decisions: ${betDecisions.length} ✓`);
   }
+
+  // ── Sync source_fitness ────────────────────────────────────────
+  try {
+    const sourceFitness = local.prepare('SELECT * FROM source_fitness').all() as Record<string, unknown>[];
+    if (sourceFitness.length > 0) {
+      await remote.execute('DELETE FROM source_fitness');
+      const stmts = sourceFitness.map(sf => ({
+        sql: `INSERT OR REPLACE INTO source_fitness (source_id, project_id, fitness_score, injections, cited_in_good, cited_in_bad, last_injected) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          sf.source_id as string, sf.project_id as string, sf.fitness_score as number,
+          sf.injections as number, sf.cited_in_good as number, sf.cited_in_bad as number,
+          sf.last_injected as number | null,
+        ],
+      }));
+      await remote.batch(stmts, 'write');
+      console.log(`  Source fitness: ${sourceFitness.length} ✓`);
+    }
+  } catch { console.log('  Source fitness: table not yet created locally, skipping'); }
+
+  // ── Sync wiki_ratings ────────────────────────────────────────
+  try {
+    const wikiRatings = local.prepare('SELECT * FROM wiki_ratings').all() as Record<string, unknown>[];
+    if (wikiRatings.length > 0) {
+      await remote.execute('DELETE FROM wiki_ratings');
+      const stmts = wikiRatings.map(wr => ({
+        sql: `INSERT INTO wiki_ratings (id, page, rating, notes, rated_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [
+          wr.id as number, wr.page as string, wr.rating as number,
+          wr.notes as string | null, wr.rated_by as string, wr.created_at as number,
+        ],
+      }));
+      await remote.batch(stmts, 'write');
+      console.log(`  Wiki ratings: ${wikiRatings.length} ✓`);
+    }
+  } catch { console.log('  Wiki ratings: table not yet created locally, skipping'); }
 
   // ── Summary ────────────────────────────────────────────────────────────
   const remoteCount = await remote.execute('SELECT COUNT(*) as c FROM tasks');
