@@ -237,6 +237,30 @@ async function schedulerTick(): Promise<void> {
     }
   }
 
+  // ── Git-triggered reviews ─────────────────────────────────────────────
+  try {
+    const { checkForNewCommits, agentsForChangedFiles } = await import('./git-watcher.js');
+    const newCommits = checkForNewCommits();
+    for (const commit of newCommits) {
+      const targetAgents = agentsForChangedFiles(commit.changedFiles);
+      if (targetAgents.length > 0) {
+        console.log(`[Scheduler] New commit in ${commit.projectId}: "${commit.message}" — triggering ${targetAgents.join(', ')}`);
+        const { submitTask } = await import('./orchestrator.js');
+        await submitTask({
+          description: `Git-triggered review: ${commit.message} (${commit.changedFiles.length} files changed)`,
+          input: {
+            projectId: commit.projectId,
+            triggeredBy: 'git-watcher',
+            commit: commit.commit,
+            changedFiles: commit.changedFiles,
+            targetAgents,
+          },
+          projectId: commit.projectId,
+        });
+      }
+    }
+  } catch { /* non-critical — git-watcher may fail if repos don't exist */ }
+
   // Deduplicate by owner — each agent dispatches once per tick at most
   const agentTierMap = new Map<string, { tier: AgentCapability['frequencyTier']; description: string }>();
   for (const cap of capabilities) {
@@ -297,6 +321,12 @@ async function schedulerTick(): Promise<void> {
     }
   }
 
+  // Cascading tasks — when agents complete, trigger downstream agents
+  try {
+    const { processCascades } = await import('./cascade.js');
+    processCascades();
+  } catch { /* non-critical */ }
+
   // Auto-complete LOW tasks that have been awaiting_review for >1 hour with no critical issues
   // (They were already quality-reviewed and auto-approved, but might be stuck)
   try {
@@ -312,6 +342,12 @@ async function schedulerTick(): Promise<void> {
       }
       console.log(`[Scheduler] Auto-completed ${stuckLow.length} stuck LOW tasks`);
     }
+  } catch { /* non-critical */ }
+
+  // Auto-execute on approved findings — create follow-up tasks
+  try {
+    const { processApprovedFindings } = await import('./auto-executor.js');
+    await processApprovedFindings();
   } catch { /* non-critical */ }
 
   // Auto-dispatch any new tasks created by the agents (child tasks, quality reviews, etc.)

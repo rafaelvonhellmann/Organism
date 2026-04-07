@@ -9,6 +9,7 @@ state/guardian-history.json
 state/guardian-shadow-*.json
 state/stixdb/
 state/palate-cache/
+state/git-last-commit.json
 e2e/screenshots/
 state/screenshots/
 e2e/tmp_guardian_*.spec.ts
