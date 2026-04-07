@@ -115,7 +115,7 @@ function sendTelegramG4Notification(taskId: string, gateId: string, summary: str
     console.log(`Task: ${taskId}`);
     console.log(`Gate: ${gateId}`);
     console.log(`Summary: ${summary.slice(0, 200)}`);
-    console.log('Add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to .secrets.json for Telegram notifications.');
+    console.log('Add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID as environment variables for Telegram notifications.');
     console.log('='.repeat(60) + '\n');
   }
 }

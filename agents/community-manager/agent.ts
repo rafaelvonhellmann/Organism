@@ -1,7 +1,6 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
 
 const COMMUNITY_SYSTEM = `You are the Community Manager for Organism. Trust over reach — always.
 
@@ -62,27 +61,14 @@ export default class CommunityManagerAgent extends BaseAgent {
 Task: ${task.description}
 
 Context:
-${JSON.stringify(input, null, 2)}
+${JSON.stringify(input)}
 
 Output the community brief directly. No preamble.`;
 
     const result = await callModelUltra(prompt, 'sonnet', COMMUNITY_SYSTEM);
 
-    createTask({
-      agent: 'quality-agent',
-      lane: 'LOW',
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
-      output: { text: result.text, qualityReviewQueued: true },
+      output: { text: result.text },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
   }

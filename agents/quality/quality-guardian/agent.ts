@@ -1,8 +1,9 @@
 import { BaseAgent } from '../../_base/agent.js';
 import { callModelUltra } from '../../_base/mcp-client.js';
 import { Task } from '../../../packages/shared/src/types.js';
+import { getTask, createTask } from '../../../packages/core/src/task-queue.js';
 
-const GUARDIAN_SYSTEM = `You are the Quality Guardian for Organism — the deepest, most thorough quality audit in the pipeline. You run on Opus. You are the last line of defence before G4 board review.
+const GUARDIAN_SYSTEM = `You are the Quality Guardian for Organism — the deepest, most thorough quality audit in the pipeline. You are the last line of defence before G4 board review.
 
 You perform a 6-phase audit using autoresearch methodology. For every potential issue you find at least 2 independent confirming signals before reporting it. LOW confidence findings are discarded.
 
@@ -68,15 +69,15 @@ export default class QualityGuardianAgent extends BaseAgent {
   constructor() {
     super({
       name: 'quality-guardian',
-      model: 'opus',
+      model: 'sonnet',
       capability: {
         id: 'quality.deep_audit',
         owner: 'quality-guardian',
         collaborators: [],
         reviewerLane: 'HIGH',
-        description: 'Opus-powered 6-phase deep audit — Platform Health Score, root cause analysis, auto-fix proposals',
+        description: '6-phase deep audit — Platform Health Score, root cause analysis, auto-fix proposals',
         status: 'shadow',
-        model: 'opus',
+        model: 'sonnet',
         frequencyTier: 'weekly',
         projectScope: 'all',
       },
@@ -85,7 +86,8 @@ export default class QualityGuardianAgent extends BaseAgent {
 
   protected async execute(task: Task): Promise<{ output: unknown; tokensUsed?: number }> {
     const input = task.input as Record<string, unknown>;
-    const originalOutput = (input?.output as string) ?? '';
+    const rawOutput = (input?.output as string) ?? '';
+    const originalOutput = rawOutput.slice(0, 8000); // Cap at ~2K tokens to control cost
     const originalDesc = (input?.originalDescription as string) ?? task.description;
     const originalTaskId = (input?.originalTaskId as string) ?? '';
 
@@ -105,17 +107,42 @@ ${originalOutput}
 ---
 
 Additional context:
-${JSON.stringify({ ...input, output: undefined }, null, 2)}
+${JSON.stringify({ ...input, output: undefined })}
 
 Apply the 6-phase audit. Produce the structured Quality Guardian Report. Begin directly with the report.`;
 
-    const result = await callModelUltra(prompt, 'opus', GUARDIAN_SYSTEM);
+    const result = await callModelUltra(prompt, 'sonnet', GUARDIAN_SYSTEM);
 
     const healthScoreMatch = result.text.match(/Platform Health Score:\s*(\d+)/);
     const healthScore = healthScoreMatch ? parseInt(healthScoreMatch[1], 10) : null;
 
     const criticalIssues = (result.text.match(/\|\s*CRITICAL\s*\|/g) ?? []).length;
     const approved = criticalIssues === 0 && (healthScore ?? 0) >= 70;
+
+    // Quality feedback loop: if guardian finds CRITICAL issues, create a revision
+    // task for the original agent so it can address the feedback.
+    if (!approved && originalTaskId && criticalIssues > 0) {
+      const parentTask = getTask(originalTaskId);
+      if (parentTask) {
+        try {
+          createTask({
+            agent: parentTask.agent,
+            lane: 'LOW',
+            description: `Revision needed: Quality Guardian flagged ${criticalIssues} critical issue(s) in "${parentTask.description.slice(0, 80)}"`,
+            input: {
+              qualityFeedback: result.text,
+              originalTaskId,
+              originalDescription: parentTask.description,
+            },
+            parentTaskId: originalTaskId,
+            projectId: parentTask.projectId ?? 'organism',
+          });
+          console.log(`[quality-guardian] Revision task created for '${parentTask.agent}' (original task ${originalTaskId})`);
+        } catch {
+          console.warn(`[quality-guardian] Could not create revision task for ${originalTaskId}`);
+        }
+      }
+    }
 
     return {
       output: {

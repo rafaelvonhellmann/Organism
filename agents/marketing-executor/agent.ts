@@ -1,7 +1,6 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
 
 const MARKETING_EXECUTOR_SYSTEM = `You are the Marketing Executor for Organism. You write content — never strategy.
 
@@ -49,27 +48,14 @@ Content type: ${contentType}
 Task: ${task.description}
 
 Context:
-${JSON.stringify({ ...input, grillMeScrutiny: grillMeScrutiny || undefined }, null, 2)}
+${JSON.stringify({ ...input, grillMeScrutiny: grillMeScrutiny || undefined })}
 
 Output the content directly. No preamble, no meta-commentary.`;
 
     const result = await callModelUltra(prompt, 'sonnet', MARKETING_EXECUTOR_SYSTEM);
 
-    createTask({
-      agent: 'quality-agent',
-      lane: 'LOW',
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
-      output: { text: result.text, contentType, qualityReviewQueued: true },
+      output: { text: result.text, contentType },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
   }

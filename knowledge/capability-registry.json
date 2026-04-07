@@ -425,6 +425,76 @@
       "model": "sonnet",
       "frequencyTier": "2-3x-week",
       "projectScope": "all"
+    },
+    {
+      "id": "research.ops",
+      "owner": "research-ops",
+      "collaborators": [
+        "quality-agent",
+        "engineering"
+      ],
+      "reviewerLane": "HIGH",
+      "description": "Research execution integrity: workload validation, citation chain audit, Python worker contract compliance, scoring transparency, mock-vs-real execution verification. Tokens for Good specialist.",
+      "status": "shadow",
+      "model": "sonnet",
+      "frequencyTier": "on-demand",
+      "projectScope": [
+        "tokens-for-good"
+      ]
+    },
+    {
+      "id": "governance.donation",
+      "owner": "donation-guardian",
+      "collaborators": [
+        "security-audit",
+        "legal"
+      ],
+      "reviewerLane": "HIGH",
+      "description": "Donation flow audit: PII compliance (AU Privacy Act 1988), authentication flows, operator credential security, contribution policy enforcement, sensitivity classification. Tokens for Good specialist.",
+      "status": "shadow",
+      "model": "sonnet",
+      "frequencyTier": "on-demand",
+      "projectScope": [
+        "tokens-for-good"
+      ]
+    },
+    {
+      "id": "infra.tfg_audit",
+      "owner": "infrastructure-auditor",
+      "collaborators": [
+        "devops",
+        "security-audit"
+      ],
+      "reviewerLane": "MEDIUM",
+      "description": "Render/Vercel deployment audit, Docker configuration, health endpoints, production hardening flags. Tokens for Good specialist.",
+      "status": "shadow",
+      "model": "sonnet",
+      "frequencyTier": "on-demand",
+      "projectScope": [
+        "tokens-for-good"
+      ]
+    },
+    {
+      "id": "quality.synthesis",
+      "owner": "synthesis",
+      "collaborators": [],
+      "reviewerLane": "LOW",
+      "description": "Consolidates findings from all agents into a single executive report. Runs after all other agents complete in a review.",
+      "status": "active",
+      "model": "sonnet",
+      "frequencyTier": "on-demand",
+      "projectScope": "all"
+    },
+    {
+      "id": "knowledge.wiki",
+      "owner": "palate-wiki",
+      "collaborators": [],
+      "reviewerLane": "LOW",
+      "description": "Maintains the living wiki from sources and review findings",
+      "status": "shadow",
+      "model": "sonnet",
+      "frequencyTier": "weekly",
+      "projectScope": "all"
     }
   ]
 }

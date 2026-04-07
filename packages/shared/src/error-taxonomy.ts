@@ -22,6 +22,17 @@ export enum OrganismError {
   SECRET_EXPIRED = 'E203',               // A secret is older than 90 days
   STATE_DB_LOCKED = 'E204',              // SQLite tasks.db is locked by another process
 
+  // E0xx — Shape Up (bet-based execution)
+  BET_NOT_FOUND = 'E006',               // Referenced bet does not exist
+  BET_NOT_ACTIVE = 'E007',              // Bet is not in active/approved status
+  BET_CIRCUIT_BREAKER = 'E008',         // Bet exceeded its budget/token/scope boundaries
+  BET_BOUNDARY_VIOLATION = 'E009',      // Task hit a no-go or rabbit-hole boundary
+  SHAPING_REQUIRED = 'E010',            // MEDIUM/HIGH task submitted without approved bet
+
+  // E2xx — Integrations (continued)
+  AGENTATION_UNREACHABLE = 'E210',      // Agentation sidecar server did not respond
+  AGENTATION_SYNC_FAILED = 'E211',      // Annotation sync/import failed
+
   // E3xx — Agent lifecycle
   AGENT_TIMEOUT = 'E301',               // Agent session exceeded its maximum run time
   SUBAGENT_SPAWN_FAILED = 'E302',        // Guardian couldn't spawn one of its 6 parallel subagents

@@ -1,7 +1,7 @@
 import { BaseAgent } from '../../_base/agent.js';
 import { callModelUltra } from '../../_base/mcp-client.js';
 import { Task } from '../../../packages/shared/src/types.js';
-import { getTask } from '../../../packages/core/src/task-queue.js';
+import { getTask, createTask } from '../../../packages/core/src/task-queue.js';
 import { triggerG4Gate } from '../../../packages/core/src/gates.js';
 
 const QA_SYSTEM = `You are the Quality Agent for Organism. You review outputs from other agents using the autoresearch method.
@@ -55,9 +55,15 @@ export default class QualityAgent extends BaseAgent {
 
   protected async execute(task: Task): Promise<{ output: unknown; tokensUsed?: number }> {
     const input = task.input as Record<string, unknown>;
-    const originalOutput = (input?.output as string) ?? '';
+    const rawOutput = (input?.output as string) ?? '';
+    // Cap review payload at ~2K tokens to control cost — quality-agent is a lightweight gate
+    const originalOutput = rawOutput.slice(0, 4000);
     const originalDesc = (input?.originalDescription as string) ?? task.description;
     const originalTaskId = (input?.originalTaskId as string) ?? '';
+
+    // Batch reviews use Haiku (cheap triage); single reviews use Sonnet
+    const isBatchReview = task.description.startsWith('Batch quality review');
+    const model = isBatchReview ? 'haiku' : 'sonnet';
 
     const prompt = `Review the following agent output.
 
@@ -70,7 +76,7 @@ ${originalOutput}
 
 Apply the autoresearch method: generate 3 alternative approaches, score the actual output against them, and give your verdict.`;
 
-    const result = await callModelUltra(prompt, 'sonnet', QA_SYSTEM);
+    const result = await callModelUltra(prompt, model as 'haiku' | 'sonnet' | 'opus', QA_SYSTEM);
 
     const approved = result.text.includes('**Decision:** APPROVED') ||
                      result.text.includes('Decision: APPROVED');
@@ -83,6 +89,35 @@ Apply the autoresearch method: generate 3 alternative approaches, score the actu
           originalTaskId,
           `Quality review APPROVED.\n\nOriginal task: ${originalDesc}\n\nReview summary:\n${result.text.slice(0, 600)}`
         );
+      }
+    }
+
+    // Quality feedback loop: if review contains CRITICAL/REJECT signals, create a
+    // revision task for the original agent so it can address the feedback.
+    if (!approved && originalTaskId) {
+      const hasCritical = /\bCRITICAL\b|\bREJECT\b|\bREVISION NEEDED\b/i.test(result.text);
+      if (hasCritical) {
+        const parentTask = getTask(originalTaskId);
+        if (parentTask) {
+          try {
+            createTask({
+              agent: parentTask.agent,
+              lane: 'LOW', // revision is remediation, not a new risk
+              description: `Revision needed: quality review flagged critical issues in "${parentTask.description.slice(0, 80)}"`,
+              input: {
+                qualityFeedback: result.text,
+                originalTaskId,
+                originalDescription: parentTask.description,
+              },
+              parentTaskId: originalTaskId,
+              projectId: parentTask.projectId ?? 'organism',
+            });
+            console.log(`[quality-agent] Revision task created for '${parentTask.agent}' (original task ${originalTaskId})`);
+          } catch {
+            // Duplicate detection may fire — safe to ignore
+            console.warn(`[quality-agent] Could not create revision task for ${originalTaskId}`);
+          }
+        }
       }
     }
 

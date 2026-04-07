@@ -1,7 +1,6 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
 
 const CFO_SYSTEM = `You are the CFO of Organism — responsible for financial tracking, unit economics, API cost analysis, budget forecasting, and ROI assessment across all projects.
 
@@ -72,29 +71,15 @@ export default class CfoAgent extends BaseAgent {
 Task: ${task.description}
 
 Context:
-${JSON.stringify(task.input, null, 2)}
+${JSON.stringify(task.input)}
 
 Produce all five sections: Financial Summary (metrics table), Burn Rate, 90-Day Forecast, Unit Economics, and Prioritised Recommendations. No preamble — lead with the table.`;
 
     const result = await callModelUltra(prompt, 'sonnet', CFO_SYSTEM);
 
-    createTask({
-      agent: 'quality-agent',
-      lane: 'LOW',
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
       output: {
         text: result.text,
-        qualityReviewQueued: true,
         summary: {
           financialSummary: true,
           burnRate: true,

@@ -2,25 +2,72 @@
   "id": "tokens-for-good",
   "name": "Tokens for Good",
   "phase": "BUILD",
-  "description": "A project applying AI for social good purposes. Full details to be defined by Rafael — placeholder config created to wire multi-project architecture.",
-  "techStack": [],
+  "description": "Compute-routing and research-orchestration platform for public-good scientific workloads. Donors contribute compute budget, platform routes to literature mining (PubMed), molecular screening (PubChem), and structured compute (ClinicalTrials.gov). Philanthropic model. First proof workflow: evidence synthesis.",
+  "techStack": [
+    "pnpm monorepo",
+    "TypeScript strict",
+    "Next.js 15 (portal)",
+    "Fastify 5 (control plane)",
+    "Prisma 6 (Postgres)",
+    "BullMQ (Redis queue)",
+    "OpenAI API (research execution)",
+    "Python 3.11 (research workers)",
+    "Docker (local + Render)",
+    "Vercel (portal)",
+    "Render (backend + DB + Redis)"
+  ],
   "qualityStandards": ["RESEARCH"],
   "riskOverrides": {
     "keywords": [
       "publish", "release", "claim", "evidence", "study", "research",
-      "statistics", "data", "impact", "outcome"
+      "statistics", "data", "impact", "outcome", "citation", "clinical",
+      "molecular", "compound", "trial", "phi", "donor", "partner",
+      "payment", "grant", "deploy", "delete", "credential", "token",
+      "verification", "auth", "pii", "privacy"
     ],
-    "note": "RESEARCH standard means any output making factual claims requires citation. Tasks involving publishable content are HIGH risk."
+    "note": "RESEARCH standard means any output making factual claims requires citation. Tasks involving publishable content, partner-facing outputs, donor PII, or deployment changes are HIGH risk."
   },
   "agents": {
     "generalist": [
-      "ceo", "product-manager", "quality-agent", "grill-me",
-      "engineering", "design", "devops", "legal"
+      "ceo", "cto", "cfo", "product-manager", "data-analyst",
+      "engineering", "devops", "security-audit",
+      "quality-guardian", "quality-agent", "grill-me",
+      "marketing-strategist", "marketing-executor", "seo", "community-manager", "pr-comms",
+      "legal", "sales", "customer-success", "hr", "design"
     ],
-    "specialist": []
+    "specialist": [
+      "research-ops",
+      "donation-guardian",
+      "infrastructure-auditor"
+    ]
+  },
+  "projectPath": "C:/Users/rafae/OneDrive/Desktop/Tokens for Good",
+  "repository": "https://github.com/rafaelvonhellenn/tokens-for-good",
+  "tasklist": "C:/Users/rafae/OneDrive/Desktop/Tokens for Good/docs/EXECUTION_STATUS.md",
+  "deployment": {
+    "portal": "https://tokens-for-good-portal.vercel.app",
+    "controlPlane": "Render (Docker, Node 22 Alpine)",
+    "chatgptApp": "Render (Docker)",
+    "postgres": "Render Basic 256MB",
+    "redis": "Render KeyValue"
+  },
+  "currentState": {
+    "commits": 11,
+    "maturity": "Early prototype — deployment plumbing mostly done, real execution not yet enabled",
+    "portalStatus": "LIVE on Vercel",
+    "backendStatus": "LIVE on Render with mock execution",
+    "nextMilestone": "One closed-alpha pilot with a real partner",
+    "knownGaps": [
+      "Durable Redis-backed queue (BullMQ ready, Redis provisioned but fallback active)",
+      "SMTP verification delivery (outbox mode ready, real SMTP not configured)",
+      "Real OpenAI execution (behind OPENAI_ENABLE_REAL_CALLS=true flag)",
+      "End-to-end hosted validation with all systems live"
+    ]
   },
   "notes": {
-    "status": "Placeholder — Rafael to fill in product description, tech stack, and specialist agents once project is more defined.",
-    "knowledgePath": "knowledge/projects/tokens-for-good/"
+    "status": "Organism governance applied 2026-04-05. CLAUDE.md, AGENTS.md, .claude/agents/, .claude/rules/, .claude/settings.json all configured.",
+    "knowledgePath": "knowledge/projects/tokens-for-good/",
+    "reviewScript": "scripts/review-tokens-for-good.ts",
+    "designSystem": "The Living Archive — Public Sans, forest green #467861, terracotta #3e332f"
   }
 }

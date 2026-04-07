@@ -3,21 +3,11 @@ StixDB Memory Server for Organism
 Start: python packages/stixdb/start.py
 Serves REST API on port 4020.
 """
-import json
 import os
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).parent.parent.parent
-
-# Set env vars BEFORE importing stixdb (it reads them at import time)
-secrets_path = ROOT / ".secrets.json"
-if secrets_path.exists():
-    secrets = json.loads(secrets_path.read_text())
-    os.environ.setdefault("ANTHROPIC_API_KEY", secrets.get("ANTHROPIC_API_KEY", ""))
-    os.environ.setdefault("OPENAI_API_KEY", secrets.get("OPENAI_API_KEY", ""))
-
-# Configure StixDB via env vars
+# Configure StixDB via env vars — all secrets must be set in the environment,
+# not loaded from files on disk.
 os.environ.setdefault("STIXDB_STORAGE_MODE", "memory")
 os.environ.setdefault("STIXDB_API_PORT", "4020")
 os.environ.setdefault("STIXDB_API_KEY", "organism-stixdb-local")

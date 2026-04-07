@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "roi-framework",
+      "localPath": "knowledge/business-model/roi-framework.md",
+      "addedBy": "bootstrap",
+      "addedAt": 1712448000000,
+      "fitness": 0.5,
+      "tags": [
+        "strategy",
+        "finance"
+      ],
+      "scope": "all",
+      "approved": true
+    },
+    {
+      "id": "popularize-playbook",
+      "localPath": "knowledge/marketing/popularize-playbook.md",
+      "addedBy": "bootstrap",
+      "addedAt": 1712448000000,
+      "fitness": 0.5,
+      "tags": [
+        "marketing",
+        "growth"
+      ],
+      "scope": "all",
+      "approved": true
+    }
+  ]
+}

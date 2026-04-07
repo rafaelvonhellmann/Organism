@@ -1,7 +1,6 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
 
 const DEVOPS_SYSTEM = `You are the DevOps Agent for Organism. You produce deployment plans and infrastructure specifications — you NEVER execute real commands.
 
@@ -79,27 +78,14 @@ SHADOW MODE: This is a plan only. Do not execute any commands.
 Task: ${task.description}
 
 Context:
-${JSON.stringify(input, null, 2)}
+${JSON.stringify(input)}
 
 Output the plan directly. Begin with the SHADOW MODE warning. No preamble.`;
 
     const result = await callModelUltra(prompt, 'sonnet', DEVOPS_SYSTEM);
 
-    createTask({
-      agent: 'quality-agent',
-      lane: 'LOW',
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
-      output: { plan: result.text, planType, shadowMode: true, qualityReviewQueued: true },
+      output: { plan: result.text, planType, shadowMode: true },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
   }

@@ -1,13 +1,15 @@
 /**
  * Scheduler — enforces frequencyTier constraints from capability-registry.json.
  *
- * Does NOT create tasks. Calls dispatchPendingTasks() on the correct schedule
- * and runWatchdog() every 5 minutes regardless of tier.
+ * Creates scheduled tasks for agents when their frequency tier is due,
+ * then dispatches. This ensures frequency tiers actually control when
+ * each agent runs, rather than dispatching ALL pending tasks globally.
  */
 
 import { dispatchPendingTasks } from './agent-runner.js';
 import { runWatchdog } from './orchestrator.js';
 import { loadRegistry } from './registry.js';
+import { createTask, getPendingTasks } from './task-queue.js';
 import { AgentCapability } from '../../shared/src/types.js';
 
 // --- Types ---
@@ -168,29 +170,81 @@ function computeNextRunAt(
 }
 
 /**
- * One scheduling tick — checks all agents in the registry and dispatches if due.
+ * Friendly tier label for scheduled task descriptions.
+ */
+function tierLabel(tier: AgentCapability['frequencyTier']): string {
+  switch (tier) {
+    case 'always-on': return 'continuous';
+    case 'daily': return 'daily';
+    case '2-3x-week': return 'bi-weekly';
+    case 'weekly': return 'weekly';
+    case 'monthly': return 'monthly';
+    case 'on-demand': return 'on-demand';
+    default: return String(tier);
+  }
+}
+
+/**
+ * One scheduling tick — checks all agents in the registry and creates
+ * scheduled tasks for agents that are due, then dispatches.
  */
 async function schedulerTick(): Promise<void> {
   const capabilities = loadRegistry();
 
   // Deduplicate by owner — each agent dispatches once per tick at most
-  const agentTierMap = new Map<string, AgentCapability['frequencyTier']>();
+  const agentTierMap = new Map<string, { tier: AgentCapability['frequencyTier']; description: string }>();
   for (const cap of capabilities) {
     if (!agentTierMap.has(cap.owner)) {
-      agentTierMap.set(cap.owner, cap.frequencyTier);
+      agentTierMap.set(cap.owner, { tier: cap.frequencyTier, description: cap.description });
     }
   }
 
-  for (const [agent, tier] of agentTierMap) {
+  let createdTasks = false;
+
+  for (const [agent, { tier, description }] of agentTierMap) {
+    // on-demand agents only run when tasks are explicitly created for them
+    if (tier === 'on-demand') continue;
+
     const lastRunAt = lastRunMap.get(agent) ?? null;
     if (shouldRunNow(tier, lastRunAt)) {
-      console.log(`[Scheduler] Dispatching ${agent} (tier: ${tier})`);
-      try {
-        await dispatchPendingTasks();
+      // Check if the agent already has pending tasks — no need to create a scheduled one
+      const existingPending = getPendingTasks(agent);
+      if (existingPending.length > 0) {
+        console.log(`[Scheduler] ${agent} already has ${existingPending.length} pending task(s) — skipping scheduled task creation`);
         lastRunMap.set(agent, Date.now());
-      } catch (err) {
-        console.error(`[Scheduler] Error dispatching ${agent}:`, err);
+        createdTasks = true;
+        continue;
       }
+
+      console.log(`[Scheduler] Creating scheduled ${tierLabel(tier)} task for ${agent}`);
+      try {
+        createTask({
+          agent,
+          lane: 'LOW',
+          description: `Scheduled ${tierLabel(tier)} review for ${agent}: ${description.slice(0, 120)}`,
+          input: {
+            scheduledBy: 'scheduler',
+            frequencyTier: tier,
+            scheduledAt: new Date().toISOString(),
+          },
+          projectId: 'organism',
+        });
+        lastRunMap.set(agent, Date.now());
+        createdTasks = true;
+      } catch (err) {
+        // Duplicate detection may fire if the same scheduled task was already created today
+        console.warn(`[Scheduler] Skipped ${agent}: ${(err as Error).message}`);
+        lastRunMap.set(agent, Date.now()); // Mark as run to avoid retry spam
+      }
+    }
+  }
+
+  // Dispatch all pending tasks (including any we just created)
+  if (createdTasks || getPendingTasks().length > 0) {
+    try {
+      await dispatchPendingTasks();
+    } catch (err) {
+      console.error(`[Scheduler] Error during dispatch:`, err);
     }
   }
 

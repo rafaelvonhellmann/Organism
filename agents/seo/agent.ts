@@ -1,7 +1,6 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
 
 const SEO_SYSTEM = `You are the SEO Agent for Organism. You produce structured SEO briefs — never content, never strategy decks.
 
@@ -71,27 +70,14 @@ Topic: ${topic}
 Task: ${task.description}
 
 Context:
-${JSON.stringify(input, null, 2)}
+${JSON.stringify(input)}
 
 Output the structured SEO brief directly. No preamble.`;
 
     const result = await callModelUltra(prompt, 'sonnet', SEO_SYSTEM);
 
-    createTask({
-      agent: 'quality-agent',
-      lane: 'LOW',
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
-      output: { brief: result.text, topic, qualityReviewQueued: true },
+      output: { brief: result.text, topic },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
   }

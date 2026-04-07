@@ -1,7 +1,6 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
 
 const SYSTEM = `You are a data analyst producing actionable insights for Organism and its products.
 
@@ -78,21 +77,8 @@ Produce your analysis brief.`;
 
     const result = await callModelUltra(prompt, 'sonnet', SYSTEM);
 
-    createTask({
-      agent: 'quality-agent',
-      lane: 'LOW',
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
-      output: { analysis: result.text, qualityReviewQueued: true },
+      output: { analysis: result.text },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
   }

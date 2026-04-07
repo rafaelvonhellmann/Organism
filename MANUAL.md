@@ -668,6 +668,10 @@ knowledge/
 │
 ├── business-model/          ← ROI frameworks (shared across projects)
 ├── marketing/               ← popularize playbook (shared across projects)
+├── palate/                  ← Palate knowledge injection system
+│   ├── sources.json         ← curated source registry
+│   ├── sources/             ← downloaded external sources
+│   └── wiki/                ← living wiki pages (auto-maintained)
 ├── capability-registry.json ← agent roster
 └── error-taxonomy.json      ← error codes reference
 ```
@@ -753,6 +757,69 @@ Every `wiki/` directory has an `INDEX.md`. Agents read this first to find releva
 ## Recent additions
 - 2026-04-04: Added opioid pharmacology (from Miller's Ch. 12)
 ```
+
+### The Palate (automatic knowledge injection)
+
+The Palate (`packages/core/src/palate.ts`) automatically injects relevant knowledge sources into every task. When a task is submitted, the Palate:
+
+1. Matches the task description against capabilities in `capability-registry.json`
+2. Collects `knowledgeSources` from all matching capabilities (deduplicated)
+3. Also checks `knowledge/palate/sources.json` for approved registry sources
+4. Distills each source to ~30% via Haiku (cached by content hash at `state/palate-cache/`)
+5. Injects the distilled content into `task.input.knowledgeSources`
+6. Logs telemetry as a `source_injection` audit entry
+
+**CLI commands:**
+
+```bash
+# View registered sources and their fitness scores
+npm run organism "palate list"
+
+# View injection telemetry (token savings, cache hits, per-capability counts)
+npm run organism "palate stats"
+
+# Add a local knowledge source (unapproved by default)
+npm run organism "palate add knowledge/my-doc.md strategy,finance"
+
+# Add from URL (fetched, sanitized, 50KB max, unapproved)
+npm run organism "palate add https://example.com/article.html marketing"
+
+# Approve a source for injection
+npm run organism "palate approve my-doc"
+
+# Remove a source
+npm run organism "palate remove my-doc"
+
+# Rate a wiki page (feeds into Darwinian source fitness)
+npm run organism "rate marketing 4 solid channel strategy coverage"
+```
+
+**Source trust boundaries:**
+- External URLs are fetched but never auto-approved
+- HTML is stripped to plaintext (scripts/forms/iframes removed)
+- Max 50KB per source (larger are truncated)
+- Only `approved: true` sources enter the injection path
+
+**Darwinian fitness:**
+Sources evolve through ratings. When you rate wiki pages, scores propagate to contributing sources:
+- Pages rated 4-5 stars: contributing sources get +0.05 fitness
+- Pages rated 1-2 stars: contributing sources get -0.1 fitness
+- Sources unused for 30+ days: -0.02/week decay
+- Sources below 0.2 fitness become dormant (stop injecting)
+
+**Living wiki:**
+The `palate-wiki` agent (currently in shadow mode) writes domain-level wiki pages from approved sources at `knowledge/palate/wiki/`. Pages auto-split at 3000 words.
+
+**Key files:**
+
+| File | Purpose |
+|---|---|
+| `packages/core/src/palate.ts` | Resolution, distillation, injection |
+| `packages/core/src/palate-sources.ts` | Source registry CRUD, fitness updates |
+| `packages/core/src/palate-ratings.ts` | Wiki rating + fitness propagation |
+| `knowledge/palate/sources.json` | Source registry data |
+| `knowledge/palate/wiki/` | Wiki output directory |
+| `agents/palate-wiki/agent.ts` | Wiki writer agent |
 
 ---
 

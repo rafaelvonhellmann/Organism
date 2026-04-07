@@ -1,7 +1,7 @@
 import { BaseAgent } from '../../_base/agent.js';
 import { callModelUltra } from '../../_base/mcp-client.js';
 import { Task } from '../../../packages/shared/src/types.js';
-import { createTask } from '../../../packages/core/src/task-queue.js';
+import { createTask, getSiblingTaskOutputs } from '../../../packages/core/src/task-queue.js';
 
 const GRILL_ME_SYSTEM = `You are Grill-Me — the Socratic interrogator for Organism. You do NOT execute tasks. You challenge assumptions.
 
@@ -43,7 +43,7 @@ export default class GrillMeAgent extends BaseAgent {
   constructor() {
     super({
       name: 'grill-me',
-      model: 'sonnet',
+      model: 'haiku',
       capability: {
         id: 'quality.interrogation',
         owner: 'grill-me',
@@ -51,7 +51,7 @@ export default class GrillMeAgent extends BaseAgent {
         reviewerLane: 'LOW',
         description: 'Socratic interrogation of decisions — challenges assumptions and blind spots',
         status: 'shadow',
-        model: 'sonnet',
+        model: 'haiku',
         frequencyTier: 'on-demand',
         projectScope: 'all',
       },
@@ -70,11 +70,11 @@ export default class GrillMeAgent extends BaseAgent {
 Task description: ${originalDescription}
 
 Task input:
-${JSON.stringify(originalInput, null, 2)}
+${JSON.stringify(originalInput)}
 
 Apply the Socratic method. Produce your scrutiny report.`;
 
-    const result = await callModelUltra(prompt, 'sonnet', GRILL_ME_SYSTEM);
+    const result = await callModelUltra(prompt, 'haiku', GRILL_ME_SYSTEM);
 
     const shouldReclassify = result.text.includes('RECLASSIFY AS HIGH');
     const needsClarification = result.text.includes('NEEDS CLARIFICATION');
@@ -82,6 +82,14 @@ Apply the Socratic method. Produce your scrutiny report.`;
 
     // Create the real task for the intended agent, with Grill-Me's scrutiny attached
     const realTaskLane = shouldReclassify ? 'HIGH' : 'MEDIUM';
+
+    // Query sibling completed tasks (same parent) to inject cross-agent context
+    let relatedFindings: Array<{ agent: string; description: string; outputSummary: string }> = [];
+    if (task.parentTaskId) {
+      try {
+        relatedFindings = getSiblingTaskOutputs(task.parentTaskId, task.id);
+      } catch { /* non-critical */ }
+    }
 
     if (!shouldReclassify) {
       // Proceed — create the task for the intended agent with scrutiny attached
@@ -93,6 +101,7 @@ Apply the Socratic method. Produce your scrutiny report.`;
           ...originalInput as Record<string, unknown>,
           grillMeScrutiny: result.text,
           grillMeVerdict: verdict,
+          ...(relatedFindings.length > 0 ? { relatedFindings } : {}),
         },
         parentTaskId: task.id,
         projectId,
@@ -109,6 +118,7 @@ Apply the Socratic method. Produce your scrutiny report.`;
           grillMeScrutiny: result.text,
           grillMeVerdict: verdict,
           reclassifiedFrom: 'MEDIUM',
+          ...(relatedFindings.length > 0 ? { relatedFindings } : {}),
         },
         parentTaskId: task.id,
         projectId,

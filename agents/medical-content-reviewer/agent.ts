@@ -1,7 +1,6 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
 
 const SYSTEM = `You are a specialist medical education content reviewer for Australian anaesthesia and emergency medicine examinations.
 
@@ -80,21 +79,8 @@ Apply the evidence hierarchy. Flag any inaccuracies, safety concerns, or syllabu
 
     const result = await callModelUltra(prompt, 'sonnet', SYSTEM);
 
-    createTask({
-      agent: 'quality-agent',
-      lane: 'LOW',
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
-      output: { review: result.text, qualityReviewQueued: true },
+      output: { review: result.text },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
   }

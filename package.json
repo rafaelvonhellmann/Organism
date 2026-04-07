@@ -7,13 +7,20 @@
     "start": "tsx --experimental-sqlite scripts/start-daemon.ts",
     "morning-brief": "tsx --experimental-sqlite scripts/morning-brief.ts",
     "dashboard": "tsx --experimental-sqlite packages/dashboard/src/server.ts",
+    "dashboard-v2": "pnpm --filter dashboard-v2 dev",
     "health-check": "tsx --experimental-sqlite scripts/health-check.ts",
     "shadow-promote": "tsx --experimental-sqlite scripts/shadow-promote.ts",
     "migrate": "tsx --experimental-sqlite scripts/migrate.ts",
     "smoke-test": "tsx --experimental-sqlite scripts/smoke-test.ts",
     "review-synapse": "tsx --experimental-sqlite scripts/review-synapse.ts",
     "stixdb": "python packages/stixdb/start.py",
-    "organism": "tsx --experimental-sqlite scripts/cli.ts"
+    "organism": "tsx --experimental-sqlite scripts/cli.ts",
+    "sync-turso": "tsx --experimental-sqlite scripts/sync-turso.ts",
+    "execute": "tsx --experimental-sqlite scripts/execute-actions.ts",
+    "sync-agentation": "tsx --experimental-sqlite scripts/cli.ts sync-agentation",
+    "agentation": "tsx packages/agentation/server.ts",
+    "desktop": "cd packages/desktop && npx electron .",
+    "desktop:build": "cd packages/desktop && npx electron-builder"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -22,6 +29,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
+    "@libsql/client": "^0.17.2",
     "@playwright/mcp": "^0.0.70",
     "playwright": "^1.60.0-alpha-1774999321000"
   }

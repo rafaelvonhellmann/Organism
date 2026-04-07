@@ -2,7 +2,7 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getSystemStatus } from '../../core/src/orchestrator.js';
-import { getSpendSummary, getSystemSpend } from '../../core/src/budget.js';
+import { getSpendSummary, getSystemSpend, getTopCostAgents, getCostByLane, getHighestCostTasks, getBudgetOverruns } from '../../core/src/budget.js';
 import { getPendingTasks, getDeadLetterTasks } from '../../core/src/task-queue.js';
 import { readRecentForAgent } from '../../core/src/audit.js';
 
@@ -89,6 +89,26 @@ const server = http.createServer((req, res) => {
     const project = url.searchParams.get('project') ?? undefined;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(buildDashboardData(project), null, 2));
+    return;
+  }
+
+  // Cost observability endpoint — highest-cost agents, tasks, lanes, and overruns
+  if (req.url?.startsWith('/api/cost-report')) {
+    try {
+      const report = {
+        generatedAt: new Date().toISOString(),
+        topAgents: getTopCostAgents(15),
+        costByLane: getCostByLane(),
+        highestCostTasks: getHighestCostTasks(10),
+        budgetOverruns: getBudgetOverruns(15),
+        todaySpend: getSystemSpend(),
+      };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(report, null, 2));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(err) }));
+    }
     return;
   }
 

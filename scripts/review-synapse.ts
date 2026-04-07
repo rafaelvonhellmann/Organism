@@ -4,6 +4,8 @@
  * Run: npm run review-synapse
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { submitTask } from '../packages/core/src/orchestrator.js';
 import { dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
 
@@ -133,12 +135,22 @@ async function submitSynapseReviews() {
   console.log('Organism — 20-Agent Synapse Review (Evidence-Based)');
   console.log('==============================================\n');
 
+  // Write project context to filesystem — agents load it via loadProjectContext()
+  const contextDir = path.resolve(process.cwd(), 'knowledge/projects/synapse');
+  if (!fs.existsSync(contextDir)) fs.mkdirSync(contextDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(contextDir, 'review-context.json'),
+    JSON.stringify(SYNAPSE_CONTEXT),
+    'utf8',
+  );
+  console.log('  Context written to knowledge/projects/synapse/review-context.json\n');
+
   const tasks: Array<{ id: string; label: string }> = [];
 
   const submit = async (label: string, agent: string, desc: string) => {
-    // callModelUltra (8192 tokens) is used by agents via their own execute()
+    // Context lives on filesystem — only pass lightweight task-specific fields
     const id = await submitTask(
-      { description: desc + AGENT_DIRECTIVE, input: { context: SYNAPSE_CONTEXT }, projectId: 'synapse' },
+      { description: desc + AGENT_DIRECTIVE, input: { projectId: 'synapse' }, projectId: 'synapse' },
       { agent },
     );
     tasks.push({ id, label });
@@ -234,6 +246,45 @@ async function submitSynapseReviews() {
     await sleep(300);
   }
 
+  // ── Synthesis: consolidate all agent outputs into one report ────────────
+  console.log('\n=== Running Synthesis Agent ===\n');
+  {
+    const { getTask: getTaskForSynthesis, getCompletedTasksForProject, createTask: createSynthesisTask } = await import('../packages/core/src/task-queue.js');
+    const completedTasks = getCompletedTasksForProject('synapse', 2 * 60 * 60 * 1000);
+    const agentOutputs = completedTasks
+      .filter(t => t.agent !== 'synthesis' && t.agent !== 'grill-me' && t.agent !== 'codex-review' && t.agent !== 'quality-agent')
+      .map(t => {
+        const out = t.output as Record<string, unknown> | null;
+        const text = out
+          ? ((out.text as string) ?? (out.implementation as string) ?? (out.report as string) ?? JSON.stringify(out).slice(0, 2000))
+          : '';
+        return { agent: t.agent, description: t.description.slice(0, 200), output: text.slice(0, 2000) };
+      });
+
+    if (agentOutputs.length > 0) {
+      try {
+        createSynthesisTask({
+          agent: 'synthesis',
+          lane: 'LOW',
+          description: `Synthesis report: ${agentOutputs.length} agent outputs from Synapse review`,
+          input: { agentOutputs, projectId: 'synapse' },
+          projectId: 'synapse',
+        });
+        console.log(`Synthesis task created for ${agentOutputs.length} agent outputs. Dispatching...\n`);
+
+        // Run one more dispatch round to execute the synthesis
+        await dispatchPendingTasks();
+        await sleep(300);
+        // One more round in case of queuing delay
+        await dispatchPendingTasks();
+      } catch (err) {
+        console.warn('Synthesis task skipped:', (err as Error).message);
+      }
+    } else {
+      console.log('No completed agent outputs to synthesize.\n');
+    }
+  }
+
   // ── Results ───────────────────────────────────────────────────────────────
 
   console.log('\n=== Review Results ===\n');
@@ -261,6 +312,14 @@ async function submitSynapseReviews() {
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`Total cost: $${getSystemSpend().toFixed(4)}`);
   console.log('Full outputs: state/tasks.db\n');
+
+  // Auto-sync to Turso so dashboard sees results
+  try {
+    const { execSync } = await import('child_process');
+    console.log('Syncing to Turso...');
+    execSync('npx tsx --experimental-sqlite scripts/sync-to-turso.ts', { cwd: path.resolve(import.meta.dirname, '..'), stdio: 'inherit' });
+    console.log('Synced to Turso.\n');
+  } catch { console.warn('Turso sync skipped (non-critical).\n'); }
 }
 
 function sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }

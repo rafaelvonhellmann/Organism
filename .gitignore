@@ -8,6 +8,7 @@ state/shadow-runs.jsonl
 state/guardian-history.json
 state/guardian-shadow-*.json
 state/stixdb/
+state/palate-cache/
 e2e/screenshots/
 state/screenshots/
 e2e/tmp_guardian_*.spec.ts
@@ -18,5 +19,10 @@ __pycache__/
 .python-version
 venv/
 .venv/
+*.db-wal
+*.db-shm
+state/*.db-wal
+state/*.db-shm
+.next/
 .aidesigner/*
 !.aidesigner/.gitkeep

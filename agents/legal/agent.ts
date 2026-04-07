@@ -1,7 +1,6 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
 
 const LEGAL_SYSTEM = `You are Australian legal counsel for Organism. All advice is framed under Australian jurisdiction. Rafael is based in Australia; all products are Australian-operated.
 
@@ -79,34 +78,42 @@ export default class LegalAgent extends BaseAgent {
   }
 
   protected async execute(task: Task): Promise<{ output: unknown; tokensUsed?: number }> {
+    // Scope context to legal-relevant fields only — skip giant codeEvidence blobs
+    const input = task.input as Record<string, unknown>;
+    const scopedContext: Record<string, unknown> = {};
+    const LEGAL_FIELDS = ['jurisdiction', 'businessContext', 'description', 'output', 'originalDescription', 'reviewType', 'originalTaskId'];
+    for (const key of LEGAL_FIELDS) {
+      if (input?.[key] !== undefined) scopedContext[key] = input[key];
+    }
+    // Include only legal-relevant codeEvidence sub-fields (not the entire blob)
+    if (input?.codeEvidence && typeof input.codeEvidence === 'object') {
+      const ce = input.codeEvidence as Record<string, unknown>;
+      scopedContext.legalEvidence = {
+        copyrightAudit: ce.copyrightAudit,
+        securityAudit: ce.securityAudit,
+      };
+    }
+    // Cap the stringified output passed for review
+    if (scopedContext.output && typeof scopedContext.output === 'string') {
+      scopedContext.output = (scopedContext.output as string).slice(0, 4000);
+    }
+
+    const contextStr = JSON.stringify(scopedContext).slice(0, 6000);
+
     const prompt = `Australian legal analysis required.
 
-Task: ${task.description}
+Task: ${task.description.slice(0, 500)}
 
 Context:
-${JSON.stringify(task.input, null, 2)}
+${contextStr}
 
 Apply the relevant Australian legal frameworks. Produce all five sections: Jurisdiction, Risk Rating (with VERDICT and RISK level), Applicable Law (specific provisions cited), Required Actions, and Disclaimer. No preamble.`;
 
     const result = await callModelUltra(prompt, 'sonnet', LEGAL_SYSTEM);
 
-    createTask({
-      agent: 'quality-agent',
-      lane: 'LOW',
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
       output: {
         text: result.text,
-        qualityReviewQueued: true,
         jurisdiction: 'Australia',
         assessment: {
           jurisdictionNote: true,

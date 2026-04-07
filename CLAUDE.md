@@ -2,100 +2,106 @@
 
 ## What This Is
 
-Organism is a fully autonomous multi-agent company orchestration system. Rafael is the board member who reviews outputs at G4 gates. All other decisions are made autonomously.
+Organism is a living knowledge system. It applies domain perspectives in parallel to analyse, build, and evolve projects. Output is persistent, linked markdown in an Obsidian vault — files over apps. Rafael is the human-in-the-loop: Organism proposes, Rafael approves.
 
-## The Single Most Important Rule
+## Core Engine
 
-**Paperclip is the ONLY orchestrator. PraisonAI is a restricted tool provider.**
-
-Paperclip (`packages/core/`) owns:
+**Paperclip** (`packages/core/`) is the orchestrator. It owns:
 - Task creation, checkout, assignment, completion
 - Budget accounting and hard caps
 - Gate evaluation (G1-G4)
-- Agent lifecycle (start, stop, suspend)
+- Perspective lifecycle (activate, suspend, dormant)
 - Audit log writes
 - Capability registry reads
 - All scheduling decisions
 
-PraisonAI (`packages/mcp-sidecar/`) exposes exactly 5 MCP tools:
-1. `route_model(prompt, model_preference)` → LLM response
-2. `rag_retrieve(query, k)` → ranked context chunks
-3. `check_policy(action, context)` → pass/fail + reason
-4. `detect_doom_loop(call_sequence)` → signal + evidence
-5. `persist_memory(fact, graph_context)` → confirmation
+## Perspectives, Not Agents
 
-PraisonAI never creates tasks, writes to the budget, or calls another agent. If it tries, `OrganismError.MCP_CONTRACT_VIOLATION` is thrown and logged.
+Organism uses **perspectives** — domain lenses that analyse work through a specific competency (e.g. `security`, `architecture`, `pharmacology`, `cost`). Perspectives:
+- Run in **parallel**, not through a serial hierarchy
+- Each selects its own model (no central routing table)
+- Write findings to the **Obsidian vault** as linked markdown (`vault/<project>/`)
+- Evolve through **Darwinian fitness**: perspectives that produce value are prioritised; useless ones go dormant automatically
+- **Ask questions** when uncertain instead of assuming
+- **Research the internet** before forming opinions
 
-## Before Running Any Agent
+## Commands
 
-1. Start the dashboard: `pnpm --filter dashboard dev` (port 7391)
-2. Confirm dashboard shows "all agents: idle"
-3. Verify `state/tasks.db` exists (run migrations if not)
-4. Then and only then run agents
+| Command | What it does |
+|---|---|
+| `npm run organism "perspectives <project>"` | Run all active perspectives against a project |
+| `npm run organism "onboard <name>"` | Onboard a new project into the vault |
+| `npm run organism "palate list"` | Show registered knowledge sources + fitness |
+| `npm run organism "palate stats"` | Injection telemetry (token savings, cache hits) |
+| `npm run organism "palate add <path> tags"` | Register a knowledge source (unapproved) |
+| `npm run organism "palate approve <id>"` | Approve source for injection |
+| `npm run organism "rate <page> <1-5>"` | Rate a wiki page (feeds Darwinian fitness) |
+| `pnpm --filter dashboard dev` | Start dashboard on port 7391 (shows capability domains, not an org chart) |
 
-## Agent Communication
+## Palate (Knowledge Injection)
 
-- Agents never talk to each other directly
-- All inter-agent work goes through Paperclip's orchestrator (hub-and-spoke)
-- A2A protocol is only used as a message format, not a mesh
+The Palate (`packages/core/src/palate.ts`) injects capability-scoped knowledge into every task automatically. When a task matches a capability in `knowledge/capability-registry.json`, the Palate:
+
+1. Resolves which `knowledgeSources` apply (by capability + project, not agent name)
+2. Distills each source via Haiku to ~30% of original tokens (cached by content hash)
+3. Injects distilled content into `task.input.knowledgeSources`
+4. Logs injection telemetry (`source_injection` audit entries)
+
+Sources beyond the registry live in `knowledge/palate/sources.json`. All new sources require explicit approval before injection. The `palate-wiki` agent (shadow mode) writes wiki pages from sources; Rafael rates them; ratings propagate to source fitness via Darwinian decay.
+
+Key files: `palate.ts` (resolution + distillation), `palate-sources.ts` (registry CRUD + fitness), `palate-ratings.ts` (connoisseur loop), `agents/palate-wiki/agent.ts`.
+
+## File-Over-App Philosophy
+
+All knowledge output is plain markdown in the Obsidian vault. No proprietary formats, no databases for human-readable content. The vault is the source of truth for analysis, findings, and decisions. Files link to each other with `[[wikilinks]]`.
 
 ## Risk-Based Review Pipeline
 
 Every task is classified by `packages/core/src/risk-classifier.ts`:
 
-- **LOW** (50%): Quality Agent → auto-ship
-- **MEDIUM** (35%): Grill-Me → Quality Agent → Codex Review → auto-ship
-- **HIGH** (15%): Grill-Me → Quality Agent → Copyright → Legal → Security → Quality Guardian → Codex Review → G4 Board Gate
-
-## Model Routing
-
-- **Haiku**: risk classification, routing only
-- **Sonnet 4.6**: all agents by default (planning, execution, quality, strategy, code)
-- **Opus 4.6**: Quality Guardian ONLY
-- **GPT-4o**: Codex Review ONLY (one API call, not a full agent session)
+- **LOW** (50%): Quality Agent pipeline -> auto-ship
+- **MEDIUM** (35%): Grill-Me -> Quality Agent -> Codex Review -> auto-ship
+- **HIGH** (15%): Grill-Me -> Quality Agent -> Copyright -> Legal -> Security -> Quality Guardian -> Codex Review -> G4 Gate (Rafael approves)
 
 ## Shadow Mode
 
-No new agent goes live without shadow mode promotion:
-1. Register agent as `status: 'shadow'` in `knowledge/capability-registry.json`
+No new perspective goes live without shadow mode promotion:
+1. Register as `status: 'shadow'` in `knowledge/capability-registry.json`
 2. Run 10 shadow tasks (output discarded, logged to `state/shadow-runs.jsonl`)
 3. Run `scripts/shadow-promote.ts` after quality threshold is met
-4. Agent becomes `status: 'active'`
+4. Perspective becomes `status: 'active'`
 
 ## Error Handling
 
-All errors use `OrganismError` codes from `packages/shared/src/error-taxonomy.ts`. Every error logged to `state/audit.log` with: error code, task ID, agent, full context, recovery action.
+All errors use `OrganismError` codes from `packages/shared/src/error-taxonomy.ts`. Every error logged to `state/audit.log` with: error code, task ID, perspective, full context, recovery action.
 
-## Engineering Agent Git Rules
+## Engineering Git Rules
 
-- Feature branches only: `agent/engineering/<task-id>/<slug>`
-- All commits prefixed `[agent]`
+- Feature branches only: `organism/<task-id>/<slug>`
+- All commits prefixed `[organism]`
 - No `git push --force`, `git reset --hard`, `git commit --amend`
 - Cannot merge PRs — G4 gate only
 - Shadow checkpoints every 30 minutes to `shadow/<task-id>`
 
 ## Secrets
 
-Never commit secrets. Never hardcode API keys. Load via `packages/shared/src/secrets.ts`. Each agent's `CLAUDE.md` declares required secrets in a `## Required Secrets` section.
+Never commit secrets. Never hardcode API keys. Load via `packages/shared/src/secrets.ts`. Each perspective's config declares required secrets in a `## Required Secrets` section.
 
 ## Session Start Protocol
 
-At the start of every agent session:
+At the start of every session:
 
-1. Read the last 5 audit log entries for that agent:
-```sql
-SELECT * FROM audit_log WHERE agent = ? ORDER BY ts DESC LIMIT 5
-```
-
-2. **Check the project tasklist** — before acting on any task for a known project, read its master tasklist if one exists. Look for these files in the project directory (in order):
+1. Read the last 5 audit log entries:
+   ```sql
+   SELECT * FROM audit_log WHERE perspective = ? ORDER BY ts DESC LIMIT 5
+   ```
+2. **Check the project tasklist** — before acting on any task, read its master tasklist. Look for (in order):
    - `tasks/master_tasklist.md`
    - `TASKLIST.md`
    - `tasks/todo.md`
    - `.ai/tasklist.md`
    - `TODO.md`
-
-   The tasklist is ground truth for what is done, in progress, and pending. Never rely on context alone — the tasklist has the real DB state, completed sessions, and current priorities. If your task description contradicts the tasklist, flag it before proceeding.
-
+   The tasklist is ground truth. If your task contradicts the tasklist, flag it before proceeding.
 3. For Synapse specifically: `C:/Users/rafae/OneDrive/Desktop/synapse/tasks/master_tasklist.md`
 
 ## Token Discipline
@@ -107,10 +113,11 @@ SELECT * FROM audit_log WHERE agent = ? ORDER BY ts DESC LIMIT 5
 
 ## Investigation Before Opinion
 
-Every agent must investigate before giving an opinion. This means:
+Every perspective must investigate before giving an opinion:
 - Read the actual code, not just the task description
 - Check the project tasklist for what's already done or in progress
 - Verify claims by looking at real files, not assuming from summaries
+- Research the internet when external knowledge is needed
 - Never flag a problem without checking if it's already been addressed
 
 ## Problem + Solution Format (mandatory)
@@ -119,4 +126,4 @@ Every finding must include BOTH:
 1. **PROBLEM:** What is wrong, with evidence (file path, line number, actual code)
 2. **SOLUTION:** Concrete fix with implementation steps Rafael can execute
 
-Findings without solutions are not findings — they are noise. An agent that says "copyright is a risk" without checking if a copyright audit already exists is wasting Rafael's time.
+Findings without solutions are noise.

@@ -1,45 +1,77 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
+import * as fs from 'fs';
+import * as path from 'path';
 
-const DESIGN_SYSTEM = `You are the Design Agent for Organism. You write UI/UX specifications in markdown — you never produce actual design files, mockup images, or code.
+// Load UX knowledge base at module level for inclusion in every prompt
+function loadUxKnowledge(): string {
+  const uxDir = path.resolve(process.cwd(), 'knowledge/ux');
+  const files = ['laws-of-ux.md', 'nielsen-heuristics.md', '58-ui-rules.md'];
+  const sections: string[] = [];
 
-For every spec, output exactly this structure:
+  for (const file of files) {
+    const fullPath = path.join(uxDir, file);
+    if (fs.existsSync(fullPath)) {
+      sections.push(fs.readFileSync(fullPath, 'utf8'));
+    }
+  }
 
-## Design Spec — [component or screen name]
+  return sections.length > 0
+    ? `\n\n<ux-knowledge-base>\n${sections.join('\n\n---\n\n')}\n</ux-knowledge-base>`
+    : '';
+}
 
-**Component type:** [atom / molecule / organism / page]
-**Target screen sizes:** [mobile 390px / tablet 768px / desktop 1280px — list which apply]
+const UX_KNOWLEDGE = loadUxKnowledge();
 
+const DESIGN_SYSTEM = `You are the Design Agent for Organism — the guardian of user experience across all projects.
+
+You produce UI/UX specifications grounded in evidence-based design principles. Every decision must reference a specific UX law, Nielsen heuristic, or UI rule.
+
+## Core Principles
+
+1. **User Psychology First** — Every design decision cites a UX principle. "Fitts's Law: 48px touch target in thumb zone" not "big button."
+2. **Mobile-First** — 390px is primary. Touch targets >= 44px. Bottom-anchored actions. No horizontal scrolling.
+3. **Cognitive Load is the Enemy** — Tesler's Law (system absorbs complexity), Miller's Law (max 7 items), Hick's Law (max 3 choices per decision), progressive disclosure.
+4. **Accessibility Non-Negotiable** — WCAG 2.1 AA. Contrast 4.5:1. Focus indicators. ARIA labels. Color + text/icon always paired.
+5. **Content Over Chrome** — Whitespace is a feature. Every element earns its place. No decoration competing with content.
+
+## Output Structure
+
+For every spec, produce:
+
+## Design Spec — [Name]
+**Component type:** atom / molecule / organism / page
+**Target:** mobile-first 390px → 768px → 1280px
+**UX principles applied:** [list specific laws/heuristics/rules]
+
+### Information Hierarchy
 ### Layout & Grid
-[Describe the grid system, breakpoints, spacing scale (e.g., 4px base, multiples). Be explicit about column counts at each breakpoint.]
-
 ### Component Anatomy
-[List every sub-element with its role. E.g., "1. Header bar — sticky, 56px height, contains logo + nav links"]
-
-### Color Usage
-[Reference design tokens by name: primary-500, neutral-100, etc. If tokens are unknown, use semantic names: primary, surface, on-surface, error.]
-
+### Design Tokens
 ### Typography
-[Font family, size/weight for each text element. E.g., "Heading: 24px/700, Body: 16px/400, Caption: 12px/400"]
-
 ### Interaction States
-[For every interactive element: default / hover / focus / active / disabled / loading / error]
-
-### Accessibility Requirements
-[WCAG 2.1 AA minimum. List: contrast ratios, keyboard nav order, ARIA roles/labels, touch target sizes ≥ 44px]
-
-### Responsive Behaviour
-[What changes at each breakpoint. Collapse, reorder, hide/show rules.]
-
+### Micro-Interactions
+### Accessibility
+### Responsive Behavior
 ### Edge Cases
-[Empty state, loading state, error state, max content length]
 
-Rules:
-- If grillMeScrutiny is in the input, silently incorporate its concerns — never quote or reference it.
+## Design Tokens (Organism System)
+- Surface: primary (#09090b), secondary (#18181b), tertiary (#27272a)
+- Text: primary (#fafafa), secondary (#a1a1aa), tertiary (#71717a)
+- Accent: emerald-500 (#10b981)
+- Status: approved (green-500), rejected (red-500), changes (amber-500), pending (blue-500)
+- Font: Public Sans (display), JetBrains Mono (code)
+- Spacing: 4px base grid
+- Radius: sm 6px, md 8px, lg 12px, xl 16px
+
+## Hard Rules
 - Never write HTML, CSS, or JSX. Spec only.
-- Be precise. "large button" is not a spec. "48px height, 16px horizontal padding, border-radius 8px" is.`;
+- Every dimension is exact. "Large" is not a spec. "48px height, 16px padding, radius 8px" is.
+- Every color references a token name, never raw hex.
+- Mobile layout is primary. Desktop is the enhancement.
+- Self-audit against Nielsen's 10 before finalizing.
+- If grillMeScrutiny is in the input, silently address concerns.`;
 
 export default class DesignAgent extends BaseAgent {
   constructor() {
@@ -51,10 +83,10 @@ export default class DesignAgent extends BaseAgent {
         owner: 'design',
         collaborators: ['engineering'],
         reviewerLane: 'MEDIUM',
-        description: 'UI/UX specifications — component anatomy, layout, interaction states, accessibility',
-        status: 'shadow',
+        description: 'UI/UX specifications grounded in Laws of UX, Nielsen Heuristics, and 58 UI Rules. WCAG 2.1 AA. Mobile-first. Evidence-based design decisions.',
+        status: 'active',
         model: 'sonnet',
-        frequencyTier: 'on-demand',
+        frequencyTier: 'always-on',
         projectScope: 'all',
       },
     });
@@ -71,27 +103,16 @@ Component / screen: ${component}
 Task: ${task.description}
 
 Context:
-${JSON.stringify({ ...input, grillMeScrutiny: grillMeScrutiny || undefined }, null, 2)}
+${JSON.stringify({ ...input, grillMeScrutiny: grillMeScrutiny || undefined })}
 
-Output the design spec directly. No preamble, no meta-commentary.`;
+${UX_KNOWLEDGE}
+
+Cite specific UX laws, Nielsen heuristics, and UI rules in your spec. Output the design spec directly. No preamble.`;
 
     const result = await callModelUltra(prompt, 'sonnet', DESIGN_SYSTEM);
 
-    createTask({
-      agent: 'quality-agent',
-      lane: 'LOW',
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
-      output: { spec: result.text, component, qualityReviewQueued: true },
+      output: { spec: result.text, component, uxPrinciplesApplied: true },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
   }

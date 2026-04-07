@@ -1,7 +1,6 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
 
 const SYSTEM = `You are a security auditor applying OWASP Top 10 (2021) and Australian Privacy Act 1988 obligations.
 
@@ -70,38 +69,39 @@ export default class SecurityAuditAgent extends BaseAgent {
   protected async execute(task: Task): Promise<{ output: unknown; tokensUsed?: number }> {
     const input = task.input as Record<string, unknown>;
     const scope = (input?.scope as string) ?? 'full application';
-    const artifacts = (input?.artifacts as string) ?? '';
+    const rawArtifacts = (input?.artifacts as string) ?? '';
+    // Cap artifacts to prevent giant payloads
+    const artifacts = rawArtifacts.slice(0, 5000);
+
+    // For HIGH-lane review tasks, scope to security-relevant context only
+    const isReviewTask = (input?.reviewType as string) === 'high-lane-pipeline';
+    let contextBlock = '';
+    if (isReviewTask) {
+      // Only pass the output being reviewed + security-relevant fields
+      const output = ((input?.output as string) ?? '').slice(0, 4000);
+      const desc = (input?.originalDescription as string) ?? task.description;
+      contextBlock = `Output under review:\n---\n${output}\n---\n\nOriginal task: ${desc.slice(0, 300)}`;
+    } else {
+      contextBlock = artifacts || '(No artifacts provided — produce a security framework and checklist based on the task description)';
+    }
 
     const prompt = `Conduct a security audit.
 
-Task: ${task.description}
+Task: ${task.description.slice(0, 500)}
 
 Scope: ${scope}
 
 Artifacts / context provided:
 ---
-${artifacts || '(No artifacts provided — produce a security framework and checklist based on the task description)'}
+${contextBlock}
 ---
 
 Apply OWASP Top 10 (2021) and Australian Privacy Act obligations. Produce the full security audit report.`;
 
     const result = await callModelUltra(prompt, 'sonnet', SYSTEM);
 
-    createTask({
-      agent: 'quality-agent',
-      lane: 'LOW',
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
-      output: { report: result.text, qualityReviewQueued: true },
+      output: { report: result.text },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
   }

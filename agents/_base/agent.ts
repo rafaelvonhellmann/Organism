@@ -1,13 +1,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { readRecentForAgent } from '../../packages/core/src/audit.js';
-import { assertBudget, recordSpend, estimateCost, getAgentSpend } from '../../packages/core/src/budget.js';
-import { checkoutTask, completeTask, failTask, getPendingTasks, createTask } from '../../packages/core/src/task-queue.js';
+import { assertBudget, recordSpend, estimateCost, getAgentSpend, checkOverspend } from '../../packages/core/src/budget.js';
+import { checkoutTask, completeTask, failTask, awaitReviewTask, getPendingTasks, createTask, getSiblingTaskOutputs } from '../../packages/core/src/task-queue.js';
 import { writeAudit } from '../../packages/core/src/audit.js';
 import { evaluateG1 } from '../../packages/core/src/gates.js';
 import { Task, AgentCapability } from '../../packages/shared/src/types.js';
 import { OrganismError } from '../../packages/shared/src/error-taxonomy.js';
-import { storeTaskMemory, getWorkingMemory, isStixDBAvailable } from '../../packages/core/src/memory.js';
+import { storeTaskMemory, getWorkingMemory, isStixDBAvailable, searchAcrossAgents, CrossAgentResult } from '../../packages/core/src/memory.js';
+import { getCompactContext } from '../../packages/core/src/context-brief.js';
+import { recordBetSpend, checkBetCircuitBreaker } from '../../packages/core/src/shapeup.js';
+import { resolveTaskSources, loadDistilledSources } from '../../packages/core/src/palate.js';
 
 // Tasklist candidates — checked in order, first found wins
 const TASKLIST_CANDIDATES = [
@@ -32,6 +35,9 @@ export abstract class BaseAgent {
   protected readonly name: string;
   protected readonly model: AgentModel;
   protected readonly config: AgentConfig;
+  protected projectContext: Record<string, unknown> | null = null;
+  protected crossAgentMemory: CrossAgentResult[] = [];
+  protected relatedFindings: Array<{ agent: string; description: string; outputSummary: string }> = [];
   private heartbeatInterval?: ReturnType<typeof setInterval>;
 
   constructor(config: AgentConfig) {
@@ -52,21 +58,35 @@ export abstract class BaseAgent {
     return entries;
   }
 
-  // Load tasklist from project directory — ground truth for what's done/pending
-  protected loadTasklist(projectPath?: string): string | null {
-    const searchRoots = projectPath ? [projectPath] : [];
+  // Load tasklist from project directory — ground truth for what's done/pending.
+  // When projectId is provided, ONLY loads from that project's configured path
+  // to prevent cross-project context leaks.
+  protected loadTasklist(projectId?: string, projectPath?: string): string | null {
+    const searchRoots: string[] = [];
 
-    // Also check known project paths from project configs
-    const configDir = path.resolve(process.cwd(), 'knowledge/projects');
-    if (fs.existsSync(configDir)) {
-      for (const proj of fs.readdirSync(configDir)) {
+    if (projectId) {
+      // Scoped load: only look at the specific project's configured path
+      const configPath = path.resolve(process.cwd(), 'knowledge/projects', projectId, 'config.json');
+      if (fs.existsSync(configPath)) {
         try {
-          const cfg = JSON.parse(fs.readFileSync(path.join(configDir, proj, 'config.json'), 'utf8'));
+          const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          // If config has a direct tasklist path, try it first
           if (cfg.tasklist && fs.existsSync(cfg.tasklist)) {
-            searchRoots.push(path.dirname(cfg.tasklist));
+            const content = fs.readFileSync(cfg.tasklist, 'utf8');
+            console.log(`[${this.name}] Loaded tasklist for ${projectId}: ${cfg.tasklist} (${content.length} chars)`);
+            return content;
+          }
+          // Fall back to projectPath from config
+          if (cfg.projectPath) {
+            searchRoots.push(cfg.projectPath);
           }
         } catch { /* skip */ }
       }
+    }
+
+    // If a direct projectPath was provided, add it
+    if (projectPath) {
+      searchRoots.push(projectPath);
     }
 
     for (const root of searchRoots) {
@@ -78,6 +98,19 @@ export abstract class BaseAgent {
           return content;
         }
       }
+    }
+    return null;
+  }
+
+  // Load project review context from knowledge/projects/<id>/review-context.json
+  protected loadProjectContext(projectId: string): Record<string, unknown> | null {
+    const contextPath = path.resolve(process.cwd(), 'knowledge/projects', projectId, 'review-context.json');
+    if (fs.existsSync(contextPath)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(contextPath, 'utf8'));
+        console.log(`[${this.name}] Loaded project context for ${projectId} (${contextPath})`);
+        return data as Record<string, unknown>;
+      } catch { /* skip */ }
     }
     return null;
   }
@@ -132,6 +165,11 @@ export abstract class BaseAgent {
     const startedAt = Date.now();
     const maxRunTime = this.config.maxRunTimeMs ?? 30 * 60 * 1000;
 
+    // Load project context from filesystem if available
+    if (task.projectId) {
+      this.projectContext = this.loadProjectContext(task.projectId);
+    }
+
     writeAudit({
       agent: this.name,
       taskId: task.id,
@@ -171,6 +209,70 @@ export abstract class BaseAgent {
       failTask(task.id, `Timeout after ${maxRunTime}ms`);
     }, maxRunTime);
 
+    // Cross-agent memory: pull relevant findings from other agents before executing
+    try {
+      if (await isStixDBAvailable()) {
+        this.crossAgentMemory = await searchAcrossAgents(task.description, [], 5);
+        if (this.crossAgentMemory.length > 0) {
+          console.log(`[${this.name}] StixDB: ${this.crossAgentMemory.length} cross-agent memories for task ${task.id}`);
+        }
+      }
+    } catch { /* StixDB optional — don't block task execution */ }
+
+    // Sibling findings injection: load outputs from completed sibling tasks (same parent)
+    this.relatedFindings = [];
+    if (task.parentTaskId) {
+      try {
+        this.relatedFindings = getSiblingTaskOutputs(task.parentTaskId, task.id);
+        if (this.relatedFindings.length > 0) {
+          console.log(`[${this.name}] Loaded ${this.relatedFindings.length} sibling findings for task ${task.id}`);
+        }
+      } catch { /* non-critical — don't block task execution */ }
+    }
+
+    // Quality feedback loop: if this task carries quality feedback from a review,
+    // log it so the concrete agent's execute() can access it via task.input.qualityFeedback.
+    const taskInput = task.input as Record<string, unknown> | null;
+    if (taskInput?.qualityFeedback) {
+      console.log(`[${this.name}] Revision task — quality feedback attached from task ${taskInput.originalTaskId ?? 'unknown'}`);
+    }
+
+    // Merge project context into task.input using compact briefs (not raw giant context).
+    // Compact briefs include only the fields this agent actually needs, reducing token burn.
+    if (task.projectId && task.input && typeof task.input === 'object') {
+      const input = task.input as Record<string, unknown>;
+      if (!input.context && !input.codeEvidence) {
+        const compactCtx = getCompactContext(task.projectId, this.name);
+        if (compactCtx) {
+          try {
+            const briefFields = JSON.parse(compactCtx) as Record<string, unknown>;
+            (task as { input: unknown }).input = { ...briefFields, ...input };
+          } catch {
+            // Fallback to raw project context if brief parsing fails
+            if (this.projectContext) {
+              (task as { input: unknown }).input = { ...this.projectContext, ...input };
+            }
+          }
+        } else if (this.projectContext) {
+          // No brief available — fall back to raw context
+          (task as { input: unknown }).input = { ...this.projectContext, ...input };
+        }
+      }
+    }
+
+    // Palate: inject capability-scoped knowledge sources for this specific task.
+    // Resolves by capability + project (not agent name) — only fires when the
+    // matched capability actually declares knowledgeSources in the registry.
+    const sourceInjection = resolveTaskSources(task.description, task.projectId);
+    if (sourceInjection) {
+      const sources = await loadDistilledSources(sourceInjection, task.id, this.name);
+      if (Object.keys(sources).length > 0) {
+        const input = (task.input ?? {}) as Record<string, unknown>;
+        input.knowledgeSources = sources;
+        (task as { input: unknown }).input = input;
+      }
+    }
+
     try {
       const result = await this.execute(task);
       clearTimeout(timeoutHandle);
@@ -179,10 +281,116 @@ export abstract class BaseAgent {
       const costUsd = estimateCost(this.model, Math.floor(tokensUsed * 0.7), Math.floor(tokensUsed * 0.3));
 
       recordSpend(this.name, Math.floor(tokensUsed * 0.7), Math.floor(tokensUsed * 0.3), costUsd, task.projectId ?? 'organism');
+
+      // Bet spend tracking: if task is linked to a bet, record spend and check circuit breaker
+      if (task.betId) {
+        try {
+          recordBetSpend(task.betId, tokensUsed, costUsd);
+          const cbResult = checkBetCircuitBreaker(task.betId);
+          if (cbResult.tripped) {
+            writeAudit({
+              agent: this.name,
+              taskId: task.id,
+              action: 'budget_check',
+              payload: { betId: task.betId, exception: cbResult.exception, reason: cbResult.reason },
+              outcome: 'blocked',
+            });
+            console.warn(`[${this.name}] Bet ${task.betId} circuit breaker tripped: ${cbResult.reason}`);
+          }
+        } catch (betErr) {
+          console.warn(`[${this.name}] Bet spend tracking failed for bet ${task.betId}: ${betErr}`);
+        }
+      }
+
+      // HIGH lane + primary agents: queue review pipeline then pause for Rafael's review.
+      // Pipeline internals (grill-me, codex-review, quality-agent, quality-guardian)
+      // auto-complete as before — they ARE the review pipeline.
+      const PIPELINE_INTERNAL_AGENTS = [
+        'grill-me', 'codex-review', 'quality-agent', 'quality-guardian',
+        'legal', 'security-audit',
+      ];
+      const isPipelineInternal = PIPELINE_INTERNAL_AGENTS.includes(this.name);
+      if (task.lane === 'HIGH' && !isPipelineInternal) {
+        // Queue the HIGH-lane review pipeline with TRIGGER DISCIPLINE:
+        // Not all reviewers fire for every task. Match reviewers to task content.
+        const outputSummary = typeof result.output === 'object' && result.output !== null
+          ? (result.output as Record<string, unknown>).text ?? JSON.stringify(result.output).slice(0, 3000)
+          : String(result.output).slice(0, 3000);
+
+        // Determine which reviewers are relevant to this task
+        const reviewAgents = selectReviewers(task.description, this.name);
+
+        writeAudit({
+          agent: this.name,
+          taskId: task.id,
+          action: 'task_created',
+          payload: { reviewerSelection: reviewAgents, reason: 'trigger-discipline', allAvailable: ['legal', 'security-audit', 'quality-guardian', 'codex-review'] },
+          outcome: 'success',
+        });
+
+        for (const reviewer of reviewAgents) {
+          try {
+            createTask({
+              agent: reviewer,
+              lane: 'LOW', // review tasks themselves are LOW — they're read-only assessments
+              description: `HIGH-lane review (${reviewer}): "${task.description.slice(0, 80)}"`,
+              input: {
+                originalTaskId: task.id,
+                originalAgent: this.name,
+                originalDescription: task.description,
+                output: outputSummary,
+                reviewType: 'high-lane-pipeline',
+              },
+              parentTaskId: task.id,
+              projectId: task.projectId ?? 'organism',
+            });
+            console.log(`[${this.name}] Queued HIGH-lane review: ${reviewer} for task ${task.id}`);
+          } catch {
+            // Duplicate detection may fire — safe to ignore
+            console.warn(`[${this.name}] Skipped ${reviewer} review for task ${task.id} (duplicate or error)`);
+          }
+        }
+
+        awaitReviewTask(task.id, result.output, tokensUsed, costUsd);
+        console.log(`[${this.name}] Task ${task.id} → awaiting_review (G4 gate). Cost: $${costUsd.toFixed(4)}`);
+
+        writeAudit({
+          agent: this.name,
+          taskId: task.id,
+          action: 'task_completed',
+          payload: { durationMs: Date.now() - startedAt, tokensUsed, costUsd, awaitingReview: true, reviewsQueued: reviewAgents },
+          outcome: 'success',
+        });
+        return; // Stop here — no auto-chaining until Rafael approves
+      }
+
       completeTask(task.id, result.output, tokensUsed, costUsd);
 
-      // Auto-chain: for MEDIUM/HIGH tasks, also queue codex-review after quality-agent
-      if (task.lane === 'MEDIUM' || task.lane === 'HIGH') {
+      // Overspend detection — log or escalate if task exceeded budget estimate
+      const overspend = checkOverspend(this.name, task.id, task.lane, costUsd);
+      if (overspend) {
+        writeAudit({
+          agent: this.name,
+          taskId: task.id,
+          action: 'budget_check',
+          payload: {
+            overspend: true,
+            estimated: overspend.estimatedBudget,
+            actual: overspend.actualCost,
+            overPct: overspend.overPct.toFixed(0) + '%',
+            action: overspend.action,
+          },
+          outcome: overspend.action === 'ESCALATE' ? 'blocked' : 'success',
+        });
+        if (overspend.action === 'ESCALATE') {
+          console.error(`[${this.name}] OVERSPEND ESCALATION: Task ${task.id} cost $${overspend.actualCost.toFixed(4)} vs estimated $${overspend.estimatedBudget.toFixed(4)} (${overspend.overPct.toFixed(0)}% over)`);
+        } else if (overspend.action === 'PAUSE') {
+          console.warn(`[${this.name}] Overspend pause signal: ${overspend.overPct.toFixed(0)}% over budget for task ${task.id}`);
+        }
+      }
+
+      // Auto-chain: for MEDIUM tasks, queue codex-review
+      if (task.lane === 'MEDIUM') {
         try {
           createTask({
             agent: 'codex-review',
@@ -258,6 +466,90 @@ export abstract class BaseAgent {
     });
   }
 
+  /**
+   * Returns a prompt prefix when the task carries quality feedback from a review.
+   * Concrete agents can prepend this to their prompt so the LLM knows it's a revision.
+   * Returns empty string if no quality feedback is present.
+   */
+  protected getQualityFeedbackPrefix(task: Task): string {
+    const input = task.input as Record<string, unknown> | null;
+    if (!input?.qualityFeedback) return '';
+
+    const feedback = String(input.qualityFeedback).slice(0, 2000);
+    const origDesc = (input.originalDescription as string) ?? '';
+
+    return `⚠ REVISION REQUEST — A quality review flagged critical issues with a previous attempt at this task.
+
+Original task: ${origDesc}
+
+Quality feedback:
+---
+${feedback}
+---
+
+Address the issues raised above. Focus on the specific problems identified. Do NOT repeat the same approach that was rejected.
+
+`;
+  }
+
   // Implement in each concrete agent
   protected abstract execute(task: Task): Promise<{ output: unknown; tokensUsed?: number }>;
+}
+
+// ── Trigger discipline: select only relevant reviewers ───────────────────
+// Instead of firing all 4 expensive reviewers for every HIGH-lane task,
+// match reviewers to task content. Quality-guardian always fires (last line
+// of defence). Others fire only when their domain is relevant.
+//
+// This is AUDITABLE: the reviewer selection is logged in the audit trail.
+
+const SECURITY_TRIGGERS = [
+  'auth', 'password', 'token', 'session', 'oauth', 'rls', 'cors',
+  'xss', 'csrf', 'injection', 'owasp', 'security', 'vulnerability',
+  'encryption', 'secret', 'key', 'api key', 'privacy', 'data breach',
+  'rate limit', 'admin', 'sudo', 'root',
+];
+
+const LEGAL_TRIGGERS = [
+  'legal', 'compliance', 'gdpr', 'privacy act', 'copyright', 'license',
+  'terms', 'tos', 'disclaimer', 'consumer law', 'acl', 'ahpra', 'tga',
+  'contract', 'ip', 'intellectual property', 'subscription', 'billing',
+  'payment', 'refund', 'medical', 'health data', 'ndb',
+];
+
+const CODEX_TRIGGERS = [
+  'code', 'function', 'api', 'endpoint', 'database', 'query', 'sql',
+  'migration', 'deploy', 'feature', 'bug', 'fix', 'refactor', 'test',
+  'engineering', 'architecture', 'performance', 'component',
+];
+
+function selectReviewers(taskDescription: string, sourceAgent: string): string[] {
+  const desc = taskDescription.toLowerCase();
+  const reviewers: string[] = [];
+
+  // Quality Guardian ALWAYS fires for HIGH-lane tasks — it's the last line of defence
+  reviewers.push('quality-guardian');
+
+  // Security fires if task touches security-relevant areas
+  if (SECURITY_TRIGGERS.some(t => desc.includes(t))) {
+    reviewers.push('security-audit');
+  }
+
+  // Legal fires if task touches legal/compliance areas
+  if (LEGAL_TRIGGERS.some(t => desc.includes(t))) {
+    reviewers.push('legal');
+  }
+
+  // Codex review fires if task involves code or engineering
+  if (CODEX_TRIGGERS.some(t => desc.includes(t))) {
+    reviewers.push('codex-review');
+  }
+
+  // Fallback: if only quality-guardian matched, add codex-review as a second opinion
+  // to ensure at least 2 reviewers for HIGH-lane tasks.
+  if (reviewers.length === 1) {
+    reviewers.push('codex-review');
+  }
+
+  return reviewers;
 }

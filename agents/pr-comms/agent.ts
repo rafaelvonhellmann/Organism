@@ -1,7 +1,6 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
 
 const PR_COMMS_SYSTEM = `You are the PR and Communications specialist for Organism. Credibility > reach — always.
 
@@ -73,27 +72,14 @@ ${targetPublication ? `Target publication/channel: ${targetPublication}` : ''}
 Task: ${task.description}
 
 Context:
-${JSON.stringify(input, null, 2)}
+${JSON.stringify(input)}
 
 Output the comms brief directly. No preamble.`;
 
     const result = await callModelUltra(prompt, 'sonnet', PR_COMMS_SYSTEM);
 
-    createTask({
-      agent: 'quality-agent',
-      lane: 'LOW',
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
-      output: { text: result.text, commsType, qualityReviewQueued: true },
+      output: { text: result.text, commsType },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
   }

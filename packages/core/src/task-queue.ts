@@ -97,6 +97,125 @@ function runMigrations(db: DatabaseSync) {
     `ALTER TABLE tasks ADD COLUMN project_id TEXT NOT NULL DEFAULT 'organism'`,
     `ALTER TABLE agent_spend ADD COLUMN project_id TEXT NOT NULL DEFAULT 'organism'`,
     `CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)`,
+    `ALTER TABLE tasks ADD COLUMN quality_reviewed INTEGER NOT NULL DEFAULT 0`,
+    `CREATE TABLE IF NOT EXISTS clarifications (
+      id TEXT PRIMARY KEY,
+      task_id TEXT,
+      question TEXT NOT NULL,
+      answer TEXT,
+      context TEXT,
+      asked_at INTEGER NOT NULL,
+      answered_at INTEGER,
+      channel TEXT DEFAULT 'cli'
+    )`,
+    `CREATE TABLE IF NOT EXISTS perspective_fitness (
+      perspective_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      fitness_score REAL DEFAULT 0,
+      invocations INTEGER DEFAULT 0,
+      total_cost_usd REAL DEFAULT 0,
+      avg_quality_score REAL DEFAULT 0,
+      avg_rating REAL DEFAULT 0,
+      useful_count INTEGER DEFAULT 0,
+      dismissed_count INTEGER DEFAULT 0,
+      last_invoked INTEGER,
+      PRIMARY KEY (perspective_id, project_id)
+    )`,
+    `ALTER TABLE perspective_fitness ADD COLUMN fitness_score REAL DEFAULT 0`,
+    // ── Shape Up tables (bet-based execution) ──
+    `CREATE TABLE IF NOT EXISTS pitches (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      problem TEXT NOT NULL,
+      appetite TEXT NOT NULL DEFAULT 'small batch',
+      solution_sketch TEXT,
+      rabbit_holes TEXT,
+      no_gos TEXT,
+      shaped_by TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'organism',
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_pitches_project ON pitches(project_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pitches_status ON pitches(status)`,
+    `CREATE TABLE IF NOT EXISTS bets (
+      id TEXT PRIMARY KEY,
+      pitch_id TEXT,
+      title TEXT NOT NULL,
+      problem TEXT NOT NULL,
+      appetite TEXT NOT NULL DEFAULT 'small batch',
+      status TEXT NOT NULL DEFAULT 'pitch_draft',
+      shaped_by TEXT NOT NULL,
+      approved_by TEXT,
+      token_budget INTEGER NOT NULL DEFAULT 500000,
+      cost_budget_usd REAL NOT NULL DEFAULT 5.00,
+      tokens_used INTEGER NOT NULL DEFAULT 0,
+      cost_used_usd REAL NOT NULL DEFAULT 0,
+      no_gos TEXT,
+      rabbit_holes TEXT,
+      success_criteria TEXT,
+      project_id TEXT NOT NULL DEFAULT 'organism',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_bets_project ON bets(project_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_bets_status ON bets(status)`,
+    `CREATE TABLE IF NOT EXISTS bet_scopes (
+      id TEXT PRIMARY KEY,
+      bet_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      hill_phase TEXT NOT NULL DEFAULT 'figuring_out',
+      hill_progress INTEGER NOT NULL DEFAULT 0,
+      completed INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_bet_scopes_bet ON bet_scopes(bet_id)`,
+    `CREATE TABLE IF NOT EXISTS hill_updates (
+      id TEXT PRIMARY KEY,
+      bet_id TEXT NOT NULL,
+      scope_id TEXT,
+      hill_progress INTEGER NOT NULL,
+      note TEXT,
+      agent TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_hill_updates_bet ON hill_updates(bet_id)`,
+    `CREATE TABLE IF NOT EXISTS bet_decisions (
+      id TEXT PRIMARY KEY,
+      bet_id TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      reason TEXT,
+      decided_by TEXT NOT NULL,
+      exception_type TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_bet_decisions_bet ON bet_decisions(bet_id)`,
+    // Add bet_id to tasks for linking
+    `ALTER TABLE tasks ADD COLUMN bet_id TEXT`,
+    `CREATE INDEX IF NOT EXISTS idx_tasks_bet ON tasks(bet_id)`,
+    // ── Palate tables (knowledge taste system) ──
+    `CREATE TABLE IF NOT EXISTS source_fitness (
+      source_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'all',
+      fitness_score REAL DEFAULT 0.5,
+      injections INTEGER DEFAULT 0,
+      cited_in_good INTEGER DEFAULT 0,
+      cited_in_bad INTEGER DEFAULT 0,
+      last_injected INTEGER,
+      PRIMARY KEY (source_id, project_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS wiki_ratings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      page TEXT NOT NULL,
+      rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+      notes TEXT,
+      rated_by TEXT NOT NULL DEFAULT 'rafael',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_wiki_ratings_page ON wiki_ratings(page)`,
   ];
   for (const sql of additiveMigrations) {
     try { db.exec(sql); } catch { /* column/index already exists — safe to ignore */ }
@@ -110,6 +229,7 @@ export function createTask(params: {
   input: unknown;
   parentTaskId?: string;
   projectId?: string;
+  betId?: string;
 }): Task {
   const db = getDb();
   const id = crypto.randomUUID();
@@ -133,9 +253,9 @@ export function createTask(params: {
   }
 
   db.prepare(`
-    INSERT INTO tasks (id, agent, status, lane, description, input, input_hash, parent_task_id, project_id)
-    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-  `).run(id, params.agent, params.lane, params.description, inputJson, inputHash, params.parentTaskId ?? null, projectId);
+    INSERT INTO tasks (id, agent, status, lane, description, input, input_hash, parent_task_id, project_id, bet_id)
+    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, params.agent, params.lane, params.description, inputJson, inputHash, params.parentTaskId ?? null, projectId, params.betId ?? null);
 
   return getTask(id)!;
 }
@@ -157,6 +277,27 @@ export function completeTask(taskId: string, output: unknown, tokensUsed: number
     UPDATE tasks SET status = 'completed', output = ?, tokens_used = ?, cost_usd = ?, completed_at = ?
     WHERE id = ?
   `).run(JSON.stringify(output), tokensUsed, costUsd, Date.now(), taskId);
+}
+
+export function awaitReviewTask(taskId: string, output: unknown, tokensUsed: number, costUsd: number): void {
+  getDb().prepare(`
+    UPDATE tasks SET status = 'awaiting_review', output = ?, tokens_used = ?, cost_usd = ?, completed_at = ?
+    WHERE id = ?
+  `).run(JSON.stringify(output), tokensUsed, costUsd, Date.now(), taskId);
+}
+
+export function approveTask(taskId: string): void {
+  getDb().prepare(`
+    UPDATE tasks SET status = 'completed'
+    WHERE id = ? AND status = 'awaiting_review'
+  `).run(taskId);
+}
+
+export function rejectTask(taskId: string, reason: string): void {
+  getDb().prepare(`
+    UPDATE tasks SET status = 'failed', error = ?
+    WHERE id = ? AND status = 'awaiting_review'
+  `).run(reason, taskId);
 }
 
 export function failTask(taskId: string, error: string): void {
@@ -203,6 +344,75 @@ export function getDeadLetterTasks(): Task[] {
   return (rows as Record<string, unknown>[]).map(rowToTask);
 }
 
+/** Get recently completed tasks that have not yet been quality-reviewed. */
+export function getRecentCompletedTasks(limit = 20): Task[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM tasks
+       WHERE status = 'completed' AND quality_reviewed = 0
+       ORDER BY completed_at DESC
+       LIMIT ?`
+    )
+    .all(limit);
+  return (rows as Record<string, unknown>[]).map(rowToTask);
+}
+
+/** Mark tasks as quality-reviewed so they are not batched again. */
+export function markQualityReviewed(taskIds: string[]): void {
+  if (taskIds.length === 0) return;
+  const db = getDb();
+  const placeholders = taskIds.map(() => '?').join(',');
+  db.prepare(`UPDATE tasks SET quality_reviewed = 1 WHERE id IN (${placeholders})`).run(...taskIds);
+}
+
+/** Get completed sibling tasks (same parentTaskId, excluding a given task). */
+export function getSiblingTaskOutputs(
+  parentTaskId: string,
+  excludeTaskId: string,
+): Array<{ agent: string; description: string; outputSummary: string }> {
+  const rows = getDb()
+    .prepare(
+      `SELECT agent, description, output FROM tasks
+       WHERE parent_task_id = ? AND id != ? AND status = 'completed'
+       ORDER BY completed_at ASC`,
+    )
+    .all(parentTaskId, excludeTaskId) as Array<Record<string, unknown>>;
+
+  return rows.map((row) => {
+    let outputSummary = '';
+    if (row.output) {
+      try {
+        const parsed = JSON.parse(row.output as string);
+        outputSummary = typeof parsed === 'object' && parsed !== null
+          ? (parsed.text as string ?? JSON.stringify(parsed))
+          : String(parsed);
+      } catch {
+        outputSummary = String(row.output);
+      }
+    }
+    return {
+      agent: row.agent as string,
+      description: row.description as string,
+      outputSummary: outputSummary.slice(0, 500),
+    };
+  });
+}
+
+/** Get all completed tasks for a given project within a recent time window. */
+export function getCompletedTasksForProject(
+  projectId: string,
+  sinceMs: number = 60 * 60 * 1000,
+): Task[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM tasks
+       WHERE project_id = ? AND status = 'completed' AND completed_at > ?
+       ORDER BY completed_at ASC`,
+    )
+    .all(projectId, Date.now() - sinceMs) as Record<string, unknown>[];
+  return rows.map(rowToTask);
+}
+
 function rowToTask(row: Record<string, unknown>): Task {
   return {
     id: row.id as string,
@@ -220,5 +430,6 @@ function rowToTask(row: Record<string, unknown>): Task {
     error: row.error as string | undefined,
     parentTaskId: row.parent_task_id as string | undefined,
     projectId: (row.project_id as string | undefined) ?? 'organism',
+    betId: row.bet_id as string | undefined,
   };
 }

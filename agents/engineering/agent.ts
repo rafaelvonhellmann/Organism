@@ -1,7 +1,6 @@
 import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
-import { createTask } from '../../packages/core/src/task-queue.js';
 
 const ENGINEERING_SYSTEM = `You are the Engineering Agent for Organism. You implement features, fix bugs, and write production-quality code.
 
@@ -72,33 +71,17 @@ Task: ${task.description}
 
 ${grillMeScrutiny ? `Grill-Me scrutiny (address every blind spot and hard question):\n${grillMeScrutiny}\n` : ''}
 Context:
-${JSON.stringify(input, null, 2)}
+${JSON.stringify(input)}
 
 You are in SHADOW MODE. Produce a complete implementation plan and full code. Do not execute git commands.`;
 
     // Engineering tasks often need more tokens for full implementations
     const result = await callModelUltra(prompt, 'sonnet', ENGINEERING_SYSTEM);
 
-    // Queue quality review
-    createTask({
-      agent: 'quality-agent',
-      lane: task.lane,
-      description: `Quality review: "${task.description.slice(0, 80)}"`,
-      input: {
-        originalTaskId: task.id,
-        originalDescription: task.description,
-        output: result.text,
-        grillMeScrutiny,
-      },
-      parentTaskId: task.id,
-      projectId: task.projectId,
-    });
-
     return {
       output: {
         implementation: result.text,
         shadowMode: true,
-        qualityReviewQueued: true,
       },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
