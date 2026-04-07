@@ -171,6 +171,28 @@ function extractAssessment(output: unknown): string | null {
   return null;
 }
 
+/** Format the full output object with all sections rendered as markdown */
+function formatFullOutput(output: unknown): string {
+  if (!output) return '';
+  if (typeof output === 'string') return output;
+  if (typeof output !== 'object') return String(output);
+
+  const obj = output as Record<string, unknown>;
+  const sections: string[] = [];
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === null || value === undefined) continue;
+    const heading = key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
+    if (typeof value === 'string') {
+      sections.push(`### ${heading}\n\n${value}`);
+    } else if (typeof value === 'object') {
+      sections.push(`### ${heading}\n\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``);
+    } else {
+      sections.push(`### ${heading}\n\n${String(value)}`);
+    }
+  }
+  return sections.join('\n\n');
+}
+
 /** Condense a long assessment into a 2-3 sentence summary for the card view */
 function condenseAssessment(raw: string): string {
   const simplified = simplifyText(raw);
@@ -509,7 +531,7 @@ function ReviewQueueInner() {
         </div>
 
         {/* Main content area */}
-        <div className="flex-1 px-4 py-4 md:py-6 pb-28 md:pb-6">
+        <div className="flex-1 px-4 py-4 md:py-6 pb-28 md:pb-24">
           <div className="max-w-3xl mx-auto">
 
             {/* Error banner */}
@@ -645,7 +667,7 @@ function ReviewQueueInner() {
                         <div className="mt-2 pt-3 border-t border-zinc-800/50">
                           <div
                             className="max-w-none"
-                            dangerouslySetInnerHTML={{ __html: renderMarkdown(assessment) }}
+                            dangerouslySetInnerHTML={{ __html: renderMarkdown(formatFullOutput(currentTask.output)) }}
                           />
                           <button
                             onClick={() => setShowFullText(false)}
@@ -768,7 +790,7 @@ function ReviewQueueInner() {
 
         {/* Fixed action bar */}
         {currentTask && !showReplyForm && (
-          <div className="fixed bottom-0 left-0 right-0 z-40 md:relative md:z-auto bg-zinc-950 border-t border-zinc-800">
+          <div className="fixed bottom-0 left-0 right-0 md:left-56 z-40 bg-zinc-950 border-t border-zinc-800">
             <div className="max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
               {/* Mobile nav */}
               <div className="flex items-center gap-1 md:hidden">

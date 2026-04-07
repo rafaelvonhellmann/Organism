@@ -7,6 +7,7 @@
 
 const STIXDB_URL = process.env.STIXDB_URL ?? 'http://localhost:4020';
 const STIXDB_KEY = process.env.STIXDB_API_KEY ?? 'organism-stixdb-local';
+const STIXDB_DEBUG = !!process.env.STIXDB_DEBUG;
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -81,12 +82,12 @@ async function post<T>(path: string, body: unknown): Promise<T | null> {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      console.warn(`[memory] POST ${path} → ${res.status} ${res.statusText}`);
+      if (STIXDB_DEBUG) console.warn(`[memory] POST ${path} → ${res.status} ${res.statusText}`);
       return null;
     }
     return (await res.json()) as T;
   } catch (err) {
-    console.warn(`[memory] StixDB unreachable (POST ${path}):`, (err as Error).message);
+    if (STIXDB_DEBUG) console.warn(`[memory] StixDB unreachable (POST ${path}):`, (err as Error).message);
     return null;
   }
 }
@@ -98,12 +99,12 @@ async function get<T>(path: string): Promise<T | null> {
       headers: headers(),
     });
     if (!res.ok) {
-      console.warn(`[memory] GET ${path} → ${res.status} ${res.statusText}`);
+      if (STIXDB_DEBUG) console.warn(`[memory] GET ${path} → ${res.status} ${res.statusText}`);
       return null;
     }
     return (await res.json()) as T;
   } catch (err) {
-    console.warn(`[memory] StixDB unreachable (GET ${path}):`, (err as Error).message);
+    if (STIXDB_DEBUG) console.warn(`[memory] StixDB unreachable (GET ${path}):`, (err as Error).message);
     return null;
   }
 }

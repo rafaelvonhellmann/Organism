@@ -112,6 +112,28 @@ function extractAssessment(output: unknown): string | null {
   return null;
 }
 
+/** Format the full output object with all sections rendered as markdown */
+function formatFullOutput(output: unknown): string {
+  if (!output) return '';
+  if (typeof output === 'string') return output;
+  if (typeof output !== 'object') return String(output);
+
+  const obj = output as Record<string, unknown>;
+  const sections: string[] = [];
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === null || value === undefined) continue;
+    const heading = key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
+    if (typeof value === 'string') {
+      sections.push(`### ${heading}\n\n${value}`);
+    } else if (typeof value === 'object') {
+      sections.push(`### ${heading}\n\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``);
+    } else {
+      sections.push(`### ${heading}\n\n${String(value)}`);
+    }
+  }
+  return sections.join('\n\n');
+}
+
 /** Create a brief human-readable title from the description */
 function briefTitle(desc: string, agent: string): string {
   const roles: Record<string, string> = {
@@ -265,7 +287,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
                 <div className="p-5">
                   <div
                     className="max-w-none"
-                    dangerouslySetInnerHTML={{ __html: renderMarkdown(assessment) }}
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(formatFullOutput(t.output)) }}
                   />
                 </div>
 
@@ -381,7 +403,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
                 {t.input != null && (
                   <div className="bg-surface rounded-xl border border-edge p-4">
                     <h4 className="text-xs font-medium text-zinc-500 mb-2">Raw Input</h4>
-                    <pre className="text-xs text-zinc-400 bg-zinc-900 rounded-lg p-3 overflow-auto max-h-48 font-mono">
+                    <pre className="text-xs text-zinc-400 bg-zinc-900 rounded-lg p-3 overflow-auto max-h-[600px] font-mono">
                       {typeof t.input === 'string' ? t.input : JSON.stringify(t.input, null, 2)}
                     </pre>
                   </div>
@@ -389,7 +411,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
                 {t.output != null && (
                   <div className="bg-surface rounded-xl border border-edge p-4">
                     <h4 className="text-xs font-medium text-zinc-500 mb-2">Raw Output</h4>
-                    <pre className="text-xs text-zinc-400 bg-zinc-900 rounded-lg p-3 overflow-auto max-h-48 font-mono">
+                    <pre className="text-xs text-zinc-400 bg-zinc-900 rounded-lg p-3 overflow-auto max-h-[600px] font-mono">
                       {typeof t.output === 'string' ? t.output : JSON.stringify(t.output, null, 2)}
                     </pre>
                   </div>

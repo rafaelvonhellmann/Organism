@@ -49,6 +49,18 @@ const DEFAULT_CAPS: Record<string, number> = {
   'perspectives': 50.00,
 };
 
+const PER_TASK_HARD_CAPS: Record<string, number> = {
+  'security-audit': 3.00,
+  'product-manager': 2.00,
+};
+
+export function getPerTaskHardCap(agent: string): number | null {
+  return PER_TASK_HARD_CAPS[agent] ?? null;
+}
+
+export const MAX_REVISIONS = 2;
+export const REVISION_COST_CAP = 2.00;
+
 // ── Per-task estimated budget by lane ──────────────────────────────────────
 // Used for pre-flight budget checks and overspend detection.
 const TASK_BUDGET_BY_LANE: Record<RiskLane, number> = {

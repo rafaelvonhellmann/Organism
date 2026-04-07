@@ -100,8 +100,12 @@ Apply OWASP Top 10 (2021) and Australian Privacy Act obligations. Produce the fu
 
     const result = await callModelUltra(prompt, 'sonnet', SYSTEM);
 
+    const text = result.text.length > 4000
+      ? result.text.slice(0, 4000) + '\n\n[TRUNCATED: output exceeded 4000 char cap]'
+      : result.text;
+
     return {
-      output: { report: result.text },
+      output: { report: text },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
   }

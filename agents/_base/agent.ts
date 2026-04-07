@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { readRecentForAgent } from '../../packages/core/src/audit.js';
-import { assertBudget, recordSpend, estimateCost, getAgentSpend, checkOverspend } from '../../packages/core/src/budget.js';
+import { assertBudget, recordSpend, estimateCost, getAgentSpend, checkOverspend, getPerTaskHardCap } from '../../packages/core/src/budget.js';
 import { checkoutTask, completeTask, failTask, awaitReviewTask, getPendingTasks, createTask, getSiblingTaskOutputs } from '../../packages/core/src/task-queue.js';
 import { writeAudit } from '../../packages/core/src/audit.js';
 import { evaluateG1 } from '../../packages/core/src/gates.js';
@@ -278,7 +278,13 @@ export abstract class BaseAgent {
       clearTimeout(timeoutHandle);
 
       const tokensUsed = result.tokensUsed ?? 0;
-      const costUsd = estimateCost(this.model, Math.floor(tokensUsed * 0.7), Math.floor(tokensUsed * 0.3));
+      let costUsd = estimateCost(this.model, Math.floor(tokensUsed * 0.7), Math.floor(tokensUsed * 0.3));
+
+      const hardCap = getPerTaskHardCap(this.name);
+      if (hardCap && costUsd > hardCap) {
+        console.warn(`[${this.name}] Per-task hard cap hit: $${costUsd.toFixed(4)} > $${hardCap.toFixed(2)} — clamping`);
+        costUsd = hardCap;
+      }
 
       recordSpend(this.name, Math.floor(tokensUsed * 0.7), Math.floor(tokensUsed * 0.3), costUsd, task.projectId ?? 'organism');
 
@@ -504,10 +510,10 @@ Address the issues raised above. Focus on the specific problems identified. Do N
 // This is AUDITABLE: the reviewer selection is logged in the audit trail.
 
 const SECURITY_TRIGGERS = [
-  'auth', 'password', 'token', 'session', 'oauth', 'rls', 'cors',
-  'xss', 'csrf', 'injection', 'owasp', 'security', 'vulnerability',
-  'encryption', 'secret', 'key', 'api key', 'privacy', 'data breach',
-  'rate limit', 'admin', 'sudo', 'root',
+  'auth', 'authentication', 'security', 'owasp', 'vulnerability', 'cve',
+  'encryption', 'credentials', 'permissions', 'injection', 'xss', 'csrf',
+  'cors', 'rls', 'session hijack', 'data breach', 'data exposure',
+  'api security', 'infra security',
 ];
 
 const LEGAL_TRIGGERS = [

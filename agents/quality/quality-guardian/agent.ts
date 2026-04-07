@@ -1,7 +1,8 @@
 import { BaseAgent } from '../../_base/agent.js';
 import { callModelUltra } from '../../_base/mcp-client.js';
 import { Task } from '../../../packages/shared/src/types.js';
-import { getTask, createTask } from '../../../packages/core/src/task-queue.js';
+import { getTask, createTask, countRevisions, getRevisionChainCost } from '../../../packages/core/src/task-queue.js';
+import { MAX_REVISIONS, REVISION_COST_CAP } from '../../../packages/core/src/budget.js';
 
 const GUARDIAN_SYSTEM = `You are the Quality Guardian for Organism — the deepest, most thorough quality audit in the pipeline. You are the last line of defence before G4 board review.
 
@@ -124,22 +125,31 @@ Apply the 6-phase audit. Produce the structured Quality Guardian Report. Begin d
     if (!approved && originalTaskId && criticalIssues > 0) {
       const parentTask = getTask(originalTaskId);
       if (parentTask) {
-        try {
-          createTask({
-            agent: parentTask.agent,
-            lane: 'LOW',
-            description: `Revision needed: Quality Guardian flagged ${criticalIssues} critical issue(s) in "${parentTask.description.slice(0, 80)}"`,
-            input: {
-              qualityFeedback: result.text,
-              originalTaskId,
-              originalDescription: parentTask.description,
-            },
-            parentTaskId: originalTaskId,
-            projectId: parentTask.projectId ?? 'organism',
-          });
-          console.log(`[quality-guardian] Revision task created for '${parentTask.agent}' (original task ${originalTaskId})`);
-        } catch {
-          console.warn(`[quality-guardian] Could not create revision task for ${originalTaskId}`);
+        const originalId = (task.input as Record<string, unknown>)?.originalTaskId as string ?? task.id;
+        const revCount = countRevisions(originalId);
+        const chainCost = getRevisionChainCost(originalId);
+        if (revCount >= MAX_REVISIONS) {
+          console.warn(`[quality-guardian] Revision cap reached (${revCount}/${MAX_REVISIONS}) for ${originalId} — skipping`);
+        } else if (chainCost >= REVISION_COST_CAP) {
+          console.warn(`[quality-guardian] Revision cost cap reached ($${chainCost.toFixed(2)}/$${REVISION_COST_CAP}) for ${originalId} — skipping`);
+        } else {
+          try {
+            createTask({
+              agent: parentTask.agent,
+              lane: 'LOW',
+              description: `Revision needed: Quality Guardian flagged ${criticalIssues} critical issue(s) in "${parentTask.description.slice(0, 80)}"`,
+              input: {
+                qualityFeedback: result.text,
+                originalTaskId,
+                originalDescription: parentTask.description,
+              },
+              parentTaskId: originalTaskId,
+              projectId: parentTask.projectId ?? 'organism',
+            });
+            console.log(`[quality-guardian] Revision task created for '${parentTask.agent}' (original task ${originalTaskId})`);
+          } catch {
+            console.warn(`[quality-guardian] Could not create revision task for ${originalTaskId}`);
+          }
         }
       }
     }

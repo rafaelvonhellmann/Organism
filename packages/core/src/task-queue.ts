@@ -413,6 +413,23 @@ export function getCompletedTasksForProject(
   return rows.map(rowToTask);
 }
 
+/** Count how many revision tasks exist for a given original task. */
+export function countRevisions(originalTaskId: string): number {
+  const row = getDb().prepare(`
+    SELECT COUNT(*) as cnt FROM tasks WHERE input LIKE ?
+  `).get(`%"originalTaskId":"${originalTaskId}"%`) as { cnt: number } | undefined;
+  return row?.cnt ?? 0;
+}
+
+/** Sum total cost of a revision chain (original + all revisions). */
+export function getRevisionChainCost(originalTaskId: string): number {
+  const row = getDb().prepare(`
+    SELECT COALESCE(SUM(cost_usd), 0) as total FROM tasks
+    WHERE id = ? OR input LIKE ?
+  `).get(originalTaskId, `%"originalTaskId":"${originalTaskId}"%`) as { total: number } | undefined;
+  return row?.total ?? 0;
+}
+
 function rowToTask(row: Record<string, unknown>): Task {
   return {
     id: row.id as string,
