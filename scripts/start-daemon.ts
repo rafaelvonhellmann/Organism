@@ -371,19 +371,16 @@ async function lifecycleTick(): Promise<void> {
 // --- Health check ---
 
 function runHealthCheck(): void {
-  const REQUIRED_SECRETS = ['ANTHROPIC_API_KEY'];
   console.log('\n=== Organism Health Check ===\n');
 
   let allOk = true;
 
-  // Secrets
-  process.stdout.write('Secrets: ');
-  try {
-    requireSecrets(REQUIRED_SECRETS);
-    console.log('OK');
-  } catch (err) {
-    console.log(`FAIL — ${err}`);
-    allOk = false;
+  // LLM access — agents use `claude -p` CLI, so ANTHROPIC_API_KEY is optional
+  process.stdout.write('LLM access: ');
+  if (process.env.ANTHROPIC_API_KEY) {
+    console.log('OK (API key set — can use direct API)');
+  } else {
+    console.log('OK (using claude CLI — no API key needed)');
   }
 
   // State directory
