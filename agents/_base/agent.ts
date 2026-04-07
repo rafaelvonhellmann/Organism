@@ -533,6 +533,12 @@ function selectReviewers(taskDescription: string, sourceAgent: string): string[]
   const desc = taskDescription.toLowerCase();
   const reviewers: string[] = [];
 
+  // Shaping tasks are internal pipeline work — only quality-guardian reviews them
+  if (desc.includes('[shaping]') || desc.includes('shaping_complete')) {
+    reviewers.push('quality-guardian');
+    return reviewers;
+  }
+
   // Quality Guardian ALWAYS fires for HIGH-lane tasks — it's the last line of defence
   reviewers.push('quality-guardian');
 
