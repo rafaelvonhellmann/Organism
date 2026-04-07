@@ -6,9 +6,11 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { submitTask } from '../packages/core/src/orchestrator.js';
 import { dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
 import { filterDueAgents } from '../packages/core/src/review-scheduler.js';
+import { createCycle, completeCycle } from '../packages/core/src/task-queue.js';
 
 // ── Actual code evidence from the Synapse codebase ──────────────────────────
 // These are REAL snippets, not metadata. Agents must reference these, not guess.
@@ -253,6 +255,15 @@ async function submitSynapseReviews() {
 
   console.log(`\n${tasks.length} tasks submitted (${skipped} skipped by self-scheduling). Processing...\n`);
 
+  // ── Record review cycle ──────────────────────────────────────────────────
+  const cycleId = crypto.randomUUID();
+  try {
+    createCycle(cycleId, 'synapse', tasks.length, dueAgents.length);
+    console.log(`  Cycle ${cycleId.slice(0, 8)} created (${tasks.length} tasks, ${dueAgents.length} agents)\n`);
+  } catch (err) {
+    console.warn('Cycle creation skipped:', (err as Error).message);
+  }
+
   let round = 0;
   const maxRounds = 40;
   while (round < maxRounds) {
@@ -326,6 +337,14 @@ async function submitSynapseReviews() {
     console.log(`## ${label}\n`);
     console.log(text.slice(0, 2000));
     if (text.length > 2000) console.log(`\n[... ${text.length - 2000} more chars in state/tasks.db]`);
+  }
+
+  // ── Complete the review cycle ──────────────────────────────────────────
+  try {
+    completeCycle(cycleId);
+    console.log(`  Cycle ${cycleId.slice(0, 8)} completed.\n`);
+  } catch (err) {
+    console.warn('Cycle completion skipped:', (err as Error).message);
   }
 
   const { getSystemSpend } = await import('../packages/core/src/budget.js');

@@ -4,6 +4,7 @@ import { Sidebar } from '@/components/sidebar';
 import { BottomNav } from '@/components/bottom-nav';
 import { ThemeProvider } from '@/components/theme-provider';
 import { AuthGate } from '@/components/auth-gate';
+import { ShortcutProvider } from '@/components/shortcut-provider';
 
 export const metadata: Metadata = {
   title: 'Organism — Living Knowledge System',
@@ -24,11 +25,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="antialiased">
         <ThemeProvider>
           <AuthGate>
-            <Sidebar />
-            <main className="ml-0 md:ml-56 pt-14 md:pt-0 pb-16 md:pb-0 min-h-screen">
-              {children}
-            </main>
-            <BottomNav />
+            <ShortcutProvider>
+              <Sidebar />
+              <main className="ml-0 md:ml-56 pt-14 md:pt-0 pb-16 md:pb-0 min-h-screen">
+                {children}
+              </main>
+              <BottomNav />
+            </ShortcutProvider>
           </AuthGate>
         </ThemeProvider>
       </body>

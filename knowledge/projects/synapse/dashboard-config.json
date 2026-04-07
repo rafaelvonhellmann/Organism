@@ -1,0 +1,14 @@
+{
+  "name": "Synapse",
+  "connections": {
+    "organism": {}
+  },
+  "widgets": [
+    { "type": "stat", "label": "Total Reviews", "source": "organism", "metric": "review_count" },
+    { "type": "stat", "label": "Total Spend", "source": "organism", "metric": "total_spend" },
+    { "type": "stat", "label": "Active Agents", "source": "organism", "metric": "active_agents" },
+    { "type": "stat", "label": "Findings", "source": "organism", "metric": "finding_count" },
+    { "type": "progress", "label": "Reviews Approved", "source": "organism", "metric": "approval_rate" },
+    { "type": "stat", "label": "Avg Cost/Review", "source": "organism", "metric": "avg_review_cost" }
+  ]
+}

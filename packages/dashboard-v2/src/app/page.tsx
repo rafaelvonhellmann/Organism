@@ -1,11 +1,12 @@
 'use client';
 
-import { Suspense, useState, useEffect, useCallback, useRef } from 'react';
+import { Suspense, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Header } from '@/components/header';
 import { StatusBadge } from '@/components/status-badge';
 import { renderMarkdown, cleanForDisplay } from '@/lib/markdown';
 import { usePolling } from '@/hooks/use-polling';
+import { useKeyboardShortcuts } from '@/hooks/use-keyboard';
 import Link from 'next/link';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -441,25 +442,6 @@ function ReviewQueueInner() {
     }
   }, [showReplyForm]);
 
-  // Keyboard shortcuts: A=approve, R=reply, D=dismiss, J/→=next, K/←=prev, S=skip
-  useEffect(() => {
-    function handleKey(e: KeyboardEvent) {
-      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
-      if (!currentTask || deciding) return;
-
-      switch (e.key.toLowerCase()) {
-        case 'a': handleApprove(); break;
-        case 'r': if (!showReplyForm) setShowReplyForm(true); break;
-        case 'd': handleDismiss(); break;
-        case 's': handleSkip(); break;
-        case 'j': case 'arrowright': goToNext(); break;
-        case 'k': case 'arrowleft': goToPrev(); break;
-      }
-    }
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  });
-
   // Browser notification when new HIGH items arrive
   useEffect(() => {
     if (queue.length > prevQueueLenRef.current && prevQueueLenRef.current > 0) {
@@ -642,6 +624,20 @@ function ReviewQueueInner() {
   const urgency = currentTask ? urgencyLabel(currentTask.lane) : null;
   const queueEmpty = !loading && queue.length === 0;
   const sessionTotal = sessionStats.approved + sessionStats.replied + sessionStats.dismissed + sessionStats.skipped;
+
+  // Inbox-specific keyboard shortcuts via global hook
+  const inboxHandlers = useMemo(() => ({
+    a: () => { if (currentTask && !deciding) handleApprove(); },
+    d: () => { if (currentTask && !deciding) handleDismiss(); },
+    s: () => { if (currentTask && !deciding) handleSkip(); },
+    r: () => { if (currentTask && !deciding && !showReplyForm) setShowReplyForm(true); },
+    j: () => { if (currentTask) goToNext(); },
+    k: () => { if (currentTask) goToPrev(); },
+    arrowright: () => { if (currentTask) goToNext(); },
+    arrowleft: () => { if (currentTask) goToPrev(); },
+  }), [currentTask, deciding, showReplyForm]);
+
+  useKeyboardShortcuts(inboxHandlers);
 
   // ── Render ─────────────────────────────────────────────────────
 

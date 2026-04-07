@@ -253,6 +253,28 @@ export async function ensureTables(): Promise<void> {
       ON dashboard_actions(status)
     `);
 
+    // ── Review cycles (created by core, readable from dashboard) ──
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS review_cycles (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        task_count INTEGER DEFAULT 0,
+        completed_count INTEGER DEFAULT 0,
+        failed_count INTEGER DEFAULT 0,
+        total_cost REAL DEFAULT 0,
+        agents_used INTEGER DEFAULT 0,
+        carry_over INTEGER DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'running'
+      )
+    `);
+
+    await client.execute(`
+      CREATE INDEX IF NOT EXISTS idx_review_cycles_project
+      ON review_cycles(project_id)
+    `);
+
     _migrationsRun = true;
   } catch {
     // Tables may already exist or DB may not support these — not fatal

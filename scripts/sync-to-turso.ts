@@ -205,6 +205,21 @@ const SCHEMA = [
     created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_wiki_ratings_page ON wiki_ratings(page)`,
+  // ── Review cycles ──────────────────────────────────────────────
+  `CREATE TABLE IF NOT EXISTS review_cycles (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    task_count INTEGER DEFAULT 0,
+    completed_count INTEGER DEFAULT 0,
+    failed_count INTEGER DEFAULT 0,
+    total_cost REAL DEFAULT 0,
+    agents_used INTEGER DEFAULT 0,
+    carry_over INTEGER DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'running'
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_review_cycles_project ON review_cycles(project_id)`,
 ];
 
 async function sync() {
@@ -480,6 +495,33 @@ async function sync() {
       console.log(`  Wiki ratings: ${wikiRatings.length} ✓`);
     }
   } catch { console.log('  Wiki ratings: table not yet created locally, skipping'); }
+
+  // ── Sync review_cycles ────────────────────────────────────────
+  try {
+    const reviewCycles = local.prepare('SELECT * FROM review_cycles').all() as Record<string, unknown>[];
+    console.log(`Review cycles to sync: ${reviewCycles.length}`);
+
+    if (reviewCycles.length > 0) {
+      await remote.execute('DELETE FROM review_cycles');
+
+      const batchSize = 50;
+      for (let i = 0; i < reviewCycles.length; i += batchSize) {
+        const batch = reviewCycles.slice(i, i + batchSize);
+        const stmts = batch.map(rc => ({
+          sql: `INSERT OR REPLACE INTO review_cycles (id, project_id, started_at, completed_at, task_count, completed_count, failed_count, total_cost, agents_used, carry_over, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [
+            rc.id as string, rc.project_id as string, rc.started_at as number,
+            rc.completed_at as number | null, rc.task_count as number,
+            rc.completed_count as number, rc.failed_count as number,
+            rc.total_cost as number, rc.agents_used as number,
+            rc.carry_over as number, rc.status as string,
+          ],
+        }));
+        await remote.batch(stmts, 'write');
+      }
+      console.log(`  Review cycles: ${reviewCycles.length} ✓`);
+    }
+  } catch { console.log('  Review cycles: table not yet created locally, skipping'); }
 
   // ── Summary ────────────────────────────────────────────────────────────
   const remoteCount = await remote.execute('SELECT COUNT(*) as c FROM tasks');

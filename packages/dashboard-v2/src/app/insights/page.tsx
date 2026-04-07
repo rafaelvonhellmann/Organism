@@ -22,6 +22,20 @@ interface ReviewRun {
   earliestTaskId: string | null;
 }
 
+interface ReviewCycle {
+  id: string;
+  project_id: string;
+  started_at: number;
+  completed_at: number | null;
+  task_count: number;
+  completed_count: number;
+  failed_count: number;
+  total_cost: number;
+  agents_used: number;
+  carry_over: number;
+  status: string;
+}
+
 // ── Domain grouping ──────────────────────────────────────────
 
 const DOMAIN_MAP: Record<string, string> = {
@@ -46,16 +60,25 @@ const SEVERITY_ORDER: Record<string, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 export default function InsightsPage() {
   const [project, setProject] = useState('');
   const [runs, setRuns] = useState<ReviewRun[]>([]);
+  const [cycles, setCycles] = useState<ReviewCycle[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
       const pf = project ? `?project=${project}` : '';
-      const res = await fetch(`/api/assessments${pf}`, { cache: 'no-store' });
-      if (!res.ok) return;
-      const data = await res.json();
-      setRuns(data.runs ?? []);
+      const [assessRes, cyclesRes] = await Promise.all([
+        fetch(`/api/assessments${pf}`, { cache: 'no-store' }),
+        fetch(`/api/cycles${pf || '?project=synapse'}`, { cache: 'no-store' }),
+      ]);
+      if (assessRes.ok) {
+        const data = await assessRes.json();
+        setRuns(data.runs ?? []);
+      }
+      if (cyclesRes.ok) {
+        const data = await cyclesRes.json();
+        setCycles(data.cycles ?? []);
+      }
       setLastUpdated(new Date());
     } catch { /* silent */ }
     finally { setLoading(false); }
@@ -215,6 +238,73 @@ export default function InsightsPage() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+
+              {/* ── Review Cycles ──────────────────────────────────── */}
+              {cycles.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Review Cycles</h3>
+
+                  {/* Cost trend indicator */}
+                  {cycles.length >= 2 && (() => {
+                    const recent = cycles[0];
+                    const prev = cycles[1];
+                    const recentCost = Number(recent.total_cost) || 0;
+                    const prevCost = Number(prev.total_cost) || 0;
+                    if (prevCost === 0) return null;
+                    const pctChange = ((recentCost - prevCost) / prevCost) * 100;
+                    const direction = pctChange > 5 ? 'up' : pctChange < -5 ? 'down' : 'flat';
+                    const color = direction === 'down' ? 'text-green-400' : direction === 'up' ? 'text-red-400' : 'text-zinc-400';
+                    const arrow = direction === 'down' ? 'v' : direction === 'up' ? '^' : '~';
+                    return (
+                      <div className={`text-xs ${color} mb-2 px-1`}>
+                        Cost trend: {arrow} {Math.abs(pctChange).toFixed(0)}% {direction === 'down' ? 'decrease' : direction === 'up' ? 'increase' : 'stable'} vs previous cycle
+                      </div>
+                    );
+                  })()}
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-zinc-500 border-b border-zinc-800">
+                          <th className="text-left py-1.5 px-2 font-medium">Date</th>
+                          <th className="text-right py-1.5 px-2 font-medium">Tasks</th>
+                          <th className="text-right py-1.5 px-2 font-medium">Agents</th>
+                          <th className="text-right py-1.5 px-2 font-medium">Cost</th>
+                          <th className="text-right py-1.5 px-2 font-medium">Duration</th>
+                          <th className="text-left py-1.5 px-2 font-medium">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cycles.map(c => {
+                          const startedAt = Number(c.started_at);
+                          const completedAt = c.completed_at ? Number(c.completed_at) : null;
+                          const durationMs = completedAt ? completedAt - startedAt : null;
+                          const durationMin = durationMs ? Math.round(durationMs / 60000) : null;
+                          const cost = Number(c.total_cost) || 0;
+                          const statusColor = c.status === 'completed' ? 'text-green-400' : c.status === 'running' ? 'text-amber-400' : 'text-zinc-500';
+                          return (
+                            <tr key={c.id} className="border-b border-zinc-800/50 hover:bg-zinc-900/50">
+                              <td className="py-1.5 px-2 text-zinc-400 font-mono">
+                                {new Date(startedAt).toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' })}
+                              </td>
+                              <td className="py-1.5 px-2 text-right text-zinc-300">
+                                {c.task_count}
+                                {Number(c.failed_count) > 0 && <span className="text-red-400 ml-1">({c.failed_count}F)</span>}
+                              </td>
+                              <td className="py-1.5 px-2 text-right text-zinc-300">{c.agents_used}</td>
+                              <td className="py-1.5 px-2 text-right text-amber-500/80 font-mono">${cost.toFixed(2)}</td>
+                              <td className="py-1.5 px-2 text-right text-zinc-400">
+                                {durationMin !== null ? `${durationMin}m` : '--'}
+                              </td>
+                              <td className={`py-1.5 px-2 ${statusColor}`}>{c.status}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
 

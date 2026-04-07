@@ -1,8 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Header } from '@/components/header';
 import { SpendBar } from '@/components/spend-bar';
+import { SparkChart } from '@/components/spark-chart';
+import { TimeRangeSelector, RANGES } from '@/components/time-range';
 import { usePolling } from '@/hooks/use-polling';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -60,6 +62,32 @@ interface HistoryTask {
   gate: { decision: string; decidedAt: number | null };
 }
 
+interface CostHistoryData {
+  costByDay: Array<{ date: string; cost: number; agents: number }>;
+  tasksByDay: Array<{ date: string; total: number; completed: number }>;
+}
+
+interface LogEntry {
+  id: number;
+  ts: number;
+  agent: string;
+  taskId: string;
+  action: string;
+  outcome: string;
+  errorCode: string | null;
+}
+
+interface HealthData {
+  daemonAlive: boolean;
+  todaySpend: number;
+  minutesSinceActivity: number;
+}
+
+interface Alert {
+  level: 'red' | 'amber';
+  message: string;
+}
+
 // ── Helpers ────────────────────────────────────────────────────
 
 const STATUS_BADGE: Record<string, string> = {
@@ -68,28 +96,118 @@ const STATUS_BADGE: Record<string, string> = {
   suspended: 'bg-red-500/15 text-red-400',
 };
 
-const DECISION_BADGE: Record<string, { cls: string; label: string }> = {
-  approved: { cls: 'bg-green-500/15 text-green-400', label: 'Approved' },
-  changes_requested: { cls: 'bg-amber-500/15 text-amber-400', label: 'Changes' },
-  rejected: { cls: 'bg-red-500/15 text-red-400', label: 'Rejected' },
-};
-
 function fitnessColor(f: number): string {
   if (f >= 0.6) return 'text-green-400';
   if (f >= 0.3) return 'text-yellow-400';
   return 'text-red-400';
 }
 
-function formatTime(ms: number | null): string {
-  if (!ms) return '';
-  return new Date(ms).toLocaleString('en-AU', {
-    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+function formatLogTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString('en-AU', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
   });
 }
 
-function briefTitle(desc: string): string {
-  const first = desc.replace(/^[^:]*:\s*/, '').split(/[.!?\n]/)[0].trim();
-  return first.length > 60 ? first.slice(0, 57) + '...' : first || desc.slice(0, 60);
+const OUTCOME_STYLE: Record<string, { cls: string; icon: string }> = {
+  success:  { cls: 'text-green-400', icon: '\u2713' },
+  ok:       { cls: 'text-green-400', icon: '\u2713' },
+  failure:  { cls: 'text-red-400',   icon: '\u2717' },
+  error:    { cls: 'text-red-400',   icon: '\u2717' },
+  blocked:  { cls: 'text-amber-400', icon: '\u25CB' },
+  skipped:  { cls: 'text-amber-400', icon: '\u25CB' },
+};
+
+function outcomeBadge(outcome: string): { cls: string; icon: string } {
+  return OUTCOME_STYLE[outcome] ?? { cls: 'text-zinc-400', icon: '\u2022' };
+}
+
+// ── Hook: live logs polling at 5s ──────────────────────────────
+
+function useLiveLogs() {
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [newIds, setNewIds] = useState<Set<number>>(new Set());
+  const [polling, setPolling] = useState(true);
+  const knownIdsRef = useRef<Set<number>>(new Set());
+  const mountedRef = useRef(true);
+  const initialFetchDone = useRef(false);
+
+  const fetchLogs = useCallback(async () => {
+    try {
+      const res = await fetch('/api/logs?limit=50', { cache: 'no-store' });
+      if (!res.ok) return;
+      const json = await res.json();
+      const entries: LogEntry[] = json.logs ?? [];
+      if (!mountedRef.current) return;
+
+      // Detect new entries since last fetch
+      const fresh = new Set<number>();
+      for (const e of entries) {
+        if (!knownIdsRef.current.has(e.id)) fresh.add(e.id);
+      }
+
+      // Update known IDs
+      for (const e of entries) knownIdsRef.current.add(e.id);
+
+      setLogs(entries);
+      if (fresh.size > 0 && initialFetchDone.current) {
+        // Only highlight after the first fetch
+        setNewIds(fresh);
+        setTimeout(() => { if (mountedRef.current) setNewIds(new Set()); }, 2000);
+      }
+      initialFetchDone.current = true;
+    } catch { /* silently retry next interval */ }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    fetchLogs();
+    const id = setInterval(fetchLogs, 5_000);
+    setPolling(true);
+    return () => {
+      mountedRef.current = false;
+      clearInterval(id);
+      setPolling(false);
+    };
+  }, [fetchLogs]);
+
+  return { logs, newIds, polling };
+}
+
+// ── Compute alerts ─────────────────────────────────────────────
+
+function computeAlerts(
+  budget: BudgetData | null,
+  health: HealthData | null,
+  history: { tasks: HistoryTask[] } | null,
+): Alert[] {
+  const alerts: Alert[] = [];
+
+  // Daily spend > $30
+  if (budget && budget.systemSpend > 30) {
+    alerts.push({ level: 'red', message: `Daily spend exceeds $30 ($${budget.systemSpend.toFixed(2)})` });
+  }
+
+  // Daemon inactive
+  if (health && !health.daemonAlive) {
+    alerts.push({ level: 'red', message: 'Daemon not running' });
+  }
+
+  // Agent with 3+ failures
+  if (history?.tasks) {
+    const failCounts = new Map<string, number>();
+    for (const t of history.tasks) {
+      if (t.gate.decision === 'rejected') {
+        failCounts.set(t.agent, (failCounts.get(t.agent) ?? 0) + 1);
+      }
+    }
+    for (const [agent, count] of failCounts) {
+      if (count >= 3) {
+        alerts.push({ level: 'amber', message: `Agent ${agent} has ${count} failures` });
+      }
+    }
+  }
+
+  return alerts;
 }
 
 // ── Tabs ───────────────────────────────────────────────────────
@@ -106,6 +224,10 @@ const TABS: { key: Tab; label: string }[] = [
 export default function SystemPage() {
   const [project, setProject] = useState('');
   const [tab, setTab] = useState<Tab>('budget');
+  const [rangeMs, setRangeMs] = useState(RANGES[2].ms); // default 14d
+
+  const rangeDays = Math.round(rangeMs / (24 * 60 * 60 * 1000));
+  const { data: costHistory } = usePolling<CostHistoryData>(`/api/cost-history?days=${rangeDays}`);
 
   const { data: budget, lastUpdated: budgetUpdated } = usePolling<BudgetData>('/api/budget');
   const { data: agents, lastUpdated: agentsUpdated } = usePolling<AgentInfo[]>(
@@ -113,12 +235,37 @@ export default function SystemPage() {
   );
   const { data: palate, lastUpdated: palateUpdated } = usePolling<PalateData>('/api/palate');
   const { data: history, lastUpdated: historyUpdated } = usePolling<{ tasks: HistoryTask[] }>('/api/history');
+  const { data: health } = usePolling<HealthData>('/api/health');
+  const { logs, newIds, polling: logsPolling } = useLiveLogs();
 
-  const lastUpdated = { budget: budgetUpdated, agents: agentsUpdated, knowledge: palateUpdated, logs: historyUpdated }[tab];
+  const alerts = computeAlerts(budget, health, history);
+  const logsUpdated = logs.length > 0 ? new Date(logs[0].ts) : null;
+  const lastUpdated = { budget: budgetUpdated, agents: agentsUpdated, knowledge: palateUpdated, logs: logsUpdated ?? historyUpdated }[tab];
 
   return (
     <>
       <Header title="System" project={project} onProjectChange={setProject} lastUpdated={lastUpdated} />
+
+      {/* ── Alerts ──────────────────────────────────────── */}
+      {alerts.length > 0 && (
+        <div className="px-4 md:px-6 pt-4 space-y-2">
+          {alerts.map((a, i) => (
+            <div
+              key={i}
+              className={`flex items-center gap-3 rounded-lg border px-4 py-2.5 text-sm font-medium ${
+                a.level === 'red'
+                  ? 'bg-red-500/10 border-red-500/30 text-red-400'
+                  : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+              }`}
+            >
+              <span className={`inline-block h-2 w-2 rounded-full ${
+                a.level === 'red' ? 'bg-red-500' : 'bg-amber-500'
+              }`} />
+              {a.message}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Tab bar */}
       <div className="border-b border-edge bg-surface/50 px-4 md:px-6">
@@ -156,6 +303,57 @@ export default function SystemPage() {
                 </div>
                 <SpendBar spent={budget.systemSpend} cap={budget.systemCap} pct={budget.systemPct}
                   status={budget.systemPct >= 90 ? 'crit' : budget.systemPct >= 80 ? 'warn' : 'ok'} showLabels={false} />
+              </div>
+            )}
+            {/* Cost & Task Trend Charts */}
+            {costHistory && (costHistory.costByDay.length > 1 || costHistory.tasksByDay.length > 1) && (
+              <div className="bg-surface rounded-xl border border-edge p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-sm font-semibold text-zinc-200">Spend &amp; Activity Trend</span>
+                  <TimeRangeSelector value={rangeMs} onChange={setRangeMs} />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {costHistory.costByDay.length > 1 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs text-zinc-500 uppercase tracking-wide">Daily Cost (USD)</span>
+                        <span className="text-xs font-mono text-emerald-400">
+                          ${costHistory.costByDay.reduce((s, d) => s + d.cost, 0).toFixed(2)} total
+                        </span>
+                      </div>
+                      <SparkChart
+                        data={costHistory.costByDay.map(d => d.cost)}
+                        width={400}
+                        height={48}
+                        color="#10b981"
+                      />
+                      <div className="flex justify-between mt-1">
+                        <span className="text-[10px] text-zinc-600">{costHistory.costByDay[0]?.date}</span>
+                        <span className="text-[10px] text-zinc-600">{costHistory.costByDay[costHistory.costByDay.length - 1]?.date}</span>
+                      </div>
+                    </div>
+                  )}
+                  {costHistory.tasksByDay.length > 1 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs text-zinc-500 uppercase tracking-wide">Daily Tasks</span>
+                        <span className="text-xs font-mono text-sky-400">
+                          {costHistory.tasksByDay.reduce((s, d) => s + d.completed, 0)} completed
+                        </span>
+                      </div>
+                      <SparkChart
+                        data={costHistory.tasksByDay.map(d => d.total)}
+                        width={400}
+                        height={48}
+                        color="#38bdf8"
+                      />
+                      <div className="flex justify-between mt-1">
+                        <span className="text-[10px] text-zinc-600">{costHistory.tasksByDay[0]?.date}</span>
+                        <span className="text-[10px] text-zinc-600">{costHistory.tasksByDay[costHistory.tasksByDay.length - 1]?.date}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
             {budget && budget.agents.filter(a => a.spent > 0).length > 0 && (
@@ -296,43 +494,64 @@ export default function SystemPage() {
           </>
         )}
 
-        {/* ── Logs ─────────────────────────────────────────── */}
+        {/* ── Logs (live) ────────────────────────────────── */}
         {tab === 'logs' && (
           <>
-            {history?.tasks && history.tasks.length > 0 ? (
+            {/* Live indicator */}
+            <div className="flex items-center gap-2 mb-1">
+              <span className={`inline-block h-2 w-2 rounded-full ${logsPolling ? 'bg-green-500 animate-pulse' : 'bg-zinc-600'}`} />
+              <span className="text-xs text-zinc-500">{logsPolling ? 'Live -- polling every 5s' : 'Paused'}</span>
+            </div>
+
+            {logs.length > 0 ? (
               <div className="bg-surface rounded-xl border border-edge overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-edge text-xs text-zinc-500 uppercase tracking-wider">
-                      <th className="text-left py-2.5 px-5 font-medium">Time</th>
-                      <th className="text-left py-2.5 px-5 font-medium">Agent</th>
-                      <th className="text-left py-2.5 px-5 font-medium">Action</th>
-                      <th className="text-left py-2.5 px-5 font-medium">Outcome</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {history.tasks.map(t => {
-                      const d = DECISION_BADGE[t.gate.decision] ?? { cls: 'bg-zinc-700/50 text-zinc-400', label: t.gate.decision };
-                      return (
-                        <tr key={t.id} className="border-b border-edge/50 hover:bg-surface-alt/30 transition-colors">
-                          <td className="py-3 px-5 text-xs text-zinc-500 font-mono whitespace-nowrap">
-                            {formatTime(t.gate.decidedAt ?? t.completedAt)}
-                          </td>
-                          <td className="py-3 px-5 font-medium text-zinc-300 whitespace-nowrap">{t.agent}</td>
-                          <td className="py-3 px-5 text-zinc-400">{briefTitle(t.description)}</td>
-                          <td className="py-3 px-5">
-                            <span className={`text-xs px-2 py-0.5 rounded font-medium ${d.cls}`}>{d.label}</span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                <div className="max-h-[600px] overflow-y-auto">
+                  <table className="w-full text-sm font-mono">
+                    <thead className="sticky top-0 bg-surface z-10">
+                      <tr className="border-b border-edge text-xs text-zinc-500 uppercase tracking-wider">
+                        <th className="text-left py-2.5 px-5 font-medium">Time</th>
+                        <th className="text-left py-2.5 px-5 font-medium">Agent</th>
+                        <th className="text-left py-2.5 px-5 font-medium">Action</th>
+                        <th className="text-left py-2.5 px-5 font-medium">Outcome</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {logs.map(entry => {
+                        const badge = outcomeBadge(entry.outcome);
+                        const isNew = newIds.has(entry.id);
+                        return (
+                          <tr
+                            key={entry.id}
+                            className={`border-b border-edge/50 transition-colors duration-700 ${
+                              isNew ? 'bg-emerald-500/10' : 'hover:bg-surface-alt/30'
+                            }`}
+                          >
+                            <td className="py-2 px-5 text-xs text-zinc-500 whitespace-nowrap">
+                              {formatLogTime(entry.ts)}
+                            </td>
+                            <td className="py-2 px-5 text-xs text-zinc-300 whitespace-nowrap">
+                              {entry.agent}
+                            </td>
+                            <td className="py-2 px-5 text-xs text-zinc-400 whitespace-nowrap">
+                              {entry.action}
+                            </td>
+                            <td className="py-2 px-5 whitespace-nowrap">
+                              <span className={`text-xs font-medium ${badge.cls}`}>
+                                {badge.icon} {entry.outcome}
+                              </span>
+                              {entry.errorCode && (
+                                <span className="ml-2 text-xs text-red-500/70">[{entry.errorCode}]</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            ) : history ? (
-              <div className="text-center py-12 text-zinc-600">No audit entries yet</div>
             ) : (
-              <div className="text-center py-12 text-zinc-600">Loading logs...</div>
+              <div className="text-center py-12 text-zinc-600">No audit entries yet</div>
             )}
           </>
         )}

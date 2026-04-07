@@ -226,6 +226,21 @@ function runMigrations(db: DatabaseSync) {
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       completed_at INTEGER
     )`,
+    // ── Review cycle tracking ──
+    `CREATE TABLE IF NOT EXISTS review_cycles (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      task_count INTEGER DEFAULT 0,
+      completed_count INTEGER DEFAULT 0,
+      failed_count INTEGER DEFAULT 0,
+      total_cost REAL DEFAULT 0,
+      agents_used INTEGER DEFAULT 0,
+      carry_over INTEGER DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'running'
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_review_cycles_project ON review_cycles(project_id)`,
   ];
   for (const sql of additiveMigrations) {
     try { db.exec(sql); } catch { /* column/index already exists — safe to ignore */ }
@@ -438,6 +453,56 @@ export function getRevisionChainCost(originalTaskId: string): number {
     WHERE id = ? OR input LIKE ?
   `).get(originalTaskId, `%"originalTaskId":"${originalTaskId}"%`) as { total: number } | undefined;
   return row?.total ?? 0;
+}
+
+// ── Review cycle tracking ─────────────────────────────────────────────────
+
+export function createCycle(id: string, projectId: string, taskCount: number, agentsUsed: number): void {
+  getDb().prepare(`
+    INSERT INTO review_cycles (id, project_id, started_at, task_count, agents_used, status)
+    VALUES (?, ?, ?, ?, ?, 'running')
+  `).run(id, projectId, Date.now(), taskCount, agentsUsed);
+}
+
+export function completeCycle(id: string): void {
+  const stats = getDb().prepare(`
+    SELECT COUNT(*) as completed,
+           COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed,
+           COALESCE(SUM(cost_usd), 0) as cost
+    FROM tasks WHERE parent_task_id IN (
+      SELECT id FROM tasks WHERE input LIKE '%"cycleId":"' || ? || '"%'
+    ) OR input LIKE '%"cycleId":"' || ? || '"%'
+  `).get(id, id) as { completed: number; failed: number; cost: number } | undefined;
+
+  getDb().prepare(`
+    UPDATE review_cycles SET
+      completed_at = ?, status = 'completed',
+      completed_count = ?, failed_count = ?, total_cost = ?
+    WHERE id = ?
+  `).run(Date.now(), stats?.completed ?? 0, stats?.failed ?? 0, stats?.cost ?? 0, id);
+}
+
+export function getRecentCycles(projectId: string, limit: number = 10): unknown[] {
+  return getDb().prepare(`
+    SELECT * FROM review_cycles WHERE project_id = ? ORDER BY started_at DESC LIMIT ?
+  `).all(projectId, limit);
+}
+
+// ── Time-in-status stats ──────────────────────────────────────────────────
+
+export function getTimeInStatusStats(projectId: string): { avgPending: number; avgInProgress: number; avgAwaitingReview: number } {
+  const rows = getDb().prepare(`
+    SELECT
+      AVG(CASE WHEN started_at IS NOT NULL THEN started_at - created_at END) as avg_pending,
+      AVG(CASE WHEN completed_at IS NOT NULL AND started_at IS NOT NULL THEN completed_at - started_at END) as avg_in_progress
+    FROM tasks WHERE project_id = ? AND status = 'completed'
+  `).get(projectId) as { avg_pending: number; avg_in_progress: number } | undefined;
+
+  return {
+    avgPending: rows?.avg_pending ?? 0,
+    avgInProgress: rows?.avg_in_progress ?? 0,
+    avgAwaitingReview: 0,
+  };
 }
 
 function rowToTask(row: Record<string, unknown>): Task {

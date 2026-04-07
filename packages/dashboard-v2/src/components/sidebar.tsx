@@ -20,6 +20,11 @@ const NAV: NavItem[] = [
   { href: '/guide', label: 'Manual', icon: '?' },
 ];
 
+const PROJECTS: NavItem[] = [
+  { href: '/project/synapse', label: 'Synapse', icon: 'S' },
+  { href: '/project/tokens-for-good', label: 'Tokens for Good', icon: 'T' },
+];
+
 export function Sidebar() {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -72,7 +77,7 @@ export function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 px-3 py-4 space-y-1">
+      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
         {NAV.map(({ href, label, icon }) => {
           const active = href === '/' ? pathname === '/' : pathname.startsWith(href);
           return (
@@ -98,6 +103,30 @@ export function Sidebar() {
                   {todoCount}
                 </span>
               )}
+            </Link>
+          );
+        })}
+
+        {/* Divider */}
+        <div className="border-t border-edge my-3" />
+
+        {/* Projects */}
+        <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider px-3 mb-1">Projects</p>
+        {PROJECTS.map(({ href, label, icon }) => {
+          const active = pathname.startsWith(href);
+          return (
+            <Link
+              key={href}
+              href={href}
+              onClick={() => setMobileOpen(false)}
+              className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                active
+                  ? 'bg-emerald-500/15 text-emerald-400'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50'
+              }`}
+            >
+              <span className="text-xs w-5 h-5 flex items-center justify-center rounded bg-zinc-800 text-zinc-400 font-semibold">{icon}</span>
+              <span className="flex-1">{label}</span>
             </Link>
           );
         })}
