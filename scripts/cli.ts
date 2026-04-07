@@ -594,6 +594,9 @@ async function handleSubmitTask(input: string): Promise<void> {
       }
 
       console.log(`\n  Cost: $${(task.costUsd ?? 0).toFixed(4)} | Total spend: $${getSystemSpend().toFixed(4)}`);
+
+      // Sync to Turso so dashboard updates immediately
+      try { const { syncToTurso } = await import('../packages/core/src/turso-sync.js'); await syncToTurso(); } catch { /* non-critical */ }
       return;
     }
 
@@ -606,6 +609,9 @@ async function handleSubmitTask(input: string): Promise<void> {
   console.log(`\n  Task ${taskId.slice(0, 8)} did not complete in ${maxRounds} rounds.`);
   console.log('  It may still be processing. Run: npm run organism "status"');
   console.log(`\n  Spend so far: $${getSystemSpend().toFixed(4)}\n`);
+
+  // Sync to Turso so dashboard updates immediately
+  try { const { syncToTurso } = await import('../packages/core/src/turso-sync.js'); await syncToTurso(); } catch { /* non-critical */ }
 }
 
 // ── Palate handlers ─────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import { runWatchdog } from './orchestrator.js';
 import { loadRegistry } from './registry.js';
 import { createTask, getPendingTasks } from './task-queue.js';
 import { enforceDormancy } from './perspectives.js';
+import { syncToTurso } from './turso-sync.js';
 import { AgentCapability } from '../../shared/src/types.js';
 
 // --- Types ---
@@ -256,6 +257,9 @@ async function schedulerTick(): Promise<void> {
       console.log(`[Scheduler] Dormancy enforced: ${suspended.join(', ')} suspended`);
     }
   } catch { /* non-critical */ }
+
+  // Sync local state to Turso for dashboard
+  try { await syncToTurso(); } catch { /* non-critical */ }
 
   // Watchdog every 5 minutes
   if (Date.now() - watchdogLastRunAt >= WATCHDOG_INTERVAL_MS) {
