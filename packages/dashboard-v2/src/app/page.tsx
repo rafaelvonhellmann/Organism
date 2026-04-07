@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { Header } from '@/components/header';
 import { StatusBadge } from '@/components/status-badge';
 import { renderMarkdown, cleanForDisplay } from '@/lib/markdown';
+import { usePolling } from '@/hooks/use-polling';
 import Link from 'next/link';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -353,6 +354,16 @@ function ReviewQueueInner() {
   const [error, setError] = useState<string | null>(null);
   const replyRef = useRef<HTMLTextAreaElement>(null);
 
+  // Health status polling
+  const { data: health } = usePolling<{
+    daemonAlive: boolean;
+    lastActivity: string | null;
+    minutesSinceActivity: number;
+    todaySpend: number;
+    taskCounts: Record<string, number>;
+    pendingActions: number;
+  }>('/api/health');
+
   // Browser notification tracking
   const prevQueueLenRef = useRef(0);
   const [notifPermission, setNotifPermission] = useState<NotificationPermission | 'unsupported'>('unsupported');
@@ -539,6 +550,26 @@ function ReviewQueueInner() {
     postDecision('reply', replyText.trim());
   }
 
+  const handleRunReview = useCallback(async () => {
+    try {
+      await fetch('/api/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'review', payload: { project: project || 'synapse' } }),
+      });
+    } catch { /* silent */ }
+  }, [project]);
+
+  const handleDispatch = useCallback(async () => {
+    try {
+      await fetch('/api/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'execute' }),
+      });
+    } catch { /* silent */ }
+  }, []);
+
   async function handleBatchApprove() {
     const routineItems = queue.filter(t => t.lane !== 'HIGH');
     if (routineItems.length === 0 || deciding) return;
@@ -624,6 +655,38 @@ function ReviewQueueInner() {
       />
 
       <div className="flex flex-col min-h-[calc(100vh-3.5rem)] md:min-h-screen">
+        {/* Health status bar */}
+        {health && (
+          <div className="bg-zinc-900 border-b border-zinc-800 px-4 py-2">
+            <div className="max-w-3xl mx-auto flex items-center gap-4 text-xs">
+              <div className="flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${health.daemonAlive ? 'bg-green-500' : 'bg-red-500'}`} />
+                <span className="text-zinc-400">{health.daemonAlive ? 'Daemon active' : 'Daemon inactive'}</span>
+              </div>
+              {health.lastActivity && (
+                <span className="text-zinc-600">
+                  Last activity: {health.minutesSinceActivity < 1 ? 'just now' : `${health.minutesSinceActivity}m ago`}
+                </span>
+              )}
+              <span className="text-zinc-600">Today: <span className="text-amber-400">${health.todaySpend.toFixed(2)}</span></span>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  onClick={handleRunReview}
+                  className="px-2.5 py-1 rounded bg-emerald-600/20 text-emerald-400 border border-emerald-600/30 hover:bg-emerald-600/30 transition-colors"
+                >
+                  Run Review
+                </button>
+                <button
+                  onClick={handleDispatch}
+                  className="px-2.5 py-1 rounded bg-blue-600/20 text-blue-400 border border-blue-600/30 hover:bg-blue-600/30 transition-colors"
+                >
+                  Execute Tasks
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Progress bar */}
         <div className="sticky top-14 md:top-0 z-10 bg-zinc-950 border-b border-zinc-800 px-4 py-2.5">
           <div className="max-w-3xl mx-auto">

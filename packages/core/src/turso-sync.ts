@@ -223,6 +223,15 @@ const SCHEMA = [
     created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_wiki_ratings_page ON wiki_ratings(page)`,
+  `CREATE TABLE IF NOT EXISTS dashboard_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,
+    payload TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result TEXT,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+    completed_at INTEGER
+  )`,
 ];
 
 async function ensureSchema(remote: Client): Promise<void> {
@@ -239,7 +248,7 @@ type Row = Record<string, unknown>;
 
 function queryLocal(sql: string, ...params: unknown[]): Row[] {
   try {
-    return getDb().prepare(sql).all(...params) as Row[];
+    return getDb().prepare(sql).all(...params as Array<string | number | null>) as Row[];
   } catch {
     return []; // table may not exist locally yet
   }
@@ -461,10 +470,49 @@ export async function syncToTurso(): Promise<void> {
     await batchUpsert(remote, stmts);
   }
 
+  // ── Dashboard actions (BIDIRECTIONAL) ──
+  // 1. Pull pending actions FROM Turso → local
+  let pulledActions = 0;
+  try {
+    const remotePending = await remote.execute(
+      "SELECT id, action, payload, status, created_at FROM dashboard_actions WHERE status = 'pending'"
+    );
+    if (remotePending.rows.length > 0) {
+      const local = getDb();
+      const upsertStmt = local.prepare(
+        `INSERT OR IGNORE INTO dashboard_actions (id, action, payload, status, created_at)
+         VALUES (?, ?, ?, ?, ?)`
+      );
+      for (const row of remotePending.rows) {
+        upsertStmt.run(
+          row.id as number, row.action as string, row.payload as string | null,
+          row.status as string, row.created_at as number,
+        );
+      }
+      pulledActions = remotePending.rows.length;
+    }
+  } catch { /* dashboard_actions may not exist remotely yet */ }
+
+  // 2. Push completed/failed results FROM local → Turso
+  let pushedActions = 0;
+  const completedActions = queryLocal(
+    "SELECT * FROM dashboard_actions WHERE status IN ('completed', 'failed') AND completed_at > ?",
+    lastSyncTs
+  );
+  if (completedActions.length > 0) {
+    const stmts = completedActions.map(a => ({
+      sql: `UPDATE dashboard_actions SET status = ?, result = ?, completed_at = ? WHERE id = ?`,
+      args: [a.status, a.result, a.completed_at, a.id],
+    }));
+    await batchUpsert(remote, stmts);
+    pushedActions = completedActions.length;
+  }
+
   // ── Log summary ──
   const totalRows = tasks.length + audits.length + spends.length + gates.length +
     fitness.length + pitches.length + bets.length + betScopes.length +
-    hillUpdates.length + betDecisions.length + sourceFitness.length + wikiRatings.length;
+    hillUpdates.length + betDecisions.length + sourceFitness.length + wikiRatings.length +
+    pulledActions + pushedActions;
 
   if (totalRows > 0) {
     console.log(`[turso-sync] Synced ${tasks.length} tasks, ${audits.length} audit entries, ${spends.length} spend rows, ${gates.length} gates (${Date.now() - syncStart}ms)`);

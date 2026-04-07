@@ -235,6 +235,24 @@ export async function ensureTables(): Promise<void> {
       ON external_feedback(session_id)
     `);
 
+    // ── Dashboard Actions (queue for triggering Organism from serverless) ──
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS dashboard_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action TEXT NOT NULL,
+        payload TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        result TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+        completed_at INTEGER
+      )
+    `);
+
+    await client.execute(`
+      CREATE INDEX IF NOT EXISTS idx_dashboard_actions_status
+      ON dashboard_actions(status)
+    `);
+
     _migrationsRun = true;
   } catch {
     // Tables may already exist or DB may not support these — not fatal

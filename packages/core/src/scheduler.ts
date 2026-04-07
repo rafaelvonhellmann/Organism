@@ -12,6 +12,7 @@ import { loadRegistry } from './registry.js';
 import { createTask, getPendingTasks } from './task-queue.js';
 import { enforceDormancy } from './perspectives.js';
 import { syncToTurso } from './turso-sync.js';
+import { processDashboardActions } from './action-processor.js';
 import { AgentCapability } from '../../shared/src/types.js';
 
 // --- Types ---
@@ -240,6 +241,9 @@ async function schedulerTick(): Promise<void> {
       }
     }
   }
+
+  // Process any actions triggered from the dashboard
+  try { await processDashboardActions(); } catch { /* non-critical */ }
 
   // Dispatch all pending tasks (including any we just created)
   if (createdTasks || getPendingTasks().length > 0) {

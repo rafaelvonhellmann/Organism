@@ -216,6 +216,16 @@ function runMigrations(db: DatabaseSync) {
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_wiki_ratings_page ON wiki_ratings(page)`,
+    // ── Dashboard actions (bidirectional sync with Turso) ──
+    `CREATE TABLE IF NOT EXISTS dashboard_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      payload TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      result TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      completed_at INTEGER
+    )`,
   ];
   for (const sql of additiveMigrations) {
     try { db.exec(sql); } catch { /* column/index already exists — safe to ignore */ }
