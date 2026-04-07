@@ -65,7 +65,20 @@ function extractAssessment(output: unknown): string | null {
   }
   if (typeof output === 'object' && output !== null) {
     const o = output as Record<string, unknown>;
-    const KEYS = ['scrutiny', 'text', 'report', 'brief', 'implementation', 'analysis', 'plan', 'spec', 'review', 'assessment', 'content', 'result', 'summary'];
+
+    // Special handling for shaping tasks
+    if (o.type === 'shaping_complete' || o.pitchId || o.betId) {
+      const parts: string[] = [];
+      if (typeof o.title === 'string') parts.push(`**${o.title}**`);
+      if (typeof o.problem === 'string') parts.push(o.problem as string);
+      if (typeof o.appetite === 'string') parts.push(`**Appetite:** ${o.appetite}`);
+      if (Array.isArray(o.successCriteria) && o.successCriteria.length > 0) {
+        parts.push('**Success criteria:** ' + (o.successCriteria as string[]).join(', '));
+      }
+      if (parts.length > 0) return parts.join('\n\n');
+    }
+
+    const KEYS = ['scrutiny', 'report', 'brief', 'implementation', 'analysis', 'plan', 'spec', 'review', 'assessment', 'content', 'result', 'summary', 'text'];
 
     for (const key of KEYS) {
       if (typeof o[key] === 'string' && (o[key] as string).trim().length > 10) {

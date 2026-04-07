@@ -124,7 +124,23 @@ function extractAssessment(output: unknown): string | null {
   if (typeof output === 'object' && output !== null) {
     const o = output as Record<string, unknown>;
 
-    const KEYS = ['scrutiny', 'text', 'report', 'brief', 'implementation', 'analysis', 'plan', 'spec', 'review', 'assessment', 'content', 'result', 'summary'];
+    // Special handling for shaping tasks — use problem + title, not "Pitch shaped..."
+    if (o.type === 'shaping_complete' || o.pitchId || o.betId) {
+      const parts: string[] = [];
+      if (typeof o.title === 'string') parts.push(`**${o.title}**`);
+      if (typeof o.problem === 'string') parts.push(o.problem as string);
+      if (typeof o.appetite === 'string') parts.push(`**Appetite:** ${o.appetite}`);
+      if (Array.isArray(o.successCriteria) && o.successCriteria.length > 0) {
+        parts.push('**Success criteria:** ' + (o.successCriteria as string[]).join(', '));
+      }
+      if (Array.isArray(o.noGos) && o.noGos.length > 0) {
+        parts.push('**No-gos:** ' + (o.noGos as string[]).join(', '));
+      }
+      if (parts.length > 0) return parts.join('\n\n');
+    }
+
+    // Priority keys for regular assessments
+    const KEYS = ['scrutiny', 'report', 'brief', 'implementation', 'analysis', 'plan', 'spec', 'review', 'assessment', 'content', 'result', 'summary', 'text'];
 
     for (const key of KEYS) {
       if (typeof o[key] === 'string' && (o[key] as string).trim().length > 10) {
@@ -141,6 +157,7 @@ function extractAssessment(output: unknown): string | null {
       }
     }
 
+    // Fallback: longest string value
     let bestStr = '';
     for (const val of Object.values(o)) {
       if (typeof val === 'string' && val.trim().length > bestStr.length) {
@@ -149,15 +166,7 @@ function extractAssessment(output: unknown): string | null {
     }
     if (bestStr.length > 10) return bestStr;
 
-    for (const val of Object.values(o)) {
-      if (val && typeof val === 'object') {
-        const nested = extractAssessment(val);
-        if (nested && !nested.startsWith('{') && !nested.startsWith('[')) {
-          return nested;
-        }
-      }
-    }
-
+    // Last resort: format all entries
     const entries = Object.entries(o).filter(([, v]) => v != null && v !== '');
     if (entries.length > 0) {
       const parts = entries.map(([k, v]) => {
@@ -650,33 +659,22 @@ function ReviewQueueInner() {
                   </div>
                 )}
 
-                {/* ── Full assessment: expandable, rendered markdown ──── */}
+                {/* ── Full assessment: shown by default, collapsible ──── */}
                 <div className="px-4 md:px-5 pb-4 flex-1">
                   {assessment ? (
                     <>
-                      {!showFullText && (
-                        <button
-                          onClick={() => setShowFullText(true)}
-                          className="mt-1 text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
-                        >
-                          Read full assessment
-                        </button>
-                      )}
-
-                      {showFullText && (
-                        <div className="mt-2 pt-3 border-t border-zinc-800/50">
-                          <div
-                            className="max-w-none"
-                            dangerouslySetInnerHTML={{ __html: renderMarkdown(formatFullOutput(currentTask.output)) }}
-                          />
-                          <button
-                            onClick={() => setShowFullText(false)}
-                            className="mt-3 text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
-                          >
-                            Collapse
-                          </button>
-                        </div>
-                      )}
+                      <div className={`mt-2 pt-3 border-t border-zinc-800/50 ${showFullText ? '' : 'max-h-[400px] overflow-y-auto'}`}>
+                        <div
+                          className="prose prose-invert prose-sm max-w-none prose-headings:text-zinc-200 prose-p:text-zinc-300 prose-strong:text-zinc-200 prose-code:text-emerald-400"
+                          dangerouslySetInnerHTML={{ __html: renderMarkdown(formatFullOutput(currentTask.output)) }}
+                        />
+                      </div>
+                      <button
+                        onClick={() => setShowFullText(!showFullText)}
+                        className="mt-2 text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
+                      >
+                        {showFullText ? 'Collapse' : 'Expand full output'}
+                      </button>
                     </>
                   ) : currentTask.status === 'in_progress' ? (
                     <div className="text-center py-8">
