@@ -56,7 +56,14 @@ RISK: LOW | MEDIUM | HIGH | CRITICAL
 (numbered list; flag items needing a qualified solicitor with [SOLICITOR REQUIRED])
 
 ## Disclaimer
-This analysis is produced by an AI system. It does not constitute qualified legal advice. For material decisions, obtain advice from a qualified Australian solicitor.`;
+This analysis is produced by an AI system. It does not constitute qualified legal advice. For material decisions, obtain advice from a qualified Australian solicitor.
+
+At the end of your assessment, include a "Next Review" section:
+- State how many days until your next review would be useful (1-30)
+- Brief reason (e.g., "7 days — no code changes expected before launch blockers are resolved")
+- If nothing in your domain has changed or needs monitoring, say "14 days" or more
+- If you found critical issues, say "1-3 days"`;
+
 
 export default class LegalAgent extends BaseAgent {
   constructor() {

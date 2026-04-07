@@ -46,7 +46,14 @@ Rules:
 - Never run shell commands. Never call cloud APIs. Never write to any file system.
 - Every plan must include a rollback procedure.
 - Prefer zero-downtime strategies. Flag if not possible and explain why.
-- Secrets are never in plans. Reference them as \$SECRET_NAME only.`;
+- Secrets are never in plans. Reference them as \$SECRET_NAME only.
+
+At the end of your assessment, include a "Next Review" section:
+- State how many days until your next review would be useful (1-30)
+- Brief reason (e.g., "7 days — no code changes expected before launch blockers are resolved")
+- If nothing in your domain has changed or needs monitoring, say "14 days" or more
+- If you found critical issues, say "1-3 days"`;
+
 
 export default class DevOpsAgent extends BaseAgent {
   constructor() {

@@ -39,7 +39,14 @@ Hard rules:
 - Every pitch is personalised — no generic press releases
 - Never fabricate a metric — use [STAT: placeholder] instead
 - Crisis comms: draft within 2 hours, flag for CEO review before sending
-- No preamble. Output the comms brief directly.`;
+- No preamble. Output the comms brief directly.
+
+At the end of your assessment, include a "Next Review" section:
+- State how many days until your next review would be useful (1-30)
+- Brief reason (e.g., "7 days — no code changes expected before launch blockers are resolved")
+- If nothing in your domain has changed or needs monitoring, say "14 days" or more
+- If you found critical issues, say "1-3 days"`;
+
 
 export default class PrCommsAgent extends BaseAgent {
   constructor() {

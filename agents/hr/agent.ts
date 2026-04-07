@@ -34,7 +34,14 @@ Hard rules:
 - Never promote an agent without shadow run evidence.
 - Never create a human role without a capability gap justification.
 - Flag Australian Fair Work Act implications on any contractor arrangement.
-- Be terse.`;
+- Be terse.
+
+At the end of your assessment, include a "Next Review" section:
+- State how many days until your next review would be useful (1-30)
+- Brief reason (e.g., "7 days — no code changes expected before launch blockers are resolved")
+- If nothing in your domain has changed or needs monitoring, say "14 days" or more
+- If you found critical issues, say "1-3 days"`;
+
 
 export default class HrAgent extends BaseAgent {
   constructor() {

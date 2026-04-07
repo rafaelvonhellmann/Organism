@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { submitTask } from '../packages/core/src/orchestrator.js';
 import { dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
+import { filterDueAgents } from '../packages/core/src/review-scheduler.js';
 
 // ── Actual code evidence from the Synapse codebase ──────────────────────────
 // These are REAL snippets, not metadata. Agents must reference these, not guess.
@@ -132,7 +133,7 @@ Critical evidence to check BEFORE flagging:
 
 async function submitSynapseReviews() {
   console.log('\n==============================================');
-  console.log('Organism — 20-Agent Synapse Review (Evidence-Based)');
+  console.log('Organism — Synapse Review with Self-Scheduling (Evidence-Based)');
   console.log('==============================================\n');
 
   // Write project context to filesystem — agents load it via loadProjectContext()
@@ -145,9 +146,28 @@ async function submitSynapseReviews() {
   );
   console.log('  Context written to knowledge/projects/synapse/review-context.json\n');
 
+  // ── Self-scheduling: filter to only agents due for review ──────────────
+  const allAgents = [
+    'ceo', 'cto', 'cfo', 'product-manager', 'data-analyst',
+    'engineering', 'devops', 'security-audit', 'quality-guardian',
+    'medical-content-reviewer', 'marketing-strategist', 'marketing-executor',
+    'seo', 'community-manager', 'pr-comms', 'legal', 'sales',
+    'customer-success', 'hr',
+  ];
+  const dueAgents = filterDueAgents(allAgents, 'synapse');
+  const dueSet = new Set(dueAgents);
+  console.log(`  ${dueAgents.length}/${allAgents.length} agents due for review (${allAgents.length - dueAgents.length} skipped by self-scheduling)\n`);
+
   const tasks: Array<{ id: string; label: string }> = [];
+  let skipped = 0;
 
   const submit = async (label: string, agent: string, desc: string) => {
+    // Skip agents that self-scheduled themselves out of this review
+    if (!dueSet.has(agent)) {
+      skipped++;
+      console.log(`  [SKIP] ${label} (${agent} not due yet)`);
+      return;
+    }
     // Context lives on filesystem — only pass lightweight task-specific fields
     const id = await submitTask(
       { description: desc + AGENT_DIRECTIVE, input: { projectId: 'synapse' }, projectId: 'synapse' },
@@ -231,7 +251,7 @@ async function submitSynapseReviews() {
 
   // ── Dispatch loop ─────────────────────────────────────────────────────────
 
-  console.log(`\n${tasks.length} tasks submitted. Processing...\n`);
+  console.log(`\n${tasks.length} tasks submitted (${skipped} skipped by self-scheduling). Processing...\n`);
 
   let round = 0;
   const maxRounds = 40;

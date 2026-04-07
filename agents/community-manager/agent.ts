@@ -32,7 +32,14 @@ Hard rules:
 - Never fake testimonials or mass-DM members
 - Always disclose founder status when recommending the product
 - Each community gets its own voice — no copy-paste across platforms
-- No preamble. Output the community brief directly.`;
+- No preamble. Output the community brief directly.
+
+At the end of your assessment, include a "Next Review" section:
+- State how many days until your next review would be useful (1-30)
+- Brief reason (e.g., "7 days — no code changes expected before launch blockers are resolved")
+- If nothing in your domain has changed or needs monitoring, say "14 days" or more
+- If you found critical issues, say "1-3 days"`;
+
 
 export default class CommunityManagerAgent extends BaseAgent {
   constructor() {

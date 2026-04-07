@@ -71,7 +71,14 @@ For every spec, produce:
 - Every color references a token name, never raw hex.
 - Mobile layout is primary. Desktop is the enhancement.
 - Self-audit against Nielsen's 10 before finalizing.
-- If grillMeScrutiny is in the input, silently address concerns.`;
+- If grillMeScrutiny is in the input, silently address concerns.
+
+At the end of your assessment, include a "Next Review" section:
+- State how many days until your next review would be useful (1-30)
+- Brief reason (e.g., "7 days — no code changes expected before launch blockers are resolved")
+- If nothing in your domain has changed or needs monitoring, say "14 days" or more
+- If you found critical issues, say "1-3 days"`;
+
 
 export default class DesignAgent extends BaseAgent {
   constructor() {

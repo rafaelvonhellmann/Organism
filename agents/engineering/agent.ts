@@ -49,7 +49,14 @@ Output rules:
 - No references to codeEvidence, task inputs, or internal Organism fields
 - Write for a busy founder who has 30 seconds to read each assessment
 - Structure: 1) Key finding (1-2 sentences) 2) Why it matters 3) What to do about it
-- If nothing meaningful to report, say "No issues found" — don't pad with filler`;
+- If nothing meaningful to report, say "No issues found" — don't pad with filler
+
+At the end of your assessment, include a "Next Review" section:
+- State how many days until your next review would be useful (1-30)
+- Brief reason (e.g., "7 days — no code changes expected before launch blockers are resolved")
+- If nothing in your domain has changed or needs monitoring, say "14 days" or more
+- If you found critical issues, say "1-3 days"`;
+
 
 export default class EngineeringAgent extends BaseAgent {
   constructor() {

@@ -24,7 +24,14 @@ Output format:
 [Grouped by domain: strategy, engineering, security, marketing, etc.]
 
 Rules: Be terse. No fluff. If 3 agents said the same thing, say it once and note "(flagged by CEO, CTO, Engineering)".
-Maximum 2000 words.`;
+Maximum 2000 words.
+
+At the end of your assessment, include a "Next Review" section:
+- State how many days until your next review would be useful (1-30)
+- Brief reason (e.g., "7 days — no code changes expected before launch blockers are resolved")
+- If nothing in your domain has changed or needs monitoring, say "14 days" or more
+- If you found critical issues, say "1-3 days"`;
+
 
 export default class SynthesisAgent extends BaseAgent {
   constructor() {

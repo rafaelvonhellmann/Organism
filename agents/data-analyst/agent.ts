@@ -36,7 +36,14 @@ Rules:
 - Lead with the insight. Never bury it.
 - All SQL must be Supabase/Postgres compatible.
 - If data is ambiguous, state assumptions explicitly.
-- Be terse. No preamble.`;
+- Be terse. No preamble.
+
+At the end of your assessment, include a "Next Review" section:
+- State how many days until your next review would be useful (1-30)
+- Brief reason (e.g., "7 days — no code changes expected before launch blockers are resolved")
+- If nothing in your domain has changed or needs monitoring, say "14 days" or more
+- If you found critical issues, say "1-3 days"`;
+
 
 export default class DataAnalystAgent extends BaseAgent {
   constructor() {
