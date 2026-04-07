@@ -23,8 +23,8 @@ import { loadRegistry } from '../packages/core/src/registry.js';
 import { startScheduler } from '../packages/core/src/scheduler.js';
 import { startDaemon, dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
 import { isRateLimited, getRateLimitStatus } from '../agents/_base/mcp-client.js';
-import dashboardServer from '../packages/dashboard/src/server.js';
-
+// Dashboard import is conditional — skip if port is already in use (started by ensure-services)
+let dashboardServer: unknown = null;
 const VERSION = '0.2.0';
 const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? '7391');
 const DAEMON_POLL_MS = 10_000;   // 10 seconds — agent runner polling interval
@@ -479,9 +479,24 @@ async function main(): Promise<void> {
   // 2. Startup banner
   printBanner();
 
-  // 3. Dashboard is started by importing the server module (it calls server.listen() on import)
-  //    Port is already logged by the dashboard module. Just confirm here.
-  console.log(`[Daemon] Dashboard running on port ${DASHBOARD_PORT}`);
+  // 3. Dashboard — only start if port is free (ensure-services may have started it already)
+  try {
+    const net = await import('net');
+    const portFree = await new Promise<boolean>((resolve) => {
+      const s = net.createServer();
+      s.once('error', () => resolve(false));
+      s.once('listening', () => { s.close(); resolve(true); });
+      s.listen(DASHBOARD_PORT);
+    });
+    if (portFree) {
+      dashboardServer = await import('../packages/dashboard/src/server.js');
+      console.log(`[Daemon] Dashboard started on port ${DASHBOARD_PORT}`);
+    } else {
+      console.log(`[Daemon] Dashboard already running on port ${DASHBOARD_PORT}`);
+    }
+  } catch {
+    console.log(`[Daemon] Dashboard already running on port ${DASHBOARD_PORT}`);
+  }
 
   // 4. Migrations already run inside getDb() (called during health check above).
   console.log('[Daemon] Database migrations OK');
