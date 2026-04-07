@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
   if (!client) return Response.json({ actions: [] });
 
   const result = await client.execute(
-    'SELECT * FROM dashboard_actions ORDER BY created_at DESC LIMIT 20'
+    'SELECT * FROM dashboard_actions ORDER BY created_at DESC LIMIT 30'
   );
   return Response.json({ actions: result.rows });
 }
@@ -25,10 +25,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const { action, payload } = body;
 
-  const validActions = ['review', 'execute', 'status', 'onboard'];
-  if (!validActions.includes(action)) {
-    return Response.json({ error: `Invalid action. Valid: ${validActions.join(', ')}` }, { status: 400 });
-  }
+  if (!action) return Response.json({ error: 'Missing action' }, { status: 400 });
 
   await client.execute({
     sql: 'INSERT INTO dashboard_actions (action, payload, status, created_at) VALUES (?, ?, ?, ?)',

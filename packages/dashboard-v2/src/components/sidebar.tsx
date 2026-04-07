@@ -16,6 +16,8 @@ const NAV: NavItem[] = [
   { href: '/plan', label: 'Plan', icon: '!' },
   { href: '/insights', label: 'Insights', icon: '&' },
   { href: '/system', label: 'System', icon: '#' },
+  { href: '/command', label: 'Command', icon: '$' },
+  { href: '/guide', label: 'Manual', icon: '?' },
 ];
 
 export function Sidebar() {

@@ -49,6 +49,18 @@ export async function processDashboardActions(): Promise<void> {
           result = 'Status check completed';
           break;
         }
+        case 'command': {
+          const cmd = payload.command ?? '';
+          const project = payload.project ?? 'organism';
+          const { submitTask } = await import('./orchestrator.js');
+          await submitTask({
+            description: cmd,
+            input: { projectId: project, triggeredBy: 'dashboard-command' },
+            projectId: project,
+          });
+          result = `Command submitted: ${cmd}`;
+          break;
+        }
         default:
           result = `Unknown action: ${action.action}`;
       }
