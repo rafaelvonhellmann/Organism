@@ -125,23 +125,42 @@ function extractAssessment(output: unknown): string | null {
   return null;
 }
 
-/** Format the full output object with all sections rendered as markdown */
+/** Format the output object for human consumption — hide system internals */
 function formatFullOutput(output: unknown): string {
   if (!output) return '';
   if (typeof output === 'string') return output;
   if (typeof output !== 'object') return String(output);
 
   const obj = output as Record<string, unknown>;
+  const SKIP = new Set([
+    'type', 'pitchId', 'betId', 'status', 'originalTask', 'inputHash',
+    'taskId', 'agentName', 'model', 'tokensUsed', 'costUsd', 'skipped',
+    'reason', 'scheduledBy', 'frequencyTier', 'scheduledAt',
+  ]);
+  const LABELS: Record<string, string> = {
+    text: 'Summary', report: 'Report', scrutiny: 'Assessment', brief: 'Brief',
+    analysis: 'Analysis', plan: 'Plan', review: 'Review', implementation: 'Implementation',
+    title: 'Title', problem: 'What needs to happen', appetite: 'Scope',
+    successCriteria: 'Done when', noGos: 'Must avoid', rabbitHoles: 'Watch out for',
+    content: 'Content', result: 'Result', summary: 'Summary', assessment: 'Assessment',
+  };
   const sections: string[] = [];
   for (const [key, value] of Object.entries(obj)) {
     if (value === null || value === undefined) continue;
-    const heading = key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
+    if (SKIP.has(key)) continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    if (key === 'successCriteria' && Array.isArray(value) && value.length === 1 && String(value[0]).includes('completes successfully')) continue;
+    if (key === 'text' && typeof value === 'string' && value.length < 50 && Object.keys(obj).length > 3) continue;
+    const heading = LABELS[key] ?? key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
     if (typeof value === 'string') {
-      sections.push(`### ${heading}\n\n${value}`);
-    } else if (typeof value === 'object') {
-      sections.push(`### ${heading}\n\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``);
-    } else {
-      sections.push(`### ${heading}\n\n${String(value)}`);
+      if (value.length < 80 && !value.includes('\n')) {
+        sections.push(`**${heading}:** ${value}`);
+      } else {
+        sections.push(`### ${heading}\n\n${value}`);
+      }
+    } else if (Array.isArray(value)) {
+      const items = value.map(v => typeof v === 'string' ? v : JSON.stringify(v));
+      sections.push(`**${heading}:**\n${items.map(i => `- ${i}`).join('\n')}`);
     }
   }
   return sections.join('\n\n');
