@@ -1,47 +1,63 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useMemo } from 'react';
 import { Header } from '@/components/header';
+import { usePolling } from '@/hooks/use-polling';
 
 // ── Types ──────────────────────────────────────────────────────
 
-interface ActionItem {
+interface Task {
   id: string;
-  projectId: string;
-  title: string;
+  agent: string;
+  status: string;
+  lane: string;
   description: string;
-  priority: 'HIGH' | 'MEDIUM' | 'LOW';
-  status: 'todo' | 'in_progress' | 'done';
-  sourceTaskId: string | null;
-  sourceAgent: string | null;
-  dueDate: string | null;
   createdAt: number;
-  updatedAt: number | null;
-  rafaelNotes: string | null;
+  completedAt: number | null;
+  costUsd: number | null;
 }
 
-interface ActionItemsResponse {
-  items: ActionItem[];
-  counts: { todo: number; in_progress: number; done: number; total: number };
+interface TasksResponse {
+  tasks: Task[];
+  total: number;
 }
 
-// ── Agent role mapping ─────────────────────────────────────────
+// ── Time filters ──────────────────────────────────────────────
+
+const TIME_FILTERS = [
+  { label: 'Today', ms: 24 * 60 * 60 * 1000 },
+  { label: 'This Week', ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: '15 Days', ms: 15 * 24 * 60 * 60 * 1000 },
+  { label: 'This Month', ms: 30 * 24 * 60 * 60 * 1000 },
+  { label: 'Quarter', ms: 90 * 24 * 60 * 60 * 1000 },
+  { label: '6 Months', ms: 180 * 24 * 60 * 60 * 1000 },
+] as const;
+
+// ── Agent role mapping ────────────────────────────────────────
 
 const AGENT_ROLES: Record<string, string> = {
   'ceo': 'CEO', 'cto': 'CTO', 'cfo': 'CFO', 'product-manager': 'Product',
   'data-analyst': 'Data', 'engineering': 'Engineering', 'devops': 'DevOps',
   'security-audit': 'Security', 'quality-guardian': 'Guardian',
-  'marketing-strategist': 'Marketing', 'marketing-executor': 'Marketing Exec',
-  'seo': 'SEO', 'legal': 'Legal', 'sales': 'Sales',
-  'medical-content-reviewer': 'Research', 'community-manager': 'Community',
-  'pr-comms': 'PR', 'customer-success': 'Success', 'hr': 'HR', 'design': 'Design',
+  'quality-agent': 'Quality', 'marketing-strategist': 'Marketing',
+  'marketing-executor': 'Marketing Exec', 'seo': 'SEO', 'legal': 'Legal',
+  'sales': 'Sales', 'medical-content-reviewer': 'Research',
+  'community-manager': 'Community', 'pr-comms': 'PR',
+  'customer-success': 'Success', 'hr': 'HR', 'design': 'Design',
+  'synthesis': 'Synthesis',
 };
 
 function agentRole(agent: string): string {
   return AGENT_ROLES[agent] ?? agent.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
-// ── Priority styles ────────────────────────────────────────────
+// ── Lane to priority mapping ──────────────────────────────────
+
+function laneToPriority(lane: string): 'HIGH' | 'MEDIUM' | 'LOW' {
+  if (lane === 'HIGH') return 'HIGH';
+  if (lane === 'LOW') return 'LOW';
+  return 'MEDIUM';
+}
 
 const PRIORITY_STYLES = {
   HIGH: { bg: 'bg-red-500/15', text: 'text-red-400', label: 'HIGH' },
@@ -49,254 +65,164 @@ const PRIORITY_STYLES = {
   LOW: { bg: 'bg-green-500/15', text: 'text-green-400', label: 'LOW' },
 } as const;
 
-// ── Helpers ────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────
 
-function formatDueDate(dateStr: string | null): string {
-  if (!dateStr) return '';
-  const date = new Date(dateStr + 'T00:00:00');
-  return date.toLocaleDateString('en-AU', { day: '2-digit', month: 'short' });
+function timeAgo(ts: number): string {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return '1d ago';
+  return `${days}d ago`;
 }
 
-function isOverdue(dateStr: string | null): boolean {
-  if (!dateStr) return false;
-  const due = new Date(dateStr + 'T23:59:59');
-  return due.getTime() < Date.now();
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max).trimEnd() + '...';
 }
 
-function daysUntil(dateStr: string | null): number | null {
-  if (!dateStr) return null;
-  const due = new Date(dateStr + 'T00:00:00');
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  return Math.ceil((due.getTime() - now.getTime()) / 86400000);
+function formatCost(costUsd: number | null): string {
+  if (costUsd == null || costUsd === 0) return '';
+  return `$${costUsd.toFixed(3)}`;
 }
 
-// ── Kanban column config ──────────────────────────────────────
+// ── Component ─────────────────────────────────────────────────
 
-interface KanbanColumnDef {
-  key: 'todo' | 'in_progress' | 'done';
-  title: string;
-  accentColor: string;
-  dotColor: string;
-  emptyText: string;
-  animate?: boolean;
-}
-
-const COLUMNS: KanbanColumnDef[] = [
-  { key: 'todo', title: 'Todo', accentColor: 'text-blue-400', dotColor: 'bg-blue-500', emptyText: 'No items in todo' },
-  { key: 'in_progress', title: 'In Progress', accentColor: 'text-indigo-400', dotColor: 'bg-indigo-500', emptyText: 'Nothing in progress', animate: true },
-  { key: 'done', title: 'Done', accentColor: 'text-green-400', dotColor: 'bg-green-500', emptyText: 'No completed items yet' },
-];
-
-// ── Component ──────────────────────────────────────────────────
-
-export default function ActionPlanPage() {
+export default function PlanPage() {
   const [project, setProject] = useState('');
-  const [data, setData] = useState<ActionItemsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [priorityFilter, setPriorityFilter] = useState<string>('');
-  const [sortBy, setSortBy] = useState<'due_date' | 'priority' | 'created'>('due_date');
-  const [updating, setUpdating] = useState<string | null>(null);
+  const [filterIdx, setFilterIdx] = useState(1); // Default: "This Week"
+  const [completedOpen, setCompletedOpen] = useState(false);
 
-  const fetchData = useCallback(async () => {
-    try {
-      const pf = project ? `?project=${project}` : '';
-      const res = await fetch(`/api/action-items${pf}`, { cache: 'no-store' });
-      if (!res.ok) return;
-      const json: ActionItemsResponse = await res.json();
-      setData(json);
-      setLastUpdated(new Date());
-    } catch {
-      // Silent fail
-    } finally {
-      setLoading(false);
-    }
-  }, [project]);
+  const url = project
+    ? `/api/tasks?project=${project}&limit=500`
+    : '/api/tasks?limit=500';
 
-  useEffect(() => {
-    setLoading(true);
-    fetchData();
-    const id = setInterval(fetchData, 60_000);
-    return () => clearInterval(id);
-  }, [fetchData]);
+  const { data, loading, lastUpdated } = usePolling<TasksResponse>(url, 60_000);
 
-  async function updateStatus(itemId: string, newStatus: string) {
-    setUpdating(itemId);
-    try {
-      const res = await fetch(`/api/action-items/${itemId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus }),
-      });
-      if (res.ok) {
-        // Optimistic update
-        setData(prev => {
-          if (!prev) return prev;
-          const items = prev.items.map(item =>
-            item.id === itemId ? { ...item, status: newStatus as ActionItem['status'] } : item
-          );
-          const counts = {
-            todo: items.filter(i => i.status === 'todo').length,
-            in_progress: items.filter(i => i.status === 'in_progress').length,
-            done: items.filter(i => i.status === 'done').length,
-            total: items.length,
-          };
-          return { items, counts };
-        });
-      }
-    } catch {
-      // Silent fail
-    } finally {
-      setUpdating(null);
-    }
-  }
+  const allTasks = data?.tasks ?? [];
 
-  // Filter and sort items
-  const items = data?.items ?? [];
-  const filtered = items.filter(item => {
-    if (priorityFilter && item.priority !== priorityFilter) return false;
-    return true;
-  });
-
-  const sortedItems = [...filtered].sort((a, b) => {
-    if (sortBy === 'due_date') {
-      if (!a.dueDate && !b.dueDate) return 0;
-      if (!a.dueDate) return 1;
-      if (!b.dueDate) return -1;
-      return a.dueDate.localeCompare(b.dueDate);
-    }
-    if (sortBy === 'priority') {
-      const order = { HIGH: 0, MEDIUM: 1, LOW: 2 };
-      return (order[a.priority] ?? 3) - (order[b.priority] ?? 3);
-    }
-    return b.createdAt - a.createdAt;
-  });
+  // Filter by time
+  const selectedFilter = TIME_FILTERS[filterIdx];
+  const filtered = useMemo(() => {
+    const cutoff = Date.now() - selectedFilter.ms;
+    return allTasks.filter(t => t.createdAt > cutoff);
+  }, [allTasks, selectedFilter.ms]);
 
   // Group by status
-  const grouped = {
-    todo: sortedItems.filter(i => i.status === 'todo'),
-    in_progress: sortedItems.filter(i => i.status === 'in_progress'),
-    done: sortedItems.filter(i => i.status === 'done'),
-  };
+  const groups = useMemo(() => {
+    const inProgress: Task[] = [];
+    const needsDecision: Task[] = [];
+    const completed: Task[] = [];
 
-  const counts = data?.counts ?? { todo: 0, in_progress: 0, done: 0, total: 0 };
-  const completionPct = counts.total > 0 ? Math.round((counts.done / counts.total) * 100) : 0;
+    for (const t of filtered) {
+      if (t.status === 'awaiting_review') {
+        needsDecision.push(t);
+      } else if (t.status === 'completed') {
+        completed.push(t);
+      } else {
+        // in_progress, pending, or any other active status
+        inProgress.push(t);
+      }
+    }
+
+    return { inProgress, needsDecision, completed };
+  }, [filtered]);
+
+  // Summary stats
+  const totalCost = useMemo(
+    () => filtered.reduce((sum, t) => sum + (t.costUsd ?? 0), 0),
+    [filtered],
+  );
 
   return (
     <>
-      <Header title="Action Plan" project={project} onProjectChange={setProject} lastUpdated={lastUpdated} />
+      <Header title="Plan" project={project} onProjectChange={setProject} lastUpdated={lastUpdated} />
 
-      <div className="p-4 md:p-6">
-        {/* Loading */}
-        {loading && (
+      <div className="p-4 md:p-6 max-w-4xl mx-auto">
+        {/* ── Time filter tabs ──────────────────────────── */}
+        <div className="flex flex-wrap gap-1 mb-6">
+          {TIME_FILTERS.map((f, i) => (
+            <button
+              key={f.label}
+              onClick={() => setFilterIdx(i)}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                i === filterIdx
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Loading ──────────────────────────────────── */}
+        {loading && !data && (
           <div className="text-center py-16">
             <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse mx-auto mb-3" />
-            <p className="text-sm text-zinc-500">Loading action plan...</p>
+            <p className="text-sm text-zinc-500">Loading tasks...</p>
           </div>
         )}
 
         {data && (
           <>
-            {/* ── Progress bar ──────────────────────────────── */}
-            <div className="max-w-6xl mx-auto mb-6">
-              <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-5">
-                <div className="flex items-center justify-between mb-2">
-                  <h2 className="text-sm font-semibold text-zinc-100">Action Items Progress</h2>
-                  <span className="text-xl font-bold text-emerald-400 font-mono">{completionPct}%</span>
-                </div>
-                <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden mb-2">
-                  <div
-                    className="h-full bg-emerald-500 rounded-full transition-all duration-700 ease-out"
-                    style={{ width: `${completionPct}%` }}
-                  />
-                </div>
-                <div className="flex flex-wrap gap-4 text-xs">
-                  <span className="text-blue-400">{counts.todo} todo</span>
-                  <span className="text-indigo-400">{counts.in_progress} in progress</span>
-                  <span className="text-green-400">{counts.done} done</span>
-                  <span className="text-zinc-500">{counts.total} total</span>
-                </div>
-              </div>
+            {/* ── Summary stats ─────────────────────────── */}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-8">
+              <StatBox label="Total" value={filtered.length} color="text-zinc-100" />
+              <StatBox label="In Progress" value={groups.inProgress.length} color="text-amber-400" />
+              <StatBox label="Needs Decision" value={groups.needsDecision.length} color="text-red-400" />
+              <StatBox label="Completed" value={groups.completed.length} color="text-green-400" />
+              <StatBox label="Cost" value={`$${totalCost.toFixed(2)}`} color="text-zinc-300" />
             </div>
 
-            {/* ── Filters ──────────────────────────────────── */}
-            <div className="max-w-6xl mx-auto mb-4 flex flex-wrap gap-2">
-              <select
-                value={priorityFilter}
-                onChange={e => setPriorityFilter(e.target.value)}
-                className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-emerald-500 min-h-[44px]"
-              >
-                <option value="">All priorities</option>
-                <option value="HIGH">HIGH</option>
-                <option value="MEDIUM">MEDIUM</option>
-                <option value="LOW">LOW</option>
-              </select>
-
-              <select
-                value={sortBy}
-                onChange={e => setSortBy(e.target.value as typeof sortBy)}
-                className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-emerald-500 min-h-[44px]"
-              >
-                <option value="due_date">Sort by due date</option>
-                <option value="priority">Sort by priority</option>
-                <option value="created">Sort by newest</option>
-              </select>
-
-              {priorityFilter && (
-                <button
-                  onClick={() => setPriorityFilter('')}
-                  className="px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors min-h-[44px] flex items-center"
-                >
-                  Clear filter
-                </button>
-              )}
-            </div>
-
-            {/* ── Kanban board ─────────────────────────────── */}
-            <div className="max-w-6xl mx-auto overflow-x-auto pb-4">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 min-w-0">
-                {COLUMNS.map(col => {
-                  const colItems = grouped[col.key];
-                  return (
-                    <div key={col.key} className="flex flex-col min-w-0">
-                      {/* Column header */}
-                      <div className="flex items-center gap-2 mb-3 px-1">
-                        <span className={`w-2 h-2 rounded-full ${col.dotColor} ${col.animate ? 'animate-pulse' : ''}`} />
-                        <h3 className={`text-xs font-semibold uppercase tracking-wider ${col.accentColor}`}>
-                          {col.title}
-                        </h3>
-                        <span className="text-xs text-zinc-600 font-mono">{colItems.length}</span>
-                      </div>
-
-                      {/* Column body */}
-                      <div className="flex-1 space-y-2 bg-zinc-950/50 rounded-xl border border-zinc-800/50 p-2 min-h-[120px] max-h-[calc(100vh-20rem)] overflow-y-auto">
-                        {colItems.length === 0 && (
-                          <p className="text-xs text-zinc-600 text-center py-6">{col.emptyText}</p>
-                        )}
-                        {colItems.map(item => (
-                          <ActionCard
-                            key={item.id}
-                            item={item}
-                            currentStatus={col.key}
-                            onStatusChange={updateStatus}
-                            updating={updating === item.id}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Empty state */}
-            {items.length === 0 && (
+            {/* ── Empty state ──────────────────────────── */}
+            {filtered.length === 0 && (
               <div className="text-center py-16">
-                <div className="text-4xl mb-3 opacity-40">!</div>
-                <h3 className="text-lg font-semibold text-zinc-300 mb-2">No action items yet</h3>
-                <p className="text-sm text-zinc-500">Approve findings in the review queue to create action items.</p>
+                <p className="text-sm text-zinc-500">No tasks in this period.</p>
               </div>
+            )}
+
+            {/* ── Needs Decision (red) ─────────────────── */}
+            {groups.needsDecision.length > 0 && (
+              <TaskSection
+                title="Needs Decision"
+                count={groups.needsDecision.length}
+                dotColor="bg-red-500"
+                accentColor="text-red-400"
+                borderColor="border-red-500/20"
+                tasks={groups.needsDecision}
+                defaultOpen
+              />
+            )}
+
+            {/* ── In Progress (amber) ──────────────────── */}
+            {groups.inProgress.length > 0 && (
+              <TaskSection
+                title="In Progress"
+                count={groups.inProgress.length}
+                dotColor="bg-amber-500"
+                accentColor="text-amber-400"
+                borderColor="border-amber-500/20"
+                tasks={groups.inProgress}
+                defaultOpen
+              />
+            )}
+
+            {/* ── Completed (green, collapsed) ─────────── */}
+            {groups.completed.length > 0 && (
+              <TaskSection
+                title="Completed"
+                count={groups.completed.length}
+                dotColor="bg-green-500"
+                accentColor="text-green-400"
+                borderColor="border-green-500/20"
+                tasks={groups.completed}
+                defaultOpen={completedOpen}
+                onToggle={() => setCompletedOpen(o => !o)}
+              />
             )}
           </>
         )}
@@ -305,79 +231,105 @@ export default function ActionPlanPage() {
   );
 }
 
-// ── Action Card Component ────────────────────────────────────
+// ── Stat Box ──────────────────────────────────────────────────
 
-function ActionCard({
-  item,
-  currentStatus,
-  onStatusChange,
-  updating,
+function StatBox({ label, value, color }: { label: string; value: string | number; color: string }) {
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2.5">
+      <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-0.5">{label}</p>
+      <p className={`text-lg font-bold font-mono ${color}`}>{value}</p>
+    </div>
+  );
+}
+
+// ── Task Section ──────────────────────────────────────────────
+
+function TaskSection({
+  title,
+  count,
+  dotColor,
+  accentColor,
+  borderColor,
+  tasks,
+  defaultOpen,
+  onToggle,
 }: {
-  item: ActionItem;
-  currentStatus: string;
-  onStatusChange: (id: string, status: string) => void;
-  updating: boolean;
+  title: string;
+  count: number;
+  dotColor: string;
+  accentColor: string;
+  borderColor: string;
+  tasks: Task[];
+  defaultOpen: boolean;
+  onToggle?: () => void;
 }) {
-  const pStyle = PRIORITY_STYLES[item.priority] ?? PRIORITY_STYLES.MEDIUM;
-  const overdue = isOverdue(item.dueDate) && item.status !== 'done';
-  const days = daysUntil(item.dueDate);
-
-  const nextStatuses: { label: string; value: string; color: string }[] = [];
-  if (currentStatus === 'todo') {
-    nextStatuses.push({ label: 'Start', value: 'in_progress', color: 'bg-indigo-600 hover:bg-indigo-500 text-white' });
-    nextStatuses.push({ label: 'Done', value: 'done', color: 'bg-green-600 hover:bg-green-500 text-white' });
-  } else if (currentStatus === 'in_progress') {
-    nextStatuses.push({ label: 'Done', value: 'done', color: 'bg-green-600 hover:bg-green-500 text-white' });
-    nextStatuses.push({ label: 'Back to todo', value: 'todo', color: 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300' });
-  } else if (currentStatus === 'done') {
-    nextStatuses.push({ label: 'Reopen', value: 'todo', color: 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300' });
-  }
+  const [internalOpen, setInternalOpen] = useState(defaultOpen);
+  const isOpen = onToggle ? defaultOpen : internalOpen;
+  const toggle = onToggle ?? (() => setInternalOpen(o => !o));
 
   return (
-    <div className={`p-3 rounded-lg bg-zinc-900 border ${overdue ? 'border-red-500/40' : 'border-zinc-800/60'} hover:bg-zinc-800/60 transition-colors`}>
-      {/* Header: priority + agent */}
-      <div className="flex items-center gap-2 mb-1.5">
-        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${pStyle.bg} ${pStyle.text}`}>
-          {pStyle.label}
+    <div className={`mb-6 border-l-2 ${borderColor} pl-4`}>
+      <button
+        onClick={toggle}
+        className="flex items-center gap-2 mb-2 group w-full text-left"
+      >
+        <span className={`w-2 h-2 rounded-full ${dotColor} shrink-0`} />
+        <h3 className={`text-xs font-semibold uppercase tracking-wider ${accentColor}`}>
+          {title}
+        </h3>
+        <span className="text-xs text-zinc-600 font-mono">{count}</span>
+        <span className="ml-auto text-zinc-600 text-xs group-hover:text-zinc-400 transition-colors">
+          {isOpen ? '\u25B4' : '\u25BE'}
         </span>
-        {item.sourceAgent && (
-          <span className="text-[10px] font-medium text-zinc-500">
-            {agentRole(item.sourceAgent)}
-          </span>
-        )}
-        {item.dueDate && (
-          <span className={`text-[10px] ml-auto ${overdue ? 'text-red-400 font-medium' : 'text-zinc-500'}`}>
-            {overdue ? 'Overdue' : days !== null && days <= 3 ? `${days}d left` : formatDueDate(item.dueDate)}
-          </span>
-        )}
-      </div>
+      </button>
 
-      {/* Title */}
-      <p className="text-xs text-zinc-300 leading-relaxed line-clamp-2 mb-2">
-        {item.title}
-      </p>
-
-      {/* Status change buttons */}
-      <div className="flex items-center gap-1.5">
-        {nextStatuses.map(ns => (
-          <button
-            key={ns.value}
-            onClick={() => onStatusChange(item.id, ns.value)}
-            disabled={updating}
-            className={`px-2 py-1 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${ns.color}`}
-          >
-            {updating ? '...' : ns.label}
-          </button>
-        ))}
-        {item.sourceTaskId && (
-          <a
-            href={`/tasks/${item.sourceTaskId}`}
-            className="ml-auto text-[10px] text-zinc-600 hover:text-emerald-400 transition-colors"
-          >
-            Source
-          </a>
-        )}
-      </div>
+      {isOpen && (
+        <div className="space-y-0">
+          {tasks.map(task => (
+            <TaskRow key={task.id} task={task} />
+          ))}
+        </div>
+      )}
     </div>
+  );
+}
+
+// ── Task Row ──────────────────────────────────────────────────
+
+function TaskRow({ task }: { task: Task }) {
+  const priority = laneToPriority(task.lane);
+  const pStyle = PRIORITY_STYLES[priority];
+  const cost = formatCost(task.costUsd);
+
+  return (
+    <a
+      href={`/tasks/${task.id}`}
+      className="flex items-center gap-3 py-2 px-1 border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors group"
+    >
+      {/* Agent */}
+      <span className="text-xs text-zinc-500 w-20 shrink-0 truncate" title={task.agent}>
+        {agentRole(task.agent)}
+      </span>
+
+      {/* Priority badge */}
+      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${pStyle.bg} ${pStyle.text}`}>
+        {pStyle.label}
+      </span>
+
+      {/* Description */}
+      <span className="text-xs text-zinc-300 flex-1 min-w-0 truncate group-hover:text-zinc-100 transition-colors">
+        {truncate(task.description, 60)}
+      </span>
+
+      {/* Cost */}
+      {cost && (
+        <span className="text-[10px] text-zinc-500 font-mono shrink-0">{cost}</span>
+      )}
+
+      {/* Time ago */}
+      <span className="text-[10px] text-zinc-600 shrink-0 w-14 text-right">
+        {timeAgo(task.createdAt)}
+      </span>
+    </a>
   );
 }

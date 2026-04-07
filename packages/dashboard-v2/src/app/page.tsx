@@ -539,6 +539,41 @@ function ReviewQueueInner() {
     postDecision('reply', replyText.trim());
   }
 
+  async function handleBatchApprove() {
+    const routineItems = queue.filter(t => t.lane !== 'HIGH');
+    if (routineItems.length === 0 || deciding) return;
+    setDeciding(true);
+    setError(null);
+    let approvedCount = 0;
+
+    for (const task of routineItems) {
+      try {
+        const res = await fetch('/api/decisions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taskId: task.id, decision: 'approved' }),
+        });
+        if (res.ok) approvedCount++;
+      } catch {
+        // Continue with next item
+      }
+    }
+
+    // Remove approved items from queue
+    const approvedIds = new Set(routineItems.map(t => t.id));
+    const newQueue = queue.filter(t => !approvedIds.has(t.id));
+    setQueue(newQueue);
+    stableQueueRef.current = newQueue;
+    setReviewedCount(r => r + approvedCount);
+    setSessionStats(s => ({ ...s, approved: s.approved + approvedCount }));
+    setCurrentIndex(0);
+    setShowReplyForm(false);
+    setReplyText('');
+    setShowFullText(false);
+    setDeciding(false);
+    notifyDecision();
+  }
+
   function handleSkip() {
     setSessionStats(s => ({ ...s, skipped: s.skipped + 1 }));
     setShowReplyForm(false);
@@ -637,6 +672,25 @@ function ReviewQueueInner() {
               <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center justify-between">
                 <p className="text-sm text-red-300">{error}</p>
                 <button onClick={() => setError(null)} className="text-red-400 hover:text-red-200 text-xs ml-3">Dismiss</button>
+              </div>
+            )}
+
+            {/* Batch approve bar for routine items */}
+            {queue.filter(t => t.lane !== 'HIGH').length >= 3 && (
+              <div className="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center justify-between">
+                <div>
+                  <span className="text-sm text-emerald-300 font-medium">
+                    {queue.filter(t => t.lane !== 'HIGH').length} routine items
+                  </span>
+                  <span className="text-xs text-zinc-500 ml-2">LOW/MEDIUM priority, likely auto-approvable</span>
+                </div>
+                <button
+                  onClick={handleBatchApprove}
+                  disabled={deciding}
+                  className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors disabled:opacity-50"
+                >
+                  {deciding ? 'Approving...' : 'Approve all routine'}
+                </button>
               </div>
             )}
 
