@@ -470,6 +470,31 @@ export async function syncToTurso(): Promise<void> {
     await batchUpsert(remote, stmts);
   }
 
+  // ── Pull dashboard decisions back to local ──
+  // When Rafael approves/dismisses on the dashboard, it updates Turso directly.
+  // Pull those status changes back so the local daemon knows.
+  let pulledDecisions = 0;
+  try {
+    const remoteDecisions = await remote.execute(
+      `SELECT task_id, decision FROM review_decisions WHERE decided_at > ?`,
+      [lastSyncTs > 0 ? lastSyncTs : Date.now() - 24 * 60 * 60 * 1000]
+    );
+    if (remoteDecisions.rows.length > 0) {
+      const local = getDb();
+      for (const row of remoteDecisions.rows) {
+        const taskId = row.task_id as string;
+        const decision = row.decision as string;
+        if (decision === 'approved') {
+          local.prepare("UPDATE tasks SET status = 'completed', completed_at = COALESCE(completed_at, ?) WHERE id = ? AND status = 'awaiting_review'").run(Date.now(), taskId);
+        } else if (decision === 'rejected' || decision === 'dismissed') {
+          local.prepare("UPDATE tasks SET status = 'failed' WHERE id = ? AND status = 'awaiting_review'").run(taskId);
+        }
+      }
+      pulledDecisions = remoteDecisions.rows.length;
+      if (pulledDecisions > 0) console.log(`[turso-sync] Pulled ${pulledDecisions} dashboard decisions → local`);
+    }
+  } catch { /* review_decisions table may not exist yet */ }
+
   // ── Dashboard actions (BIDIRECTIONAL) ──
   // 1. Pull pending actions FROM Turso → local
   let pulledActions = 0;
