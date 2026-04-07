@@ -174,6 +174,37 @@ export function renderMarkdown(raw: string): string {
   return html.join('\n');
 }
 
+/**
+ * Strip system prompt instructions and internal jargon from text before display.
+ * Removes things like "You have been given actual code evidence...",
+ * "PROBLEM/SOLUTION" formatting instructions, codeEvidence references, etc.
+ */
+export function cleanForDisplay(text: string): string {
+  return text
+    // Remove "You have been given actual code evidence..." blocks
+    .replace(/You have been given actual code evidence[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, '')
+    // Remove "For every finding, state:" instruction blocks
+    .replace(/For every finding,?\s*state:[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, '')
+    // Remove "If the evidence shows..." instruction blocks
+    .replace(/If the evidence shows[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, '')
+    // Remove "Critical evidence to check BEFORE flagging:" blocks
+    .replace(/Critical evidence to check[\s\S]*?(?=\n\n[A-Z]|$)/gi, '')
+    // Remove "PROBLEM:" and "SOLUTION:" labels (keep content)
+    .replace(/^PROBLEM:\s*/gm, '')
+    .replace(/^SOLUTION:\s*/gm, '')
+    // Remove "ALREADY ADDRESSED:" labels
+    .replace(/^ALREADY ADDRESSED:\s*/gm, '')
+    // Remove codeEvidence references
+    .replace(/\(see codeEvidence\.\w+\)/gi, '')
+    .replace(/using codeEvidence[\s\S]*?(?=\.\s|\n|$)/gi, '')
+    .replace(/codeEvidence\.\w+/gi, '')
+    // Remove BYPASS_AUTH, CI pipeline evidence lines
+    .replace(/^(BYPASS_AUTH|Copyright audit|Security audit|CI pipeline|Rate limiting|Tests EXIST).*$/gm, '')
+    // Clean up multiple blank lines
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /** Apply inline formatting: bold, italic, code, links */
 function inlineFormat(text: string): string {
   let result = escapeHtml(text);

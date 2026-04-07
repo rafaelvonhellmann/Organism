@@ -4,7 +4,7 @@ import { Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Header } from '@/components/header';
 import { StatusBadge } from '@/components/status-badge';
-import { renderMarkdown } from '@/lib/markdown';
+import { renderMarkdown, cleanForDisplay } from '@/lib/markdown';
 import Link from 'next/link';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -128,7 +128,7 @@ function extractAssessment(output: unknown): string | null {
     if (o.type === 'shaping_complete' || o.pitchId || o.betId) {
       const parts: string[] = [];
       if (typeof o.title === 'string') parts.push(`**${o.title}**`);
-      if (typeof o.problem === 'string') parts.push(o.problem as string);
+      if (typeof o.problem === 'string') parts.push(cleanForDisplay(o.problem as string));
       if (typeof o.appetite === 'string') parts.push(`**Appetite:** ${o.appetite}`);
       if (Array.isArray(o.successCriteria) && o.successCriteria.length > 0) {
         parts.push('**Success criteria:** ' + (o.successCriteria as string[]).join(', '));
@@ -234,11 +234,13 @@ function formatFullOutput(output: unknown): string {
     const heading = LABELS[key] ?? key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
 
     if (typeof value === 'string') {
+      const clean = cleanForDisplay(value);
+      if (!clean) continue;
       // Don't wrap short values in a heading — inline them
-      if (value.length < 80 && !value.includes('\n')) {
-        sections.push(`**${heading}:** ${value}`);
+      if (clean.length < 80 && !clean.includes('\n')) {
+        sections.push(`**${heading}:** ${clean}`);
       } else {
-        sections.push(`### ${heading}\n\n${value}`);
+        sections.push(`### ${heading}\n\n${clean}`);
       }
     } else if (Array.isArray(value)) {
       const items = value.map(v => typeof v === 'string' ? v : JSON.stringify(v));

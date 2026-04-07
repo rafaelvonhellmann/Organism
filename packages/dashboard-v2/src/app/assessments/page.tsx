@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Header } from '@/components/header';
+import { cleanForDisplay } from '@/lib/markdown';
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -281,7 +282,7 @@ function RunCard({ run, expanded, onToggle }: { run: ReviewRun; expanded: boolea
             <div className="bg-zinc-800/40 rounded-lg p-3">
               <p className="text-[10px] uppercase tracking-wider text-emerald-500/70 mb-1.5">Synthesis Summary</p>
               <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-wrap">
-                {run.synthesisSummary}
+                {cleanForDisplay(run.synthesisSummary ?? '')}
               </p>
             </div>
           )}
@@ -302,7 +303,7 @@ function RunCard({ run, expanded, onToggle }: { run: ReviewRun; expanded: boolea
                         {agentRole(f.agent)}
                       </span>
                       <span className="text-zinc-300 leading-relaxed">
-                        {briefFinding(f.description)}
+                        {briefFinding(cleanForDisplay(f.description))}
                       </span>
                     </div>
                   );

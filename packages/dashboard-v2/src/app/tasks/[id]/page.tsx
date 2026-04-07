@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Header } from '@/components/header';
 import { StatusBadge } from '@/components/status-badge';
 import { usePolling } from '@/hooks/use-polling';
-import { renderMarkdown } from '@/lib/markdown';
+import { renderMarkdown, cleanForDisplay } from '@/lib/markdown';
 
 interface TaskDetail {
   task: {
@@ -70,7 +70,7 @@ function extractAssessment(output: unknown): string | null {
     if (o.type === 'shaping_complete' || o.pitchId || o.betId) {
       const parts: string[] = [];
       if (typeof o.title === 'string') parts.push(`**${o.title}**`);
-      if (typeof o.problem === 'string') parts.push(o.problem as string);
+      if (typeof o.problem === 'string') parts.push(cleanForDisplay(o.problem as string));
       if (typeof o.appetite === 'string') parts.push(`**Appetite:** ${o.appetite}`);
       if (Array.isArray(o.successCriteria) && o.successCriteria.length > 0) {
         parts.push('**Success criteria:** ' + (o.successCriteria as string[]).join(', '));
@@ -153,10 +153,12 @@ function formatFullOutput(output: unknown): string {
     if (key === 'text' && typeof value === 'string' && value.length < 50 && Object.keys(obj).length > 3) continue;
     const heading = LABELS[key] ?? key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
     if (typeof value === 'string') {
-      if (value.length < 80 && !value.includes('\n')) {
-        sections.push(`**${heading}:** ${value}`);
+      const clean = cleanForDisplay(value);
+      if (!clean) continue;
+      if (clean.length < 80 && !clean.includes('\n')) {
+        sections.push(`**${heading}:** ${clean}`);
       } else {
-        sections.push(`### ${heading}\n\n${value}`);
+        sections.push(`### ${heading}\n\n${clean}`);
       }
     } else if (Array.isArray(value)) {
       const items = value.map(v => typeof v === 'string' ? v : JSON.stringify(v));

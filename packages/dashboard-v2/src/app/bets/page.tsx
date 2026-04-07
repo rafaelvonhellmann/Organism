@@ -4,6 +4,7 @@ import { useState, useCallback } from 'react';
 import { Header } from '@/components/header';
 import { usePolling } from '@/hooks/use-polling';
 import { StatusBadge } from '@/components/status-badge';
+import { cleanForDisplay } from '@/lib/markdown';
 
 interface BetRow {
   id: string;
@@ -131,7 +132,7 @@ function BetCard({ bet, onClick }: { bet: BetRow; onClick: () => void }) {
         </span>
       </div>
 
-      <p className="text-xs text-zinc-400 mb-3 line-clamp-2">{bet.problem}</p>
+      <p className="text-xs text-zinc-400 mb-3 line-clamp-2">{cleanForDisplay(bet.problem)}</p>
 
       <div className="flex items-center gap-4 text-[11px] text-zinc-500">
         <span>Appetite: <span className="text-zinc-300">{bet.appetite}</span></span>
@@ -236,7 +237,7 @@ function BetDetailView({ betId, onBack }: { betId: string; onBack: () => void })
             {bet.status.replace(/_/g, ' ')}
           </span>
         </div>
-        <p className="text-sm text-zinc-400 mb-4">{bet.problem}</p>
+        <p className="text-sm text-zinc-400 mb-4">{cleanForDisplay(bet.problem)}</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
           <div><span className="text-zinc-500">Appetite:</span> <span className="text-zinc-200">{bet.appetite}</span></div>
           <div><span className="text-zinc-500">Shaped by:</span> <span className="text-zinc-200">{bet.shapedBy}</span></div>
