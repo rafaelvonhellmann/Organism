@@ -1,335 +1,234 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { Header } from '@/components/header';
 import { usePolling } from '@/hooks/use-polling';
+import Link from 'next/link';
 
 // ── Types ──────────────────────────────────────────────────────
 
-interface Task {
+interface TaskRow {
   id: string;
   agent: string;
   status: string;
   lane: string;
   description: string;
+  costUsd: number | null;
   createdAt: number;
   completedAt: number | null;
-  costUsd: number | null;
 }
 
-interface TasksResponse {
-  tasks: Task[];
-  total: number;
+// ── Perspective plans per time horizon ─────────────────────────
+
+interface PerspectivePlan {
+  name: string;
+  role: string;
+  thisWeek: string;
+  fifteenDays: string;
+  oneMonth: string;
+  threeMonths: string;
+  sixMonths: string;
 }
 
-// ── Time filters ──────────────────────────────────────────────
+const PLANS: PerspectivePlan[] = [
+  {
+    name: 'CEO / Strategy',
+    role: 'ceo',
+    thisWeek: 'Validate ANZCA beachhead PMF. Approve enrichment spend ($465).',
+    fifteenDays: 'Confirm pricing (AUD $49 or $59). Set 30-day launch OKRs.',
+    oneMonth: 'Beta launch with 10 trainees. Measure NPS + retention.',
+    threeMonths: '30 paying subscribers (breakeven). Open CICM beachhead.',
+    sixMonths: '80+ subscribers. ACEM expansion. Series seed if needed.',
+  },
+  {
+    name: 'Product',
+    role: 'product-manager',
+    thisWeek: 'RICE-score remaining backlog. Define activation metric.',
+    fifteenDays: 'Ship onboarding flow. Freemium vs paywall decision.',
+    oneMonth: 'Stripe integration live. First paying users.',
+    threeMonths: 'Usage analytics dashboard. CICM question bank scoped.',
+    sixMonths: 'Multi-college platform. Adaptive learning v1.',
+  },
+  {
+    name: 'Engineering',
+    role: 'engineering',
+    thisWeek: 'Complete SAQ citation enrichment ($85). Fix auth flow.',
+    fifteenDays: 'VIVA model_answer enrichment ($380). Landing page.',
+    oneMonth: 'Stripe paywall. Performance optimization.',
+    threeMonths: 'CICM schema + question import. API cost optimization.',
+    sixMonths: 'Adaptive difficulty engine. Mobile app (if warranted).',
+  },
+  {
+    name: 'Technology',
+    role: 'cto',
+    thisWeek: 'Architecture review: enrichment pipeline stability.',
+    fifteenDays: 'Evaluate caching strategy for API cost reduction.',
+    oneMonth: 'Load testing for 30+ concurrent users.',
+    threeMonths: 'Multi-tenant architecture for CICM. CDN + edge.',
+    sixMonths: 'Platform scaling plan. Evaluate AI model alternatives.',
+  },
+  {
+    name: 'Finance',
+    role: 'cfo',
+    thisWeek: 'Track enrichment spend vs budget ($465 cap).',
+    fifteenDays: 'Unit economics model: CAC, LTV, payback period.',
+    oneMonth: 'Revenue tracking live. Monthly burn report.',
+    threeMonths: 'Breakeven validation. CICM investment case.',
+    sixMonths: 'Annual financial model. Funding requirements analysis.',
+  },
+  {
+    name: 'Marketing',
+    role: 'marketing-strategist',
+    thisWeek: 'Draft founder post for ANZCA trainee Facebook groups.',
+    fifteenDays: 'SEO: target "ANZCA primary exam questions" keywords.',
+    oneMonth: 'YouTube demo video. 5 beta testimonials.',
+    threeMonths: 'Content calendar live. Community building in trainee networks.',
+    sixMonths: 'Conference presence (ANZCA ASM). Referral program.',
+  },
+  {
+    name: 'Security',
+    role: 'security-audit',
+    thisWeek: 'Verify auth bypass is OFF. Check RLS policies.',
+    fifteenDays: 'Penetration test pre-launch checklist.',
+    oneMonth: 'Compliance review for medical data handling.',
+    threeMonths: 'OWASP top 10 full audit. SOC 2 readiness check.',
+    sixMonths: 'Privacy impact assessment for multi-college data.',
+  },
+  {
+    name: 'Legal',
+    role: 'legal',
+    thisWeek: 'Review TOS draft. Copyright audit status.',
+    fifteenDays: 'Privacy policy for Australian medical data.',
+    oneMonth: 'Subscription terms finalized. Refund policy.',
+    threeMonths: 'AHPRA compliance check. Cross-college licensing.',
+    sixMonths: 'International expansion legal requirements.',
+  },
+  {
+    name: 'Medical Content',
+    role: 'medical-content-reviewer',
+    thisWeek: 'Audit enrichment quality: SAQ citation accuracy.',
+    fifteenDays: 'VIVA model_answer quality validation.',
+    oneMonth: 'Content accuracy report for beta users.',
+    threeMonths: 'CICM curriculum mapping. Gap analysis.',
+    sixMonths: 'ACEM question bank scoping. Expert review panel.',
+  },
+  {
+    name: 'Data & Analytics',
+    role: 'data-analyst',
+    thisWeek: 'Define pre-launch KPIs. Instrument signup funnel.',
+    fifteenDays: 'Analytics dashboard: session patterns, completion rates.',
+    oneMonth: 'Cohort analysis: 7-day retention, study patterns.',
+    threeMonths: 'API cost per user tracking. Engagement scoring.',
+    sixMonths: 'Predictive analytics: pass rate correlation.',
+  },
+];
 
-const TIME_FILTERS = [
-  { label: 'Today', ms: 24 * 60 * 60 * 1000 },
-  { label: 'This Week', ms: 7 * 24 * 60 * 60 * 1000 },
-  { label: '15 Days', ms: 15 * 24 * 60 * 60 * 1000 },
-  { label: 'This Month', ms: 30 * 24 * 60 * 60 * 1000 },
-  { label: 'Quarter', ms: 90 * 24 * 60 * 60 * 1000 },
-  { label: '6 Months', ms: 180 * 24 * 60 * 60 * 1000 },
-] as const;
+const HORIZONS = [
+  { key: 'thisWeek' as const, label: 'This Week', accent: 'emerald' },
+  { key: 'fifteenDays' as const, label: '15 Days', accent: 'blue' },
+  { key: 'oneMonth' as const, label: '1 Month', accent: 'indigo' },
+  { key: 'threeMonths' as const, label: '3 Months', accent: 'amber' },
+  { key: 'sixMonths' as const, label: '6 Months', accent: 'zinc' },
+];
 
-// ── Agent role mapping ────────────────────────────────────────
+type HorizonKey = typeof HORIZONS[number]['key'];
 
-const AGENT_ROLES: Record<string, string> = {
-  'ceo': 'CEO', 'cto': 'CTO', 'cfo': 'CFO', 'product-manager': 'Product',
-  'data-analyst': 'Data', 'engineering': 'Engineering', 'devops': 'DevOps',
-  'security-audit': 'Security', 'quality-guardian': 'Guardian',
-  'quality-agent': 'Quality', 'marketing-strategist': 'Marketing',
-  'marketing-executor': 'Marketing Exec', 'seo': 'SEO', 'legal': 'Legal',
-  'sales': 'Sales', 'medical-content-reviewer': 'Research',
-  'community-manager': 'Community', 'pr-comms': 'PR',
-  'customer-success': 'Success', 'hr': 'HR', 'design': 'Design',
-  'synthesis': 'Synthesis',
-};
-
-function agentRole(agent: string): string {
-  return AGENT_ROLES[agent] ?? agent.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-}
-
-// ── Lane to priority mapping ──────────────────────────────────
-
-function laneToPriority(lane: string): 'HIGH' | 'MEDIUM' | 'LOW' {
-  if (lane === 'HIGH') return 'HIGH';
-  if (lane === 'LOW') return 'LOW';
-  return 'MEDIUM';
-}
-
-const PRIORITY_STYLES = {
-  HIGH: { bg: 'bg-red-500/15', text: 'text-red-400', label: 'HIGH' },
-  MEDIUM: { bg: 'bg-amber-500/15', text: 'text-amber-400', label: 'MED' },
-  LOW: { bg: 'bg-green-500/15', text: 'text-green-400', label: 'LOW' },
-} as const;
-
-// ── Helpers ───────────────────────────────────────────────────
-
-function timeAgo(ts: number): string {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
+function timeAgo(ms: number): string {
+  const mins = Math.floor((Date.now() - ms) / 60000);
   if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days === 1) return '1d ago';
-  return `${days}d ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
 }
 
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return text.slice(0, max).trimEnd() + '...';
-}
-
-function formatCost(costUsd: number | null): string {
-  if (costUsd == null || costUsd === 0) return '';
-  return `$${costUsd.toFixed(3)}`;
-}
-
-// ── Component ─────────────────────────────────────────────────
+// ── Component ──────────────────────────────────────────────────
 
 export default function PlanPage() {
   const [project, setProject] = useState('');
-  const [filterIdx, setFilterIdx] = useState(1); // Default: "This Week"
-  const [completedOpen, setCompletedOpen] = useState(false);
+  const [horizon, setHorizon] = useState<HorizonKey>('thisWeek');
+  const { data: tasksData, lastUpdated } = usePolling<{ tasks: TaskRow[] }>('/api/tasks?limit=200');
 
-  const url = project
-    ? `/api/tasks?project=${project}&limit=500`
-    : '/api/tasks?limit=500';
-
-  const { data, loading, lastUpdated } = usePolling<TasksResponse>(url, 60_000);
-
-  const allTasks = data?.tasks ?? [];
-
-  // Filter by time
-  const selectedFilter = TIME_FILTERS[filterIdx];
-  const filtered = useMemo(() => {
-    const cutoff = Date.now() - selectedFilter.ms;
-    return allTasks.filter(t => t.createdAt > cutoff);
-  }, [allTasks, selectedFilter.ms]);
-
-  // Group by status
-  const groups = useMemo(() => {
-    const inProgress: Task[] = [];
-    const needsDecision: Task[] = [];
-    const completed: Task[] = [];
-
-    for (const t of filtered) {
-      if (t.status === 'awaiting_review') {
-        needsDecision.push(t);
-      } else if (t.status === 'completed') {
-        completed.push(t);
-      } else {
-        // in_progress, pending, or any other active status
-        inProgress.push(t);
-      }
-    }
-
-    return { inProgress, needsDecision, completed };
-  }, [filtered]);
-
-  // Summary stats
-  const totalCost = useMemo(
-    () => filtered.reduce((sum, t) => sum + (t.costUsd ?? 0), 0),
-    [filtered],
-  );
+  const tasks = tasksData?.tasks ?? [];
+  const needsDecision = tasks.filter(t => t.status === 'awaiting_review').length;
+  const inProgress = tasks.filter(t => t.status === 'in_progress' || t.status === 'pending').length;
 
   return (
     <>
       <Header title="Plan" project={project} onProjectChange={setProject} lastUpdated={lastUpdated} />
 
-      <div className="p-4 md:p-6 max-w-4xl mx-auto">
-        {/* ── Time filter tabs ──────────────────────────── */}
-        <div className="flex flex-wrap gap-1 mb-6">
-          {TIME_FILTERS.map((f, i) => (
-            <button
-              key={f.label}
-              onClick={() => setFilterIdx(i)}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                i === filterIdx
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
+      <div className="p-4 md:p-6">
+        <div className="max-w-4xl mx-auto space-y-6">
 
-        {/* ── Loading ──────────────────────────────────── */}
-        {loading && !data && (
-          <div className="text-center py-16">
-            <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse mx-auto mb-3" />
-            <p className="text-sm text-zinc-500">Loading tasks...</p>
+          {/* Horizon tabs */}
+          <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-xl p-1">
+            {HORIZONS.map(h => (
+              <button
+                key={h.key}
+                onClick={() => setHorizon(h.key)}
+                className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                  horizon === h.key
+                    ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-600/30'
+                    : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+              >
+                {h.label}
+              </button>
+            ))}
           </div>
-        )}
 
-        {data && (
-          <>
-            {/* ── Summary stats ─────────────────────────── */}
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-8">
-              <StatBox label="Total" value={filtered.length} color="text-zinc-100" />
-              <StatBox label="In Progress" value={groups.inProgress.length} color="text-amber-400" />
-              <StatBox label="Needs Decision" value={groups.needsDecision.length} color="text-red-400" />
-              <StatBox label="Completed" value={groups.completed.length} color="text-green-400" />
-              <StatBox label="Cost" value={`$${totalCost.toFixed(2)}`} color="text-zinc-300" />
-            </div>
-
-            {/* ── Empty state ──────────────────────────── */}
-            {filtered.length === 0 && (
-              <div className="text-center py-16">
-                <p className="text-sm text-zinc-500">No tasks in this period.</p>
+          {/* Active work counters */}
+          {(needsDecision > 0 || inProgress > 0) && (
+            <div className="grid grid-cols-2 gap-3">
+              {needsDecision > 0 && (
+                <Link href="/" className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 hover:border-red-500/40 transition-colors">
+                  <span className="text-2xl font-bold text-red-400">{needsDecision}</span>
+                  <p className="text-xs text-red-400/70 mt-1">awaiting your decision</p>
+                </Link>
+              )}
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
+                <span className="text-2xl font-bold text-amber-400">{inProgress}</span>
+                <p className="text-xs text-amber-400/70 mt-1">tasks in progress</p>
               </div>
-            )}
+            </div>
+          )}
 
-            {/* ── Needs Decision (red) ─────────────────── */}
-            {groups.needsDecision.length > 0 && (
-              <TaskSection
-                title="Needs Decision"
-                count={groups.needsDecision.length}
-                dotColor="bg-red-500"
-                accentColor="text-red-400"
-                borderColor="border-red-500/20"
-                tasks={groups.needsDecision}
-                defaultOpen
-              />
-            )}
+          {/* Perspective plan cards */}
+          <div className="space-y-3">
+            {PLANS.map(plan => {
+              const planText = plan[horizon];
+              const accentColor = HORIZONS.find(h => h.key === horizon)?.accent ?? 'zinc';
+              const recentTasks = tasks
+                .filter(t => t.agent === plan.role)
+                .sort((a, b) => (b.completedAt ?? b.createdAt) - (a.completedAt ?? a.createdAt))
+                .slice(0, 2);
 
-            {/* ── In Progress (amber) ──────────────────── */}
-            {groups.inProgress.length > 0 && (
-              <TaskSection
-                title="In Progress"
-                count={groups.inProgress.length}
-                dotColor="bg-amber-500"
-                accentColor="text-amber-400"
-                borderColor="border-amber-500/20"
-                tasks={groups.inProgress}
-                defaultOpen
-              />
-            )}
+              return (
+                <div key={plan.role} className={`bg-zinc-900 border-l-2 border-${accentColor}-500/40 border border-zinc-800 rounded-xl p-4`}>
+                  <h4 className="text-sm font-semibold text-zinc-200 mb-1.5">{plan.name}</h4>
+                  <p className="text-sm text-zinc-300 leading-relaxed">{planText}</p>
 
-            {/* ── Completed (green, collapsed) ─────────── */}
-            {groups.completed.length > 0 && (
-              <TaskSection
-                title="Completed"
-                count={groups.completed.length}
-                dotColor="bg-green-500"
-                accentColor="text-green-400"
-                borderColor="border-green-500/20"
-                tasks={groups.completed}
-                defaultOpen={completedOpen}
-                onToggle={() => setCompletedOpen(o => !o)}
-              />
-            )}
-          </>
-        )}
+                  {recentTasks.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-zinc-800/50">
+                      <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1">Recent</p>
+                      {recentTasks.map(t => (
+                        <div key={t.id} className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
+                          <span className={`w-1.5 h-1.5 rounded-full ${
+                            t.status === 'completed' ? 'bg-green-500' :
+                            t.status === 'awaiting_review' ? 'bg-red-500' :
+                            t.status === 'in_progress' ? 'bg-amber-500' : 'bg-zinc-600'
+                          }`} />
+                          <span className="flex-1 truncate">{t.description.replace(/^\[SHAPING\]\s*/i, '').slice(0, 60)}</span>
+                          <span className="shrink-0">{timeAgo(t.completedAt ?? t.createdAt)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </>
-  );
-}
-
-// ── Stat Box ──────────────────────────────────────────────────
-
-function StatBox({ label, value, color }: { label: string; value: string | number; color: string }) {
-  return (
-    <div className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2.5">
-      <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-0.5">{label}</p>
-      <p className={`text-lg font-bold font-mono ${color}`}>{value}</p>
-    </div>
-  );
-}
-
-// ── Task Section ──────────────────────────────────────────────
-
-function TaskSection({
-  title,
-  count,
-  dotColor,
-  accentColor,
-  borderColor,
-  tasks,
-  defaultOpen,
-  onToggle,
-}: {
-  title: string;
-  count: number;
-  dotColor: string;
-  accentColor: string;
-  borderColor: string;
-  tasks: Task[];
-  defaultOpen: boolean;
-  onToggle?: () => void;
-}) {
-  const [internalOpen, setInternalOpen] = useState(defaultOpen);
-  const isOpen = onToggle ? defaultOpen : internalOpen;
-  const toggle = onToggle ?? (() => setInternalOpen(o => !o));
-
-  return (
-    <div className={`mb-6 border-l-2 ${borderColor} pl-4`}>
-      <button
-        onClick={toggle}
-        className="flex items-center gap-2 mb-2 group w-full text-left"
-      >
-        <span className={`w-2 h-2 rounded-full ${dotColor} shrink-0`} />
-        <h3 className={`text-xs font-semibold uppercase tracking-wider ${accentColor}`}>
-          {title}
-        </h3>
-        <span className="text-xs text-zinc-600 font-mono">{count}</span>
-        <span className="ml-auto text-zinc-600 text-xs group-hover:text-zinc-400 transition-colors">
-          {isOpen ? '\u25B4' : '\u25BE'}
-        </span>
-      </button>
-
-      {isOpen && (
-        <div className="space-y-0">
-          {tasks.map(task => (
-            <TaskRow key={task.id} task={task} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Task Row ──────────────────────────────────────────────────
-
-function TaskRow({ task }: { task: Task }) {
-  const priority = laneToPriority(task.lane);
-  const pStyle = PRIORITY_STYLES[priority];
-  const cost = formatCost(task.costUsd);
-
-  return (
-    <a
-      href={`/tasks/${task.id}`}
-      className="flex items-center gap-3 py-2 px-1 border-b border-zinc-800/50 hover:bg-zinc-800/30 transition-colors group"
-    >
-      {/* Agent */}
-      <span className="text-xs text-zinc-500 w-20 shrink-0 truncate" title={task.agent}>
-        {agentRole(task.agent)}
-      </span>
-
-      {/* Priority badge */}
-      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${pStyle.bg} ${pStyle.text}`}>
-        {pStyle.label}
-      </span>
-
-      {/* Description */}
-      <span className="text-xs text-zinc-300 flex-1 min-w-0 truncate group-hover:text-zinc-100 transition-colors">
-        {truncate(task.description, 60)}
-      </span>
-
-      {/* Cost */}
-      {cost && (
-        <span className="text-[10px] text-zinc-500 font-mono shrink-0">{cost}</span>
-      )}
-
-      {/* Time ago */}
-      <span className="text-[10px] text-zinc-600 shrink-0 w-14 text-right">
-        {timeAgo(task.createdAt)}
-      </span>
-    </a>
   );
 }
