@@ -56,7 +56,9 @@ export function shouldRunNow(
 
   switch (frequencyTier) {
     case 'always-on':
-      return true;
+      // Only create if no recent run (within last 60 min) — prevents spam
+      if (lastRunAt === null) return true;
+      return nowMs - lastRunAt > 60 * 60 * 1000;
 
     case 'on-demand':
       return false;
