@@ -263,6 +263,15 @@ async function schedulerTick(): Promise<void> {
     }
   } catch { /* non-critical — git-watcher may fail if repos don't exist */ }
 
+  // ── Progress monitoring — check if weekly objectives are being met ────
+  try {
+    const { checkProgressAndCreateTasks } = await import('./progress-monitor.js');
+    const created = checkProgressAndCreateTasks();
+    if (created > 0) {
+      console.log(`[Scheduler] Progress monitor created ${created} objective tasks`);
+    }
+  } catch { /* non-critical */ }
+
   // Deduplicate by owner — each agent dispatches once per tick at most
   const agentTierMap = new Map<string, { tier: AgentCapability['frequencyTier']; description: string }>();
   for (const cap of capabilities) {
@@ -273,6 +282,10 @@ async function schedulerTick(): Promise<void> {
 
   let createdTasks = false;
 
+  // DISABLED: Generic agent-level scheduling creates tasks with no project context.
+  // Progress monitor (above) creates specific objective tasks instead.
+  // The weekly project reviews (Monday/Tuesday) handle full reviews.
+  /*
   for (const [agent, { tier, description }] of agentTierMap) {
     // on-demand agents only run when tasks are explicitly created for them
     if (tier === 'on-demand') continue;
@@ -310,6 +323,7 @@ async function schedulerTick(): Promise<void> {
       }
     }
   }
+  */
 
   // Process any actions triggered from the dashboard
   try { await processDashboardActions(); } catch { /* non-critical */ }

@@ -526,9 +526,11 @@ async function main(): Promise<void> {
     clearInterval(daemonHandle);
     clearInterval(lifecycleHandle);
     persistStatus(); // Write final status before exit
-    dashboardServer.close(() => {
-      console.log('[Daemon] Dashboard closed.');
-    });
+    if (dashboardServer && typeof (dashboardServer as any).close === 'function') {
+      (dashboardServer as any).close(() => {
+        console.log('[Daemon] Dashboard closed.');
+      });
+    }
     console.log('[Daemon] Organism stopped. Goodbye.');
     process.exit(0);
   }
