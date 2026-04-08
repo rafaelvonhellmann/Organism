@@ -8,7 +8,10 @@ import * as path from 'path';
 import { Task, TaskStatus, RiskLane } from '../../shared/src/types.js';
 import { OrganismError } from '../../shared/src/error-taxonomy.js';
 
-const DB_PATH = path.resolve(process.cwd(), 'state/tasks.db');
+// DB lives OUTSIDE OneDrive to prevent cloud-sync corruption.
+// OneDrive + SQLite WAL = known corruption risk.
+const DB_PATH = process.env.ORGANISM_DB_PATH
+  ?? path.resolve(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.organism/state/tasks.db');
 
 let _db: DatabaseSync | null = null;
 
