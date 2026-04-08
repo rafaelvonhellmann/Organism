@@ -28,7 +28,7 @@ let dashboardServer: unknown = null;
 const VERSION = '0.2.0';
 const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? '7391');
 const DAEMON_POLL_MS = 10_000;   // 10 seconds — agent runner polling interval
-const SCHEDULER_TICK_MS = 60_000; // 60 seconds — scheduler tick interval
+const SCHEDULER_TICK_MS = 300_000; // 5 minutes — scheduler tick interval
 
 // ── Daemon config ─────────────────────────────────────────────────────────
 

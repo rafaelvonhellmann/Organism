@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
   const minutesSinceActivity = lastActivityTs > 0 ? Math.floor((now - lastActivityTs) / 60000) : -1;
 
   return Response.json({
-    daemonAlive: minutesSinceActivity >= 0 && minutesSinceActivity < 5,
+    daemonAlive: minutesSinceActivity >= 0 && minutesSinceActivity < 10,
     lastActivity: lastActivityTs > 0 ? new Date(lastActivityTs).toISOString() : null,
     minutesSinceActivity,
     todaySpend: Number(todaySpend.rows[0]?.total ?? 0),
