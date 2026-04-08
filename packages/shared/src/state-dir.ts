@@ -1,0 +1,15 @@
+/**
+ * Canonical state directory — lives OUTSIDE OneDrive to prevent SQLite corruption.
+ * OneDrive + SQLite WAL = known corruption risk.
+ *
+ * All scripts must import this instead of hardcoding 'state/' paths.
+ */
+import * as path from 'path';
+
+const HOME = process.env.USERPROFILE ?? process.env.HOME ?? '.';
+
+export const STATE_DIR = process.env.ORGANISM_STATE_DIR
+  ?? path.resolve(HOME, '.organism', 'state');
+
+export const DB_PATH = path.join(STATE_DIR, 'tasks.db');
+export const PIDS_DIR = path.join(STATE_DIR, 'pids');

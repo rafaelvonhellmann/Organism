@@ -74,7 +74,7 @@ export async function GET(req: NextRequest) {
             WHERE t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent')
               AND (
                 t.status = 'awaiting_review'
-                OR (t.status = 'completed' AND t.lane != 'LOW')
+                OR (t.status = 'completed' AND t.lane = 'HIGH')
               )${projectFilter}
               AND NOT EXISTS (
                 SELECT 1 FROM review_decisions rd

@@ -11,6 +11,17 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+
+// Load .secrets.json into process.env (keys not already set)
+const secretsPath = path.resolve(import.meta.dirname, '..', '.secrets.json');
+if (fs.existsSync(secretsPath)) {
+  try {
+    const secrets = JSON.parse(fs.readFileSync(secretsPath, 'utf8')) as Record<string, string>;
+    for (const [k, v] of Object.entries(secrets)) {
+      if (!process.env[k]) process.env[k] = v;
+    }
+  } catch { /* ignore parse errors */ }
+}
 import {
   ensureDB,
   ensureStixDB,
@@ -24,7 +35,7 @@ import { submitPerspectiveReview } from '../packages/core/src/orchestrator.js';
 import { writeCombinedReviewToVault } from '../packages/core/src/obsidian-writer.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
-const STATE_DIR = path.join(ROOT, 'state');
+import { STATE_DIR } from '../packages/shared/src/state-dir.js';
 
 // ── Command routing ──────────────────────────────────────────────────────────
 

@@ -10,6 +10,9 @@
  */
 
 import { spawn } from 'child_process';
+import { existsSync, readFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import { getSecretOrNull } from '../../packages/shared/src/secrets.js';
 
 const MODEL_ALIASES: Record<string, string> = {
@@ -28,6 +31,20 @@ let _sessionCostUsd: number = 0;
 const COST_LIMIT_ESTIMATE = 50.0; // Rough estimate — adjust based on plan
 
 export function isRateLimited(): boolean {
+  if (!_rateLimitResetAt) {
+    // Check external signal from Synapse enrichment pipeline
+    try {
+      const filePath = join(homedir(), '.organism', 'state', 'cli-rate-limit.json');
+      if (existsSync(filePath)) {
+        const data = JSON.parse(readFileSync(filePath, 'utf8')) as { resetsAt?: number };
+        if (data.resetsAt && Date.now() < data.resetsAt) {
+          _rateLimitResetAt = data.resetsAt;
+        } else {
+          unlinkSync(filePath); // Expired, clean up
+        }
+      }
+    } catch { /* ignore */ }
+  }
   if (!_rateLimitResetAt) return false;
   if (Date.now() >= _rateLimitResetAt) {
     _rateLimitResetAt = null; // Reset expired, clear the flag

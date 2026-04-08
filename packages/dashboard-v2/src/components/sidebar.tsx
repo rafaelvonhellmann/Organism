@@ -12,7 +12,8 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { href: '/', label: 'Inbox', icon: '>' },
+  { href: '/progress', label: 'Activity', icon: '~' },
+  { href: '/', label: 'Review', icon: '>' },
   { href: '/plan', label: 'Plan', icon: '!' },
   { href: '/insights', label: 'Insights', icon: '&' },
   { href: '/system', label: 'System', icon: '#' },

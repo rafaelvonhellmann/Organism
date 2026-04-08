@@ -8,11 +8,42 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, execSync } from 'child_process';
+import { STATE_DIR, DB_PATH, PIDS_DIR } from '../packages/shared/src/state-dir.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
-const STATE_DIR = path.join(ROOT, 'state');
-const PIDS_DIR = path.join(STATE_DIR, 'pids');
-const DB_PATH = path.join(STATE_DIR, 'tasks.db');
+
+// Spawn a detached background process. On Windows, uses PowerShell Start-Process -WindowStyle Hidden
+// to guarantee no console window flashes. On Unix, uses standard detached spawn.
+function spawnHidden(cmd: string, args: string[], opts: { cwd: string; env?: NodeJS.ProcessEnv }): { pid: number | undefined } {
+  if (process.platform === 'win32') {
+    // Resolve node to actual exe path
+    const exe = cmd === 'node' ? process.execPath : cmd;
+    const escaped = args.map(a => a.replace(/'/g, "''" )).join("','");
+    const psCmd = `Start-Process -FilePath '${exe}' -ArgumentList '${escaped}' -WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id`;
+    try {
+      const pidStr = execSync(`powershell -NoProfile -Command "${psCmd}"`, {
+        cwd: opts.cwd,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: opts.env,
+        windowsHide: true,
+      }).trim();
+      return { pid: parseInt(pidStr, 10) || undefined };
+    } catch {
+      return { pid: undefined };
+    }
+  } else {
+    const child = spawn(cmd, args, {
+      cwd: opts.cwd,
+      detached: true,
+      stdio: 'ignore',
+      env: opts.env,
+    });
+    const pid = child.pid;
+    child.unref();
+    return { pid };
+  }
+}
 
 // Ensure pids directory exists
 function ensurePidsDir(): void {
@@ -113,16 +144,13 @@ export async function ensureStixDB(): Promise<boolean> {
   // Start StixDB
   console.log('  Starting StixDB...');
   try {
-    const child = spawn('python', [path.join(ROOT, 'packages/stixdb/start.py')], {
+    const { pid } = spawnHidden('python', [path.join(ROOT, 'packages/stixdb/start.py')], {
       cwd: ROOT,
-      detached: true,
-      stdio: 'ignore',
       env: { ...process.env },
     });
 
-    if (child.pid) {
-      writePid('stixdb', child.pid);
-      child.unref();
+    if (pid) {
+      writePid('stixdb', pid);
     }
 
     // Wait for health (45s — first run downloads embedding model)
@@ -151,20 +179,14 @@ export async function ensureDaemon(): Promise<void> {
   }
 
   console.log('  Starting daemon...');
-  const child = spawn(
+  const { pid } = spawnHidden(
     'node',
     ['--import', 'tsx', '--experimental-sqlite', path.join(ROOT, 'scripts/start-daemon.ts')],
-    {
-      cwd: ROOT,
-      detached: true,
-      stdio: 'ignore',
-      env: { ...process.env },
-    },
+    { cwd: ROOT, env: { ...process.env } },
   );
 
-  if (child.pid) {
-    writePid('daemon', child.pid);
-    child.unref();
+  if (pid) {
+    writePid('daemon', pid);
   }
 
   // Brief wait to let it start
@@ -181,20 +203,14 @@ export async function ensureDashboard(): Promise<void> {
   }
 
   console.log('  Starting dashboard...');
-  const child = spawn(
+  const { pid } = spawnHidden(
     'node',
     ['--import', 'tsx', '--experimental-sqlite', path.join(ROOT, 'packages/dashboard/src/server.ts')],
-    {
-      cwd: ROOT,
-      detached: true,
-      stdio: 'ignore',
-      env: { ...process.env },
-    },
+    { cwd: ROOT, env: { ...process.env } },
   );
 
-  if (child.pid) {
-    writePid('dashboard', child.pid);
-    child.unref();
+  if (pid) {
+    writePid('dashboard', pid);
   }
 
   await sleep(1000);

@@ -108,10 +108,15 @@ function simplifyText(text: string): string {
 
 function briefTitle(desc: string): string {
   let d = desc
-    .replace(/^(Strategic review|Technology strategy|Financial analysis|Product gap analysis|Architecture review|Infrastructure audit|Security audit|Marketing strategy|Marketing execution|SEO analysis|Community strategy|PR plan|Australian legal review|Sales strategy|Customer success|Team plan|Competitive intelligence|Metrics framework|Research workflow review|\[QUALITY AUDIT\]|Quality review|Codex review):?\s*/i, '')
+    .replace(/^\[SHAPING\]\s*/gi, '')
+    .replace(/^\[CASCADE\]\s*/gi, '')
+    .replace(/^\[QUALITY AUDIT\]\s*/gi, '')
+    .replace(/^Follow-up from \S+:\s*/i, '')
+    .replace(/^(Strategic review|Technology strategy|Financial analysis|Product gap analysis|Architecture review|Infrastructure audit|Security audit|Marketing strategy|Marketing execution|SEO analysis|Community strategy|PR plan|Australian legal review|Sales strategy|Customer success|Team plan|Competitive intelligence|Metrics framework|Research workflow review|Quality review|Codex review):?\s*/i, '')
     .replace(/^[""\u201C]/, '')
     .replace(/[""\u201D]$/, '')
-    .replace(/\s+using codeEvidence.*$/i, '');
+    .replace(/\s+using codeEvidence.*$/i, '')
+    .replace(/\s*\(codeEvi[^)]*\)/g, '');
   const first = d.split(/[.!?\n]/)[0].trim();
   if (first.length > 80) return first.slice(0, 77) + '...';
   return first || desc.slice(0, 60);
@@ -182,73 +187,93 @@ function extractAssessment(output: unknown): string | null {
   return null;
 }
 
-/** Format the output object for human consumption — hide system internals */
-function formatFullOutput(output: unknown): string {
+/** Format the output object for human consumption.
+ *
+ * Target format:
+ *   ## Perspective — Title
+ *   ### Problem
+ *   ### Solution
+ *   ### Caveats
+ */
+function formatFullOutput(output: unknown, agent?: string): string {
   if (!output) return '';
-  if (typeof output === 'string') return output;
-  if (typeof output !== 'object') return String(output);
 
-  const obj = output as Record<string, unknown>;
+  // Parse string output
+  let obj: Record<string, unknown>;
+  if (typeof output === 'string') {
+    try { obj = JSON.parse(output); }
+    catch { return cleanForDisplay(output); }
+  } else if (typeof output === 'object' && output !== null) {
+    obj = output as Record<string, unknown>;
+  } else {
+    return String(output);
+  }
 
-  // Fields to never show — internal system metadata
+  // Fields to never show
   const SKIP = new Set([
     'type', 'pitchId', 'betId', 'status', 'originalTask', 'inputHash',
     'taskId', 'agentName', 'model', 'tokensUsed', 'costUsd', 'skipped',
     'reason', 'scheduledBy', 'frequencyTier', 'scheduledAt',
+    'success_criteria', 'successCriteria',
   ]);
 
-  // Human-readable labels for known fields
-  const LABELS: Record<string, string> = {
-    text: 'Summary',
-    report: 'Report',
-    scrutiny: 'Assessment',
-    brief: 'Brief',
-    analysis: 'Analysis',
-    plan: 'Plan',
-    review: 'Review',
-    implementation: 'Implementation',
-    title: 'Title',
-    problem: 'What needs to happen',
-    appetite: 'Scope',
-    successCriteria: 'Done when',
-    noGos: 'Must avoid',
-    rabbitHoles: 'Watch out for',
-    content: 'Content',
-    result: 'Result',
-    summary: 'Summary',
-    assessment: 'Assessment',
-    spec: 'Specification',
-  };
-
   const sections: string[] = [];
+  const perspective = agent ? agentRole(agent) : '';
 
-  for (const [key, value] of Object.entries(obj)) {
-    if (value === null || value === undefined) continue;
-    if (SKIP.has(key)) continue;
+  // Extract title
+  const title = (obj.title as string) || '';
+  const cleanTitle = cleanForDisplay(
+    title.replace(/^\[SHAPING\]\s*/i, '').replace(/^\[CASCADE\]\s*/i, '')
+  );
+  if (cleanTitle && perspective) {
+    sections.push(`## ${perspective} — ${cleanTitle}`);
+  } else if (cleanTitle) {
+    sections.push(`## ${cleanTitle}`);
+  }
 
-    // Skip empty arrays
-    if (Array.isArray(value) && value.length === 0) continue;
-    // Skip trivial success criteria
-    if (key === 'successCriteria' && Array.isArray(value) && value.length === 1 && String(value[0]).includes('completes successfully')) continue;
-    // Skip short generic text if we have better fields
-    if (key === 'text' && typeof value === 'string' && value.length < 50 && Object.keys(obj).length > 3) continue;
+  // Problem / What needs to happen
+  const problem = (obj.problem as string) || (obj.text as string) || '';
+  if (problem) {
+    sections.push(`### Problem\n\n${cleanForDisplay(problem)}`);
+  }
 
-    const heading = LABELS[key] ?? key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
-
-    if (typeof value === 'string') {
-      const clean = cleanForDisplay(value);
-      if (!clean) continue;
-      // Don't wrap short values in a heading — inline them
-      if (clean.length < 80 && !clean.includes('\n')) {
-        sections.push(`**${heading}:** ${clean}`);
-      } else {
-        sections.push(`### ${heading}\n\n${clean}`);
-      }
-    } else if (Array.isArray(value)) {
-      const items = value.map(v => typeof v === 'string' ? v : JSON.stringify(v));
-      sections.push(`**${heading}:**\n${items.map(i => `- ${i}`).join('\n')}`);
+  // Solution / Implementation / Analysis — look for the main content
+  const solutionKeys = ['implementation', 'report', 'scrutiny', 'analysis', 'plan', 'review', 'assessment', 'spec', 'brief', 'content', 'result', 'summary'];
+  for (const key of solutionKeys) {
+    const val = obj[key];
+    if (typeof val === 'string' && val.trim().length > 20) {
+      sections.push(`### Solution\n\n${cleanForDisplay(val)}`);
+      break;
     }
-    // Skip nested objects entirely — they're usually internal
+  }
+
+  // Caveats — rabbit holes + no-gos
+  const caveats: string[] = [];
+  const noGos = (obj.noGos ?? obj.no_gos) as string[] | undefined;
+  const rabbitHoles = (obj.rabbitHoles ?? obj.rabbit_holes) as string[] | undefined;
+  if (Array.isArray(noGos) && noGos.length > 0) {
+    caveats.push(...noGos.map(n => `- **Avoid:** ${n}`));
+  }
+  if (Array.isArray(rabbitHoles) && rabbitHoles.length > 0) {
+    caveats.push(...rabbitHoles.map(r => `- **Watch out:** ${r}`));
+  }
+  if (caveats.length > 0) {
+    sections.push(`### Caveats\n\n${caveats.join('\n')}`);
+  }
+
+  // Scope
+  const appetite = obj.appetite as string | undefined;
+  if (appetite) {
+    sections.push(`**Scope:** ${appetite}`);
+  }
+
+  // Fallback: if we got nothing useful, render remaining string fields
+  if (sections.length === 0) {
+    for (const [key, value] of Object.entries(obj)) {
+      if (SKIP.has(key) || typeof value !== 'string' || value.length < 20) continue;
+      const heading = key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim();
+      sections.push(`### ${heading}\n\n${cleanForDisplay(value)}`);
+    }
   }
 
   return sections.join('\n\n');
@@ -734,24 +759,7 @@ function ReviewQueueInner() {
               </div>
             )}
 
-            {/* Batch approve bar for routine items */}
-            {queue.filter(t => t.lane !== 'HIGH').length >= 3 && (
-              <div className="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center justify-between">
-                <div>
-                  <span className="text-sm text-emerald-300 font-medium">
-                    {queue.filter(t => t.lane !== 'HIGH').length} routine items
-                  </span>
-                  <span className="text-xs text-zinc-500 ml-2">LOW/MEDIUM priority, likely auto-approvable</span>
-                </div>
-                <button
-                  onClick={handleBatchApprove}
-                  disabled={deciding}
-                  className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors disabled:opacity-50"
-                >
-                  {deciding ? 'Approving...' : 'Approve all routine'}
-                </button>
-              </div>
-            )}
+            {/* LOW/MEDIUM items auto-ship — only HIGH items appear here */}
 
             {/* Loading state */}
             {loading && (
@@ -868,7 +876,7 @@ function ReviewQueueInner() {
                       <div className={`mt-2 pt-3 border-t border-zinc-800/50 ${showFullText ? '' : 'max-h-[400px] overflow-y-auto'}`}>
                         <div
                           className="prose prose-invert prose-sm max-w-none prose-headings:text-zinc-200 prose-p:text-zinc-300 prose-strong:text-zinc-200 prose-code:text-emerald-400"
-                          dangerouslySetInnerHTML={{ __html: renderMarkdown(formatFullOutput(currentTask.output)) }}
+                          dangerouslySetInnerHTML={{ __html: renderMarkdown(formatFullOutput(currentTask.output, currentTask.agent)) }}
                         />
                       </div>
                       <button

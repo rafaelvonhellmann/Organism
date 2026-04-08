@@ -156,7 +156,7 @@ export async function submitTask(
     const task = createTask({
       agent,
       lane: classification.lane,
-      description: `[SHAPING] ${submission.description}`,
+      description: submission.description.startsWith('[SHAPING]') ? submission.description : `[SHAPING] ${submission.description}`,
       input: {
         type: 'pitch_request',
         originalDescription: submission.description,
