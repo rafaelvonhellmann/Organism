@@ -26,7 +26,8 @@ export function getClient(): Client | null {
     }
 
     // Local fallback
-    const dbPath = resolve(process.cwd(), '../../state/tasks.db');
+    const homedir = process.env.USERPROFILE || process.env.HOME || '';
+    const dbPath = resolve(homedir, '.organism', 'state', 'tasks.db');
     if (!existsSync(dbPath)) {
       _dbError = `No TURSO_DATABASE_URL and no local DB at ${dbPath}`;
       return null;
