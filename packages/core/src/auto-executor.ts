@@ -1,31 +1,167 @@
-import * as crypto from 'crypto';
-import { getDb } from './task-queue.js';
+import { getDb, createTask } from './task-queue.js';
 import { writeAudit } from './audit.js';
+import { extractFindings, extractHandoffs } from './agent-envelope.js';
+import { loadRegistry } from './registry.js';
+import { RiskLane, TypedFinding, HandoffRequest } from '../../shared/src/types.js';
 
-interface ActionableItem {
+function laneFromSeverity(severity: TypedFinding['severity']): RiskLane {
+  switch (severity) {
+    case 'CRITICAL':
+    case 'HIGH':
+      return 'HIGH';
+    case 'MEDIUM':
+      return 'MEDIUM';
+    default:
+      return 'LOW';
+  }
+}
+
+function resolveTargetAgent(targetCapability: string | undefined, fallback: string): string {
+  if (!targetCapability) return fallback;
+  const registry = loadRegistry();
+  const byCapability = registry.find((cap) => cap.id === targetCapability);
+  if (byCapability) return byCapability.owner;
+  const byOwner = registry.find((cap) => cap.owner === targetCapability);
+  return byOwner?.owner ?? fallback;
+}
+
+function followupExists(goalId: string | null, agent: string, workflowKind: string, sourceTaskId: string): boolean {
+  const row = getDb().prepare(`
+    SELECT id FROM tasks
+    WHERE goal_id IS ? AND agent = ? AND workflow_kind = ? AND input LIKE ?
+      AND status NOT IN ('failed', 'dead_letter')
+    LIMIT 1
+  `).get(goalId, agent, workflowKind, `%"sourceTaskId":"${sourceTaskId}"%`) as { id: string } | undefined;
+  return !!row;
+}
+
+function createFindingTask(task: {
+  id: string;
   agent: string;
   description: string;
-  priority: 'HIGH' | 'MEDIUM' | 'LOW';
+  output: string;
+  project_id: string;
+  goal_id: string | null;
+}, finding: TypedFinding): boolean {
+  const targetAgent = resolveTargetAgent(finding.targetCapability, 'engineering');
+  const workflowKind = finding.followupKind ?? 'implement';
+  if (followupExists(task.goal_id, targetAgent, workflowKind, task.id)) return false;
+
+  try {
+    const created = createTask({
+      agent: targetAgent,
+      lane: laneFromSeverity(finding.severity),
+      description: finding.remediation ?? finding.summary,
+      input: {
+        sourceTaskId: task.id,
+        sourceAgent: task.agent,
+        sourceFindingId: finding.id,
+        sourceSummary: finding.summary,
+        evidence: finding.evidence ?? null,
+        remediation: finding.remediation ?? null,
+        autoExecuted: true,
+        execution: workflowKind === 'implement',
+        projectId: task.project_id,
+      },
+      parentTaskId: task.id,
+      projectId: task.project_id,
+      goalId: task.goal_id ?? undefined,
+      workflowKind,
+      sourceKind: 'agent_followup',
+    });
+
+    writeAudit({
+      agent: 'auto-executor',
+      taskId: created.id,
+      action: 'task_created',
+      payload: {
+        sourceTaskId: task.id,
+        sourceAgent: task.agent,
+        followupType: 'finding',
+        targetAgent,
+        findingId: finding.id,
+        workflowKind,
+      },
+      outcome: 'success',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function createHandoffTask(task: {
+  id: string;
+  agent: string;
+  description: string;
+  output: string;
+  project_id: string;
+  goal_id: string | null;
+}, handoff: HandoffRequest): boolean {
+  if (followupExists(task.goal_id, handoff.targetAgent, handoff.workflowKind, task.id)) return false;
+
+  try {
+    const created = createTask({
+      agent: handoff.targetAgent,
+      lane: handoff.workflowKind === 'validate' ? 'LOW' : 'MEDIUM',
+      description: handoff.summary,
+      input: {
+        sourceTaskId: task.id,
+        sourceAgent: task.agent,
+        handoffId: handoff.id,
+        handoffReason: handoff.reason,
+        sourceOutput: task.output.slice(0, 3000),
+        autoExecuted: true,
+        execution: handoff.execution === true,
+        projectId: task.project_id,
+      },
+      parentTaskId: task.id,
+      projectId: task.project_id,
+      goalId: task.goal_id ?? undefined,
+      workflowKind: handoff.workflowKind,
+      sourceKind: 'agent_followup',
+    });
+
+    writeAudit({
+      agent: 'auto-executor',
+      taskId: created.id,
+      action: 'task_created',
+      payload: {
+        sourceTaskId: task.id,
+        sourceAgent: task.agent,
+        followupType: 'handoff',
+        handoffId: handoff.id,
+        targetAgent: handoff.targetAgent,
+        workflowKind: handoff.workflowKind,
+      },
+      outcome: 'success',
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Scan recently completed tasks for actionable findings.
- * If a task output contains concrete actions, create follow-up tasks.
+ * Scan recently completed tasks for structured follow-up work.
+ * Only typed findings and handoffs can create new tasks.
  */
 export async function processApprovedFindings(): Promise<number> {
-  // Find tasks completed in the last tick cycle that haven't been processed for follow-ups
   const db = getDb();
-
-  // Get completed tasks not yet processed for auto-execution
   const tasks = db.prepare(`
-    SELECT id, agent, description, output, project_id, lane
+    SELECT id, agent, description, output, project_id, goal_id
     FROM tasks
     WHERE status = 'completed'
-    AND output IS NOT NULL
-    AND id NOT IN (SELECT DISTINCT parent_task_id FROM tasks WHERE parent_task_id IS NOT NULL)
-    AND completed_at > ?
-  `).all(Date.now() - 120000) as Array<{  // Last 2 minutes
-    id: string; agent: string; description: string; output: string; project_id: string; lane: string;
+      AND output IS NOT NULL
+      AND completed_at > ?
+      AND source_kind != 'agent_followup'
+  `).all(Date.now() - 300000) as Array<{
+    id: string;
+    agent: string;
+    description: string;
+    output: string;
+    project_id: string;
+    goal_id: string | null;
   }>;
 
   let created = 0;
@@ -33,107 +169,25 @@ export async function processApprovedFindings(): Promise<number> {
   for (const task of tasks) {
     try {
       const output = JSON.parse(task.output);
-      const actions = extractActions(output, task.agent);
+      const findings = extractFindings(output)
+        .filter((finding) => finding.actionable)
+        .slice(0, 3);
+      const handoffs = extractHandoffs(output).slice(0, 2);
 
-      if (actions.length === 0) continue;
-
-      // Only auto-execute LOW priority actions
-      const autoActions = actions.filter(a => a.priority === 'LOW');
-
-      for (const action of autoActions) {
-        // Check if a similar task already exists
-        const existing = db.prepare(
-          "SELECT id FROM tasks WHERE description LIKE ? AND project_id = ? AND created_at > ?",
-        ).get(`%${action.description.slice(0, 50)}%`, task.project_id, Date.now() - 24 * 60 * 60 * 1000);
-
-        if (existing) continue; // Don't duplicate
-
-        const id = crypto.randomUUID();
-        db.prepare(`
-          INSERT INTO tasks (id, agent, status, lane, description, input, input_hash, project_id, created_at)
-          VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-        `).run(
-          id, action.agent, action.priority, action.description,
-          JSON.stringify({ parentTaskId: task.id, autoExecuted: true, projectId: task.project_id }),
-          `auto:${task.id}:${action.description.slice(0, 30)}`,
-          task.project_id, Date.now()
-        );
-
-        writeAudit({
-          agent: 'auto-executor',
-          taskId: id,
-          action: 'task_created',
-          payload: { source: task.id, sourceAgent: task.agent, action: action.description },
-          outcome: 'success',
-        });
-
-        created++;
+      for (const finding of findings) {
+        if (createFindingTask(task, finding)) created++;
       }
-    } catch { /* skip tasks with unparseable output */ }
+      for (const handoff of handoffs) {
+        if (createHandoffTask(task, handoff)) created++;
+      }
+    } catch {
+      // Typed follow-ups only; ignore legacy prose-only outputs.
+    }
   }
 
   if (created > 0) {
-    console.log(`[auto-executor] Created ${created} follow-up tasks from approved findings`);
+    console.log(`[auto-executor] Created ${created} typed follow-up task(s)`);
   }
 
   return created;
-}
-
-/**
- * Extract actionable items from a task output.
- */
-function extractActions(output: unknown, sourceAgent: string): ActionableItem[] {
-  if (!output || typeof output !== 'object') return [];
-  const actions: ActionableItem[] = [];
-  const o = output as Record<string, unknown>;
-
-  // Look for explicit action items in the output
-  const text = typeof o.text === 'string' ? o.text :
-               typeof o.report === 'string' ? o.report :
-               typeof o.scrutiny === 'string' ? o.scrutiny :
-               typeof o.analysis === 'string' ? o.analysis : '';
-
-  if (!text) return [];
-
-  // Extract "SOLUTION:" blocks — these are concrete action items
-  const solutionMatches = text.matchAll(/SOLUTION:\s*([^\n]+(?:\n(?!PROBLEM:|SOLUTION:)[^\n]+)*)/gi);
-  for (const match of solutionMatches) {
-    const solution = match[1].trim();
-    if (solution.length > 20 && solution.length < 500) {
-      actions.push({
-        agent: inferAgent(solution, sourceAgent),
-        description: solution.slice(0, 200),
-        priority: 'LOW',
-      });
-    }
-  }
-
-  // Extract items after "What to do:" or "Next steps:" or "Action:"
-  const actionMatches = text.matchAll(/(?:what to do|next steps?|action|recommendation):\s*([^\n]+(?:\n[-*]\s+[^\n]+)*)/gi);
-  for (const match of actionMatches) {
-    const action = match[1].trim();
-    if (action.length > 20 && action.length < 500) {
-      actions.push({
-        agent: inferAgent(action, sourceAgent),
-        description: action.split('\n')[0].replace(/^[-*]\s+/, '').slice(0, 200),
-        priority: 'LOW',
-      });
-    }
-  }
-
-  return actions.slice(0, 3); // Max 3 follow-ups per task
-}
-
-/**
- * Infer which agent should handle a follow-up action.
- */
-function inferAgent(actionText: string, fallback: string): string {
-  const lower = actionText.toLowerCase();
-  if (lower.includes('code') || lower.includes('fix') || lower.includes('implement') || lower.includes('build')) return 'engineering';
-  if (lower.includes('security') || lower.includes('auth') || lower.includes('rls')) return 'security-audit';
-  if (lower.includes('legal') || lower.includes('compliance') || lower.includes('privacy')) return 'legal';
-  if (lower.includes('marketing') || lower.includes('seo') || lower.includes('content')) return 'marketing-strategist';
-  if (lower.includes('cost') || lower.includes('budget') || lower.includes('revenue')) return 'cfo';
-  if (lower.includes('metric') || lower.includes('analytics') || lower.includes('data')) return 'data-analyst';
-  return fallback;
 }

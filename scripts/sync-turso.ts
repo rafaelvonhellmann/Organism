@@ -15,7 +15,7 @@ import { createClient } from '@libsql/client';
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 
-const LOCAL_DB_PATH = resolve(import.meta.dirname, '..', 'state', 'tasks.db');
+import { DB_PATH as LOCAL_DB_PATH } from '../packages/shared/src/state-dir.js';
 
 async function main() {
   const tursoUrl = process.env.TURSO_DATABASE_URL;

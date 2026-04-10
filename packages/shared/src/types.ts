@@ -3,6 +3,8 @@ export type RiskLane = 'LOW' | 'MEDIUM' | 'HIGH';
 export type TaskStatus =
   | 'pending'
   | 'in_progress'
+  | 'paused'
+  | 'retry_scheduled'
   | 'completed'
   | 'failed'
   | 'dead_letter'
@@ -16,6 +18,51 @@ export type GateId = 'G1' | 'G2' | 'G3' | 'G4';
 export type GateDecision = 'approved' | 'rejected' | 'pending';
 
 export type ProjectPhase = 'BUILD' | 'OPERATE' | 'GROW';
+export type AutonomyMode = 'stabilization' | 'operational' | 'full_autonomy';
+export type GoalSourceKind = 'user' | 'scheduler' | 'git_watcher' | 'agent_followup' | 'dashboard' | 'system' | 'monitor';
+export type WorkflowKind = 'review' | 'plan' | 'implement' | 'validate' | 'ship' | 'monitor' | 'recover' | 'shaping';
+export type RetryClass = 'none' | 'provider_overload' | 'rate_limit' | 'missing_secret' | 'budget_pause' | 'manual_pause' | 'transient_error';
+export type ProviderFailureKind = 'none' | 'rate_limit' | 'overload' | 'timeout' | 'missing_secret' | 'transport_error';
+export type GoalStatus = 'pending' | 'running' | 'paused' | 'retry_scheduled' | 'completed' | 'failed' | 'cancelled';
+export type RunSessionStatus = 'pending' | 'running' | 'paused' | 'retry_scheduled' | 'completed' | 'failed' | 'cancelled';
+export type RunStepStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'skipped';
+export type InterruptStatus = 'pending' | 'resolved' | 'dismissed';
+export type ArtifactKind = 'plan' | 'patch' | 'command_log' | 'handoff' | 'checkpoint' | 'report' | 'deployment' | 'verification';
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
+export type RuntimeEventType =
+  | 'run.started'
+  | 'agent.active'
+  | 'handoff.requested'
+  | 'tool.started'
+  | 'tool.finished'
+  | 'interrupt.requested'
+  | 'interrupt.resolved'
+  | 'run.paused'
+  | 'run.resumed'
+  | 'run.finished'
+  | 'deployment.created';
+export type ProjectAction =
+  | 'edit_code'
+  | 'run_tests'
+  | 'build'
+  | 'commit'
+  | 'push'
+  | 'open_pr'
+  | 'deploy'
+  | 'purchase'
+  | 'contact'
+  | 'create_account'
+  | 'destructive_migration'
+  | 'cross_project';
+export type AgentEnvelopeKind =
+  | 'finding'
+  | 'plan'
+  | 'patch'
+  | 'command_proposal'
+  | 'verification'
+  | 'handoff_request'
+  | 'approval_request'
+  | 'report';
 
 export interface ProjectConfig {
   id: string;
@@ -32,12 +79,36 @@ export interface ProjectConfig {
     generalist: string[];       // agent IDs that work on all projects
     specialist: string[];       // agent IDs scoped to this project only
   };
+  repoPath?: string;
+  defaultBranch?: string;
+  repository?: string;
+  commands?: Partial<Record<'install' | 'lint' | 'test' | 'build' | 'deploy', string>>;
+  deployTargets?: Array<{
+    name: string;
+    provider: 'vercel' | 'render' | 'other';
+    project: string;
+    url?: string;
+  }>;
+  allowedActions?: ProjectAction[];
+  blockedActions?: ProjectAction[];
+  approvalThresholds?: {
+    majorActions?: ProjectAction[];
+  };
+  envRequirements?: string[];
+  budgetCaps?: {
+    dailyUsd?: number;
+    deployUsd?: number;
+    contactUsd?: number;
+    purchaseUsd?: number;
+  };
+  autonomyMode?: AutonomyMode;
 }
 
 export interface Task {
   id: string;
   agent: string;
   status: TaskStatus;
+  attemptCount?: number;
   lane: RiskLane;
   description: string;
   input: unknown;
@@ -51,6 +122,12 @@ export interface Task {
   parentTaskId?: string; // goal ancestry chain
   projectId?: string;   // which project this task belongs to (default: 'organism')
   betId?: string;       // linked Shape Up bet (required for MEDIUM/HIGH tasks)
+  goalId?: string;
+  workflowKind?: WorkflowKind;
+  sourceKind?: GoalSourceKind;
+  retryClass?: RetryClass;
+  retryAt?: number | null;
+  providerFailureKind?: ProviderFailureKind;
 }
 
 export interface AgentCapability {
@@ -71,10 +148,178 @@ export interface AuditEntry {
   ts: number;
   agent: string;
   taskId: string;
-  action: 'task_created' | 'task_checkout' | 'task_completed' | 'task_failed' | 'gate_eval' | 'budget_check' | 'mcp_call' | 'shadow_run' | 'source_injection' | 'auto_approved' | 'error';
+  action: 'task_created' | 'task_checkout' | 'task_completed' | 'task_failed' | 'gate_eval' | 'budget_check' | 'mcp_call' | 'shadow_run' | 'source_injection' | 'auto_approved' | 'error' | 'runtime_event';
   payload: unknown;
   outcome: 'success' | 'failure' | 'blocked';
   errorCode?: string;
+}
+
+export interface TypedFinding {
+  id: string;
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  summary: string;
+  evidence?: string;
+  remediation?: string;
+  actionable: boolean;
+  targetCapability?: string;
+  followupKind?: WorkflowKind;
+}
+
+export interface CommandProposal {
+  id: string;
+  action: ProjectAction;
+  command: string;
+  cwd?: string;
+  reason: string;
+  requiresApproval: boolean;
+}
+
+export interface HandoffRequest {
+  id: string;
+  targetAgent: string;
+  workflowKind: WorkflowKind;
+  reason: string;
+  summary: string;
+  execution?: boolean;
+}
+
+export interface ApprovalRequest {
+  id: string;
+  action: ProjectAction;
+  reason: string;
+  summary: string;
+}
+
+export interface AgentEnvelope {
+  kind: AgentEnvelopeKind;
+  agent: string;
+  summary: string;
+  text?: string;
+  findings?: TypedFinding[];
+  commandProposals?: CommandProposal[];
+  handoffRequests?: HandoffRequest[];
+  approvalRequests?: ApprovalRequest[];
+  artifacts?: Array<{ kind: ArtifactKind; title: string; path?: string; content?: string }>;
+  payload?: unknown;
+}
+
+export interface Goal {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  status: GoalStatus;
+  sourceKind: GoalSourceKind;
+  workflowKind: WorkflowKind;
+  inputHash: string;
+  createdAt: number;
+  updatedAt: number;
+  latestRunId?: string | null;
+}
+
+export interface RunSession {
+  id: string;
+  goalId: string;
+  projectId: string;
+  agent: string;
+  workflowKind: WorkflowKind;
+  status: RunSessionStatus;
+  retryClass: RetryClass;
+  retryAt?: number | null;
+  providerFailureKind?: ProviderFailureKind;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number | null;
+}
+
+export interface RunStep {
+  id: string;
+  runId: string;
+  name: string;
+  status: RunStepStatus;
+  detail?: string | null;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number | null;
+}
+
+export interface Interrupt {
+  id: string;
+  runId: string;
+  type: 'approval' | 'info_request' | 'policy_block' | 'manual_pause';
+  status: InterruptStatus;
+  summary: string;
+  detail?: string | null;
+  createdAt: number;
+  resolvedAt?: number | null;
+}
+
+export interface Artifact {
+  id: string;
+  runId: string;
+  goalId: string;
+  kind: ArtifactKind;
+  title: string;
+  path?: string | null;
+  content?: string | null;
+  createdAt: number;
+}
+
+export interface ApprovalRecord {
+  id: string;
+  runId: string;
+  action: ProjectAction;
+  status: ApprovalStatus;
+  requestedBy: string;
+  requestedAt: number;
+  decidedAt?: number | null;
+  decidedBy?: string | null;
+  reason?: string | null;
+}
+
+export interface ProjectPolicy {
+  projectId: string;
+  repoPath: string | null;
+  defaultBranch: string;
+  commands: Partial<Record<'install' | 'lint' | 'test' | 'build' | 'deploy', string>>;
+  deployTargets: Array<{
+    name: string;
+    provider: 'vercel' | 'render' | 'other';
+    project: string;
+    url?: string;
+  }>;
+  allowedActions: ProjectAction[];
+  blockedActions: ProjectAction[];
+  approvalThresholds: {
+    majorActions: ProjectAction[];
+  };
+  envRequirements: string[];
+  budgetCaps: {
+    dailyUsd: number | null;
+    deployUsd: number | null;
+    contactUsd: number | null;
+    purchaseUsd: number | null;
+  };
+  autonomyMode: AutonomyMode;
+}
+
+export interface AgentProfile {
+  name: string;
+  status: AgentStatus;
+  model: AgentCapability['model'];
+  frequencyTier: AgentCapability['frequencyTier'];
+  core: boolean;
+  readOnly: boolean;
+  canDelegate: boolean;
+}
+
+export interface RuntimeEvent {
+  id: number;
+  runId: string;
+  goalId: string;
+  eventType: RuntimeEventType;
+  payload: unknown;
+  ts: number;
 }
 
 export interface AgentSpend {

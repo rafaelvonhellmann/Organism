@@ -1,0 +1,90 @@
+{
+  "id": "organism",
+  "name": "Organism",
+  "phase": "BUILD",
+  "description": "Local-first autonomous orchestration runtime for Rafael's projects. Organism plans, executes, validates, and deploys work across approved repositories while keeping auditability and human review for major actions.",
+  "techStack": [
+    "TypeScript strict",
+    "Node.js",
+    "SQLite",
+    "Next.js 15",
+    "Vercel",
+    "Claude CLI",
+    "OpenAI API"
+  ],
+  "qualityStandards": ["AUTONOMY"],
+  "riskOverrides": {
+    "keywords": [
+      "deploy",
+      "push",
+      "approval",
+      "migration",
+      "budget",
+      "contact",
+      "purchase",
+      "credential",
+      "secrets"
+    ],
+    "defaultLane": "MEDIUM"
+  },
+  "agents": {
+    "generalist": [
+      "ceo",
+      "product-manager",
+      "engineering",
+      "devops",
+      "quality-agent",
+      "security-audit",
+      "legal",
+      "quality-guardian",
+      "codex-review"
+    ],
+    "specialist": []
+  },
+  "repoPath": "C:/Users/rafae/OneDrive/Desktop/Organism",
+  "defaultBranch": "main",
+  "repository": "https://github.com/rafaelvonhellmann/Organism",
+  "commands": {
+    "install": "pnpm install",
+    "lint": "pnpm exec tsc -p tsconfig.json --noEmit",
+    "test": "tsx --experimental-sqlite --test packages/core/src/*.test.ts",
+    "build": "pnpm --filter dashboard-v2 build",
+    "deploy": "npx vercel --prod --yes"
+  },
+  "deployTargets": [
+    {
+      "name": "organism-hq",
+      "provider": "vercel",
+      "project": "organism-hq",
+      "url": "https://organism-hq.vercel.app"
+    }
+  ],
+  "allowedActions": [
+    "edit_code",
+    "run_tests",
+    "build",
+    "commit",
+    "push",
+    "open_pr",
+    "deploy"
+  ],
+  "blockedActions": [],
+  "approvalThresholds": {
+    "majorActions": [
+      "destructive_migration",
+      "cross_project",
+      "purchase",
+      "contact",
+      "create_account"
+    ]
+  },
+  "envRequirements": ["GH_TOKEN", "VERCEL_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+  "budgetCaps": {
+    "dailyUsd": 50,
+    "deployUsd": 10,
+    "contactUsd": 0,
+    "purchaseUsd": 0
+  },
+  "autonomyMode": "stabilization",
+  "tasklist": "C:/Users/rafae/OneDrive/Desktop/Organism/ROADMAP.md"
+}

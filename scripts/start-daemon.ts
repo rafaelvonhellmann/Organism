@@ -22,6 +22,7 @@ import { getDb } from '../packages/core/src/task-queue.js';
 import { loadRegistry } from '../packages/core/src/registry.js';
 import { startScheduler } from '../packages/core/src/scheduler.js';
 import { startDaemon, dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
+import { listProjectAutonomyHealth } from '../packages/core/src/autonomy-governor.js';
 import { isRateLimited, getRateLimitStatus } from '../agents/_base/mcp-client.js';
 // Dashboard import is conditional — skip if port is already in use (started by ensure-services)
 let dashboardServer: unknown = null;
@@ -63,11 +64,19 @@ interface DaemonStatus {
     resetsAt: string | null;
     usagePct: number;
   };
+  autonomy: Array<{
+    projectId: string;
+    autonomyMode: string;
+    consecutiveHealthyRuns: number;
+    requiredConsecutiveRuns: number;
+    rolloutReady: boolean;
+    blockers: string[];
+  }>;
   config: typeof DAEMON_CONFIG;
   version: string;
 }
 
-const STATE_DIR = path.resolve(process.cwd(), 'state');
+import { STATE_DIR } from '../packages/shared/src/state-dir.js';
 const STATUS_FILE = path.join(STATE_DIR, 'daemon-status.json');
 
 const daemonState = {
@@ -101,6 +110,14 @@ function computeNextReview(): string | null {
 
 function buildStatus(): DaemonStatus {
   const rlStatus = getRateLimitStatus();
+  const autonomy = listProjectAutonomyHealth().map((project) => ({
+    projectId: project.projectId,
+    autonomyMode: project.autonomyMode,
+    consecutiveHealthyRuns: project.consecutiveHealthyRuns,
+    requiredConsecutiveRuns: project.requiredConsecutiveRuns,
+    rolloutReady: project.rolloutReady,
+    blockers: project.blockers,
+  }));
   return {
     startedAt: daemonState.startedAt,
     lastExecuteCycle: daemonState.lastExecuteCycleMs ? new Date(daemonState.lastExecuteCycleMs).toISOString() : null,
@@ -117,6 +134,7 @@ function buildStatus(): DaemonStatus {
       resetsAt: rlStatus.resetsAt ? new Date(rlStatus.resetsAt).toISOString() : null,
       usagePct: rlStatus.usagePct,
     },
+    autonomy,
     config: DAEMON_CONFIG,
     version: VERSION,
   };
@@ -202,7 +220,7 @@ async function runSyncCycle(): Promise<void> {
     return;
   }
 
-  const LOCAL_DB_PATH = path.resolve(process.cwd(), 'state', 'tasks.db');
+  const { DB_PATH: LOCAL_DB_PATH } = await import('../packages/shared/src/state-dir.js');
   if (!fs.existsSync(LOCAL_DB_PATH)) {
     console.warn('[Lifecycle] Sync cycle skipped — local DB not found');
     daemonState.lastSyncCycleMs = Date.now();

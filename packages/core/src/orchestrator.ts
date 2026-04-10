@@ -3,13 +3,15 @@ import { createTask, checkoutTask, completeTask, failTask, reapDeadLetters, getP
 import { assertBudget, recordSpend, getSpendSummary, getTaskBudget } from './budget.js';
 import { writeAudit } from './audit.js';
 import { loadRegistry, resolveOwner } from './registry.js';
-import { RiskLane, PerspectiveReviewResult } from '../../shared/src/types.js';
+import { GoalSourceKind, PerspectiveReviewResult, RiskLane, WorkflowKind } from '../../shared/src/types.js';
 import { OrganismError } from '../../shared/src/error-taxonomy.js';
 import { runPerspectiveReview } from './perspective-runner.js';
 import {
   getBet, getActiveBetForProject, checkBetCircuitBreaker, checkBetBoundaries,
   recordBetSpend, resolveSpecialistTriggers,
 } from './shapeup.js';
+import { ensureGoal, getGoal } from './run-state.js';
+import { loadProjectPolicy, isActionBlocked } from './project-policy.js';
 
 // Orchestrator is the single main loop. Agents submit tasks here.
 // Paperclip is the ONLY orchestrator — PraisonAI is a tool provider only.
@@ -47,12 +49,18 @@ export interface SubmitTaskOptions {
   projectId?: string;    // Project this task belongs to (default: 'organism')
   betId?: string;        // Linked Shape Up bet (required for MEDIUM/HIGH unless emergency)
   emergency?: boolean;   // Bypass shaping requirement (logged prominently)
+  workflowKind?: WorkflowKind;
+  sourceKind?: GoalSourceKind;
+  goalId?: string;
 }
 
 export interface TaskSubmission {
   description: string;
   input: unknown;
   projectId?: string;    // Can also be set here; options.projectId takes precedence
+  title?: string;
+  sourceKind?: GoalSourceKind;
+  workflowKind?: WorkflowKind;
 }
 
 /**
@@ -118,22 +126,114 @@ function resolveShapingRequirement(
   return { type: 'convert_to_pitch' };
 }
 
+// HARD BLOCKS — Organism must NEVER contact humans or spend money.
+// Deploying code and pushing to git IS allowed.
+const BLOCKED_PATTERNS = [
+  /\b(send|email|notify|contact|message|reach out)\b.*\b(user|customer|patient|partner|investor)\b/i,
+  /\b(post|publish|tweet|share)\b.*\b(social|facebook|twitter|linkedin|instagram|reddit|discord|slack)\b/i,
+  /\b(purchase|buy|subscribe|pay|charge|invoice|billing)\b/i,
+  /\b(sign up|register|create account)\b.*\b(service|platform|provider)\b/i,
+  /\b(stripe|sendgrid|mailgun|twilio|mailchimp)\b/i,
+];
+
+function sanitizeDescription(description: string): string {
+  const withoutEmbeddedJson = description
+    .replace(/\n\s*\n\{[\s\S]*$/, '')
+    .replace(/\n\s*\n\[[\s\S]*$/, '');
+  const shapingCount = (withoutEmbeddedJson.match(/\[SHAPING\]/gi) ?? []).length;
+  const normalizedShaping = shapingCount > 1
+    ? withoutEmbeddedJson.replace(/(?:\[SHAPING\]\s*)+/i, '[SHAPING] ')
+    : withoutEmbeddedJson;
+
+  return normalizedShaping.replace(/\s+/g, ' ').trim();
+}
+
+function inferWorkflowKind(description: string, submission: TaskSubmission, options: SubmitTaskOptions): WorkflowKind {
+  if (options.workflowKind) return options.workflowKind;
+  if (submission.workflowKind) return submission.workflowKind;
+  if (description.startsWith('[SHAPING]')) return 'shaping';
+  return 'implement';
+}
+
+function inferRequestedActions(description: string): Array<'purchase' | 'contact' | 'create_account'> {
+  const matches: Array<'purchase' | 'contact' | 'create_account'> = [];
+  if (/\b(purchase|buy|subscribe|pay|charge|invoice|billing)\b/i.test(description)) matches.push('purchase');
+  if (/\b(send|email|notify|contact|message|reach out)\b/i.test(description)) matches.push('contact');
+  if (/\b(sign up|register|create account)\b/i.test(description)) matches.push('create_account');
+  return matches;
+}
+
 // Main entry point: submit a task for processing
 export async function submitTask(
   submission: TaskSubmission,
   options: SubmitTaskOptions = {}
 ): Promise<string> {
+  const projectId = options.projectId ?? submission.projectId ?? 'organism';
+  const policy = loadProjectPolicy(projectId);
+  const description = sanitizeDescription(submission.description);
+  const workflowKind = inferWorkflowKind(description, submission, options);
+  const sourceKind = options.sourceKind ?? submission.sourceKind ?? 'user';
+
+  const inputRecord = submission.input && typeof submission.input === 'object'
+    ? submission.input as Record<string, unknown>
+    : null;
+
+  if (workflowKind === 'shaping') {
+    const requestedBy = options.agent ?? 'user';
+    if (!['user', 'ceo', 'product-manager'].includes(requestedBy)) {
+      throw new Error(`Only user, ceo, or product-manager may create shaping workflows. Received: ${requestedBy}`);
+    }
+    const alreadyShaped = inputRecord?.type === 'shaping_complete' ||
+      String(inputRecord?.originalDescription ?? '').startsWith('[SHAPING]') ||
+      description.replace(/^\[SHAPING\]\s*/i, '').startsWith('[SHAPING]');
+    if (alreadyShaped) {
+      throw new Error(`Recursive shaping blocked for "${description.slice(0, 80)}"`);
+    }
+  }
+
+  // 0. Safety check — refuse blocked actions at the gate
+  for (const pattern of BLOCKED_PATTERNS) {
+    if (pattern.test(description)) {
+      writeAudit({
+        agent: options.agent ?? 'orchestrator',
+        taskId: 'blocked',
+        action: 'gate_eval',
+        payload: { type: 'safety_block', description, pattern: pattern.source },
+        outcome: 'blocked',
+      });
+      const blockedAction = inferRequestedActions(description).find((action) => isActionBlocked(policy, action));
+      if (blockedAction) {
+        throw new Error(`SAFETY BLOCK: "${description.slice(0, 80)}" — action "${blockedAction}" is blocked in ${policy.autonomyMode} mode for ${projectId}.`);
+      }
+    }
+  }
+
   // 1. Classify risk
-  const classification = await classifyRisk(submission.description, { loc: options.loc });
+  const classification = await classifyRisk(description, { loc: options.loc });
 
   // 2. Resolve owning agent (project-scoped when projectId is set)
-  const projectId = options.projectId ?? submission.projectId ?? 'organism';
   loadRegistry(); // warm cache
   let intendedAgent = options.agent;
   if (!intendedAgent) {
-    const resolved = resolveOwner(submission.description, projectId === 'organism' ? undefined : projectId);
+    const resolved = resolveOwner(description, projectId === 'organism' ? undefined : projectId);
     intendedAgent = resolved?.owner ?? 'ceo'; // CEO handles ambiguous and unknown tasks
   }
+
+  const goal = options.goalId
+    ? getGoal(options.goalId) ?? ensureGoal({
+        projectId,
+        title: submission.title ?? description.slice(0, 120),
+        description,
+        sourceKind,
+        workflowKind,
+      })
+    : ensureGoal({
+        projectId,
+        title: submission.title ?? description.slice(0, 120),
+        description,
+        sourceKind,
+        workflowKind,
+      });
 
   // 3. Shape Up gate: MEDIUM/HIGH tasks must reference an approved bet or be rerouted
   const shapingAction = resolveShapingRequirement(classification.lane, projectId, options);
@@ -143,7 +243,7 @@ export async function submitTask(
       agent: intendedAgent,
       taskId: 'rejected',
       action: 'gate_eval',
-      payload: { type: 'shaping_rejected', reason: shapingAction.reason, description: submission.description },
+      payload: { type: 'shaping_rejected', reason: shapingAction.reason, description },
       outcome: 'blocked',
     });
     throw new Error(`Shape Up gate: ${shapingAction.reason}`);
@@ -156,23 +256,26 @@ export async function submitTask(
     const task = createTask({
       agent,
       lane: classification.lane,
-      description: submission.description.startsWith('[SHAPING]') ? submission.description : `[SHAPING] ${submission.description}`,
+      description: description.startsWith('[SHAPING]') ? description : `[SHAPING] ${description}`,
       input: {
         type: 'pitch_request',
-        originalDescription: submission.description,
+        originalDescription: description,
         originalInput: submission.input,
         intendedAgent,
         reason: 'No approved bet found for MEDIUM/HIGH task — needs shaping first',
       },
       parentTaskId: options.parentTaskId,
       projectId,
+      goalId: goal.id,
+      workflowKind: 'shaping',
+      sourceKind,
     });
 
     writeAudit({
       agent,
       taskId: task.id,
       action: 'task_created',
-      payload: { classification, description: submission.description, shapingAction: 'convert_to_pitch' },
+      payload: { classification, description, shapingAction: 'convert_to_pitch', goalId: goal.id },
       outcome: 'success',
     });
 
@@ -184,7 +287,7 @@ export async function submitTask(
       agent: intendedAgent,
       taskId: 'emergency',
       action: 'gate_eval',
-      payload: { type: 'emergency_bypass', reason: shapingAction.reason, description: submission.description },
+      payload: { type: 'emergency_bypass', reason: shapingAction.reason, description },
       outcome: 'success',
     });
   }
@@ -193,7 +296,7 @@ export async function submitTask(
 
   // 4. Boundary check if we have a bet
   if (resolvedBetId) {
-    const boundaryCheck = checkBetBoundaries(resolvedBetId, submission.description);
+    const boundaryCheck = checkBetBoundaries(resolvedBetId, description);
     if (boundaryCheck.tripped) {
       writeAudit({
         agent: intendedAgent,
@@ -210,24 +313,34 @@ export async function submitTask(
   //    Instead, it is used upstream in pitch refinement (product-manager delegates to grill-me
   //    during shaping). Once a bet is approved, tasks go directly to the intended agent.
   const agent = intendedAgent;
-  const taskInput = submission.input;
+  const taskInput = submission.input && typeof submission.input === 'object'
+    ? {
+        ...(submission.input as Record<string, unknown>),
+        goalId: goal.id,
+        workflowKind,
+        sourceKind,
+      }
+    : submission.input;
 
   // 6. Create task record
   const task = createTask({
     agent,
     lane: classification.lane,
-    description: submission.description,
+    description,
     input: taskInput,
     parentTaskId: options.parentTaskId,
     projectId,
     betId: resolvedBetId,
+    goalId: goal.id,
+    workflowKind,
+    sourceKind,
   });
 
   writeAudit({
     agent,
     taskId: task.id,
     action: 'task_created',
-    payload: { classification, description: submission.description, betId: resolvedBetId },
+    payload: { classification, description, betId: resolvedBetId, goalId: goal.id, workflowKind, sourceKind },
     outcome: 'success',
   });
 

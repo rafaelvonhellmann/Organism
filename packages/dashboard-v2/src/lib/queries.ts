@@ -181,6 +181,17 @@ export async function getTasks(filters: {
   const client = getClient();
   if (!client) return { tasks: [], total: 0 };
 
+  // Auto-complete non-HIGH awaiting_review tasks — they don't need Rafael's review
+  if (filters.status === 'awaiting_review') {
+    try {
+      await client.execute(`
+        UPDATE tasks SET status = 'completed', completed_at = ${Date.now()}
+        WHERE status = 'awaiting_review' AND lane != 'HIGH'
+          AND agent NOT IN ('grill-me', 'codex-review', 'quality-agent')
+      `);
+    } catch { /* best effort */ }
+  }
+
   const where: string[] = [];
   if (filters.status) where.push(`status='${esc(filters.status)}'`);
   if (filters.agent) where.push(`agent='${esc(filters.agent)}'`);

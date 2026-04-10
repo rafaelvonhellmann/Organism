@@ -50,6 +50,7 @@ async function callGpt(prompt: string, apiKey: string): Promise<{ text: string; 
     body: JSON.stringify({
       model: 'gpt-5.4',
       max_completion_tokens: 2048,
+      reasoning_effort: 'high',
       messages: [
         { role: 'system', content: CODEX_REVIEW_SYSTEM },
         { role: 'user', content: prompt },
@@ -101,7 +102,7 @@ export default class CodexReviewAgent extends BaseAgent {
       console.warn('[codex-review] OPENAI_API_KEY not set — Codex Review skipped');
       return {
         output: {
-          review: '## Codex Review\n\n**Decision:** APPROVED\n\n**Summary:** Codex Review skipped — OPENAI_API_KEY not set.\n\n### Issues\n\nNo issues found.\n\n### Notes\n- Set OPENAI_API_KEY to enable GPT-4o cross-model review.',
+          review: '## Codex Review\n\n**Decision:** APPROVED\n\n**Summary:** Codex Review skipped — OPENAI_API_KEY not set.\n\n### Issues\n\nNo issues found.\n\n### Notes\n- Set OPENAI_API_KEY to enable GPT-5.4 cross-model review.',
           decision: 'APPROVED',
           skipped: true,
           reason: 'OPENAI_API_KEY not set',

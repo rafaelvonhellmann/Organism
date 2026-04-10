@@ -3,7 +3,11 @@ dist/
 .env
 .secrets.json
 state/tasks.db
+state/*.db
 state/audit.log
+state/*.log
+state/*.json
+state/pids/
 state/shadow-runs.jsonl
 state/guardian-history.json
 state/guardian-shadow-*.json

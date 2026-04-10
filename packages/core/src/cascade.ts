@@ -1,117 +1,192 @@
-import * as crypto from 'crypto';
-import { getDb } from './task-queue.js';
+import { createTask, getDb } from './task-queue.js';
 import { writeAudit } from './audit.js';
+import { extractFindings, extractHandoffs } from './agent-envelope.js';
+import { HandoffRequest, RiskLane, TypedFinding } from '../../shared/src/types.js';
 
-interface CascadeRule {
-  sourceAgent: string;
-  targetAgent: string;
-  condition: 'always' | 'on_finding' | 'on_code_change';
-  lane: 'LOW' | 'MEDIUM' | 'HIGH';
+const CASCADE_ELIGIBLE_AGENTS = new Set(['security-audit', 'product-manager', 'cto', 'devops']);
+const MAX_DAILY_CASCADES_PER_AGENT = 3;
+
+function laneFromSeverity(severity: TypedFinding['severity']): RiskLane {
+  switch (severity) {
+    case 'CRITICAL':
+    case 'HIGH':
+      return 'HIGH';
+    case 'MEDIUM':
+      return 'MEDIUM';
+    default:
+      return 'LOW';
+  }
 }
 
-// Cascade rules: when source completes, trigger target
-const CASCADE_RULES: CascadeRule[] = [
-  // Engineering fix → Security reviews it
-  { sourceAgent: 'engineering', targetAgent: 'security-audit', condition: 'on_code_change', lane: 'LOW' },
-  // Engineering fix → Quality validates it
-  { sourceAgent: 'engineering', targetAgent: 'quality-guardian', condition: 'always', lane: 'LOW' },
-  // Security finding → Engineering implements fix
-  { sourceAgent: 'security-audit', targetAgent: 'engineering', condition: 'on_finding', lane: 'MEDIUM' },
-  // Product spec → Engineering implements
-  { sourceAgent: 'product-manager', targetAgent: 'engineering', condition: 'on_finding', lane: 'LOW' },
-  // CTO architecture decision → Engineering implements
-  { sourceAgent: 'cto', targetAgent: 'engineering', condition: 'on_finding', lane: 'LOW' },
-  // CFO cost concern → Data analyst investigates
-  { sourceAgent: 'cfo', targetAgent: 'data-analyst', condition: 'on_finding', lane: 'LOW' },
-  // Marketing strategy → SEO implements
-  { sourceAgent: 'marketing-strategist', targetAgent: 'seo', condition: 'always', lane: 'LOW' },
-];
+function recentCascadeCount(agent: string, projectId: string): number {
+  const oneDayAgo = Date.now() - 86400000;
+  const row = getDb().prepare(`
+    SELECT COUNT(*) as c
+    FROM tasks
+    WHERE agent = ? AND project_id = ? AND source_kind = 'agent_followup' AND created_at > ?
+  `).get(agent, projectId, oneDayAgo) as { c: number } | undefined;
+  return row?.c ?? 0;
+}
+
+function canCascade(goalId: string | null, targetAgent: string, workflowKind: string, sourceTaskId: string): boolean {
+  const existing = getDb().prepare(`
+    SELECT id FROM tasks
+    WHERE goal_id IS ? AND agent = ? AND workflow_kind = ? AND input LIKE ?
+      AND status NOT IN ('failed', 'dead_letter')
+    LIMIT 1
+  `).get(goalId, targetAgent, workflowKind, `%"sourceTaskId":"${sourceTaskId}"%`) as { id: string } | undefined;
+  return !existing;
+}
+
+function createCascadeTask(task: {
+  id: string;
+  agent: string;
+  description: string;
+  output: string;
+  project_id: string;
+  goal_id: string | null;
+}, targetAgent: string, workflowKind: string, description: string, lane: RiskLane, detail: Record<string, unknown>): boolean {
+  if (!canCascade(task.goal_id, targetAgent, workflowKind, task.id)) return false;
+  if (recentCascadeCount(targetAgent, task.project_id) >= MAX_DAILY_CASCADES_PER_AGENT) return false;
+
+  try {
+    const created = createTask({
+      agent: targetAgent,
+      lane,
+      description,
+      input: {
+        ...detail,
+        sourceTaskId: task.id,
+        sourceAgent: task.agent,
+        sourceOutput: task.output.slice(0, 3000),
+        projectId: task.project_id,
+        execution: workflowKind === 'implement',
+      },
+      parentTaskId: task.id,
+      projectId: task.project_id,
+      goalId: task.goal_id ?? undefined,
+      workflowKind,
+      sourceKind: 'agent_followup',
+    });
+
+    writeAudit({
+      agent: 'cascade',
+      taskId: created.id,
+      action: 'task_created',
+      payload: {
+        sourceTaskId: task.id,
+        sourceAgent: task.agent,
+        targetAgent,
+        workflowKind,
+      },
+      outcome: 'success',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function fallbackFindingCascade(task: {
+  id: string;
+  agent: string;
+  description: string;
+  output: string;
+  project_id: string;
+  goal_id: string | null;
+}, findings: TypedFinding[]): number {
+  let created = 0;
+  for (const finding of findings) {
+    if (!finding.actionable || !finding.remediation) continue;
+    if (createCascadeTask(
+      task,
+      'engineering',
+      finding.followupKind ?? 'implement',
+      finding.remediation,
+      laneFromSeverity(finding.severity),
+      {
+        cascadeReason: finding.summary,
+        findingId: finding.id,
+      },
+    )) {
+      created++;
+    }
+  }
+  return created;
+}
+
+function handoffCascade(task: {
+  id: string;
+  agent: string;
+  description: string;
+  output: string;
+  project_id: string;
+  goal_id: string | null;
+}, handoffs: HandoffRequest[]): number {
+  let created = 0;
+  for (const handoff of handoffs) {
+    if (createCascadeTask(
+      task,
+      handoff.targetAgent,
+      handoff.workflowKind,
+      handoff.summary,
+      handoff.workflowKind === 'validate' ? 'LOW' : 'MEDIUM',
+      {
+        handoffId: handoff.id,
+        handoffReason: handoff.reason,
+      },
+    )) {
+      created++;
+    }
+  }
+  return created;
+}
 
 /**
- * Check recently completed tasks and create cascade follow-ups.
- * Only processes tasks completed in the last 2 minutes (one tick window).
+ * Check recently completed tasks and create typed cascade follow-ups.
+ * Cascades are now limited to structured handoffs and critical actionable findings.
  */
 export function processCascades(): number {
-  const db = getDb();
-  const twoMinAgo = Date.now() - 120000;
-
-  // Find recently completed tasks
-  const completed = db.prepare(`
-    SELECT id, agent, description, output, project_id, lane
+  const completed = getDb().prepare(`
+    SELECT id, agent, description, output, project_id, goal_id
     FROM tasks
     WHERE status = 'completed'
-    AND completed_at > ?
-    AND output IS NOT NULL
-  `).all(twoMinAgo) as Array<{
-    id: string; agent: string; description: string; output: string; project_id: string; lane: string;
+      AND completed_at > ?
+      AND output IS NOT NULL
+      AND source_kind != 'agent_followup'
+  `).all(Date.now() - 300000) as Array<{
+    id: string;
+    agent: string;
+    description: string;
+    output: string;
+    project_id: string;
+    goal_id: string | null;
   }>;
 
   let created = 0;
 
   for (const task of completed) {
-    const rules = CASCADE_RULES.filter(r => r.sourceAgent === task.agent);
-    if (rules.length === 0) continue;
-
-    let hasFinding = false;
-    let hasCodeChange = false;
+    if (!CASCADE_ELIGIBLE_AGENTS.has(task.agent)) continue;
 
     try {
       const output = JSON.parse(task.output);
-      const text = typeof output === 'string' ? output :
-                   typeof output.text === 'string' ? output.text :
-                   typeof output.report === 'string' ? output.report : '';
+      const handoffs = extractHandoffs(output).slice(0, 2);
+      const findings = extractFindings(output)
+        .filter((finding) => finding.actionable && (finding.severity === 'CRITICAL' || finding.severity === 'HIGH'))
+        .slice(0, 2);
 
-      hasFinding = text.length > 100; // Non-trivial output = has findings
-      hasCodeChange = text.toLowerCase().includes('fix') ||
-                      text.toLowerCase().includes('implement') ||
-                      text.toLowerCase().includes('change') ||
-                      text.toLowerCase().includes('update');
-    } catch { /* unparseable output — skip condition checks, only 'always' rules fire */ }
+      created += handoffCascade(task, handoffs);
 
-    for (const rule of rules) {
-      // Check condition
-      if (rule.condition === 'on_finding' && !hasFinding) continue;
-      if (rule.condition === 'on_code_change' && !hasCodeChange) continue;
-
-      // Check if cascade task already exists
-      const exists = db.prepare(
-        "SELECT id FROM tasks WHERE agent = ? AND project_id = ? AND input LIKE ? AND created_at > ?",
-      ).get(rule.targetAgent, task.project_id, `%"cascadeFrom":"${task.id}"%`, twoMinAgo);
-
-      if (exists) continue;
-
-      const id = crypto.randomUUID();
-      const desc = `[CASCADE] Follow-up from ${task.agent}: ${task.description.slice(0, 100)}`;
-
-      db.prepare(`
-        INSERT INTO tasks (id, agent, status, lane, description, input, input_hash, project_id, created_at)
-        VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
-      `).run(
-        id, rule.targetAgent, rule.lane, desc,
-        JSON.stringify({
-          cascadeFrom: task.id,
-          sourceAgent: task.agent,
-          sourceOutput: task.output?.slice(0, 2000),
-          projectId: task.project_id,
-        }),
-        `cascade:${task.id}:${rule.targetAgent}`,
-        task.project_id, Date.now()
-      );
-
-      writeAudit({
-        agent: 'cascade',
-        taskId: id,
-        action: 'task_created',
-        payload: { rule: `${rule.sourceAgent} → ${rule.targetAgent}`, condition: rule.condition, sourceTask: task.id },
-        outcome: 'success',
-      });
-
-      created++;
+      if (handoffs.length === 0) {
+        created += fallbackFindingCascade(task, findings);
+      }
+    } catch {
+      // Ignore legacy outputs without structured follow-ups.
     }
   }
 
   if (created > 0) {
-    console.log(`[cascade] Created ${created} follow-up tasks`);
+    console.log(`[cascade] Created ${created} typed cascade follow-up task(s)`);
   }
 
   return created;

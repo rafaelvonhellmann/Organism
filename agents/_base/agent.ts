@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { readRecentForAgent } from '../../packages/core/src/audit.js';
 import { assertBudget, recordSpend, estimateCost, getAgentSpend, checkOverspend, getPerTaskHardCap } from '../../packages/core/src/budget.js';
-import { checkoutTask, completeTask, failTask, awaitReviewTask, getPendingTasks, createTask, getSiblingTaskOutputs } from '../../packages/core/src/task-queue.js';
+import { checkoutTask, completeTask, failTask, awaitReviewTask, getPendingTasks, createTask, getSiblingTaskOutputs, updateTaskRuntimeState } from '../../packages/core/src/task-queue.js';
 import { writeAudit } from '../../packages/core/src/audit.js';
 import { evaluateG1 } from '../../packages/core/src/gates.js';
 import { Task, AgentCapability } from '../../packages/shared/src/types.js';
@@ -11,6 +11,9 @@ import { storeTaskMemory, getWorkingMemory, isStixDBAvailable, searchAcrossAgent
 import { getCompactContext } from '../../packages/core/src/context-brief.js';
 import { recordBetSpend, checkBetCircuitBreaker } from '../../packages/core/src/shapeup.js';
 import { resolveTaskSources, loadDistilledSources } from '../../packages/core/src/palate.js';
+import { canAgentExecute, loadRegistry } from '../../packages/core/src/registry.js';
+import { normalizeAgentEnvelope, extractEnvelopeText } from '../../packages/core/src/agent-envelope.js';
+import { createArtifact, createRunSession, getLatestRunForGoal, mapProviderFailure, updateRunStatus, createRunStep, updateRunStep } from '../../packages/core/src/run-state.js';
 
 // Tasklist candidates — checked in order, first found wins
 const TASKLIST_CANDIDATES = [
@@ -20,6 +23,13 @@ const TASKLIST_CANDIDATES = [
   '.ai/tasklist.md',
   'TODO.md',
 ];
+
+function withRetryBackoff(basePauseUntilMs: number | null, attemptCount: number): number | null {
+  if (!basePauseUntilMs) return null;
+  const baseDelayMs = Math.max(basePauseUntilMs - Date.now(), 60_000);
+  const multiplier = Math.min(Math.max(attemptCount - 1, 0), 3);
+  return Date.now() + (baseDelayMs * (2 ** multiplier));
+}
 
 export type AgentModel = 'haiku' | 'sonnet' | 'opus' | 'gpt4o' | 'gpt5.4';
 
@@ -41,9 +51,26 @@ export abstract class BaseAgent {
   private heartbeatInterval?: ReturnType<typeof setInterval>;
 
   constructor(config: AgentConfig) {
-    this.name = config.name;
-    this.model = config.model;
-    this.config = config;
+    let runtimeConfig = config;
+    try {
+      const registryCap = loadRegistry().find((cap) => cap.owner === config.name);
+      if (registryCap) {
+        runtimeConfig = {
+          ...config,
+          model: registryCap.model,
+          capability: {
+            ...config.capability,
+            ...registryCap,
+          },
+        };
+      }
+    } catch {
+      // Registry is optional at constructor time; keep the local config if unavailable.
+    }
+
+    this.name = runtimeConfig.name;
+    this.model = runtimeConfig.model;
+    this.config = runtimeConfig;
   }
 
   // Load recent audit entries for session continuity (the "breadcrumb" pattern)
@@ -150,6 +177,15 @@ export abstract class BaseAgent {
     }
 
     for (const task of pending) {
+      if (!canAgentExecute(this.name, task.projectId)) {
+        updateTaskRuntimeState({
+          taskId: task.id,
+          status: 'paused',
+          error: `Agent ${this.name} is not enabled for project ${task.projectId ?? 'organism'}`,
+          retryClass: 'manual_pause',
+        });
+        continue;
+      }
       await this.processTask(task);
     }
   }
@@ -161,6 +197,7 @@ export abstract class BaseAgent {
       console.log(`[${this.name}] Task ${task.id} already taken. Skipping.`);
       return;
     }
+    const attemptCount = checked.attemptCount ?? 1;
 
     const startedAt = Date.now();
     const maxRunTime = this.config.maxRunTimeMs ?? 30 * 60 * 1000;
@@ -177,6 +214,28 @@ export abstract class BaseAgent {
       payload: { taskDescription: task.description, lane: task.lane },
       outcome: 'success',
     });
+
+    let run = null;
+    let runStep = null;
+    if (task.goalId) {
+      const latest = getLatestRunForGoal(task.goalId);
+      if (latest && latest.status === 'running' && latest.agent === this.name) {
+        run = latest;
+      } else {
+        run = createRunSession({
+          goalId: task.goalId,
+          projectId: task.projectId ?? 'organism',
+          agent: this.name,
+          workflowKind: task.workflowKind ?? 'implement',
+        });
+      }
+      runStep = createRunStep({
+        runId: run.id,
+        name: `agent:${this.name}:execute`,
+        detail: task.description.slice(0, 240),
+      });
+      updateRunStep({ stepId: runStep.id, status: 'running' });
+    }
 
     // Budget guard
     const estimatedTokensOut = 2000;
@@ -198,6 +257,17 @@ export abstract class BaseAgent {
 
     // Timeout guard
     const timeoutHandle = setTimeout(() => {
+      if (run && runStep) {
+        updateRunStep({ stepId: runStep.id, status: 'failed', detail: `Timeout after ${maxRunTime}ms` });
+        updateRunStatus({
+          runId: run.id,
+          status: 'retry_scheduled',
+          retryClass: 'transient_error',
+          retryAt: Date.now() + 10 * 60 * 1000,
+          providerFailureKind: 'timeout',
+          summary: `Timed out after ${maxRunTime}ms`,
+        });
+      }
       writeAudit({
         agent: this.name,
         taskId: task.id,
@@ -206,7 +276,14 @@ export abstract class BaseAgent {
         outcome: 'failure',
         errorCode: OrganismError.AGENT_TIMEOUT,
       });
-      failTask(task.id, `Timeout after ${maxRunTime}ms`);
+      updateTaskRuntimeState({
+        taskId: task.id,
+        status: 'retry_scheduled',
+        error: `Timeout after ${maxRunTime}ms`,
+        retryClass: 'transient_error',
+        retryAt: Date.now() + 10 * 60 * 1000,
+        providerFailureKind: 'timeout',
+      });
     }, maxRunTime);
 
     // Cross-agent memory: pull relevant findings from other agents before executing
@@ -276,6 +353,7 @@ export abstract class BaseAgent {
     try {
       const result = await this.execute(task);
       clearTimeout(timeoutHandle);
+      const envelope = normalizeAgentEnvelope(this.name, task, result.output);
 
       const tokensUsed = result.tokensUsed ?? 0;
       let costUsd = estimateCost(this.model, Math.floor(tokensUsed * 0.7), Math.floor(tokensUsed * 0.3));
@@ -319,9 +397,7 @@ export abstract class BaseAgent {
       if (task.lane === 'HIGH' && !isPipelineInternal) {
         // Queue the HIGH-lane review pipeline with TRIGGER DISCIPLINE:
         // Not all reviewers fire for every task. Match reviewers to task content.
-        const outputSummary = typeof result.output === 'object' && result.output !== null
-          ? (result.output as Record<string, unknown>).text ?? JSON.stringify(result.output).slice(0, 3000)
-          : String(result.output).slice(0, 3000);
+        const outputSummary = extractEnvelopeText(envelope).slice(0, 3000);
 
         // Determine which reviewers are relevant to this task
         const reviewAgents = selectReviewers(task.description, this.name);
@@ -349,6 +425,9 @@ export abstract class BaseAgent {
               },
               parentTaskId: task.id,
               projectId: task.projectId ?? 'organism',
+              goalId: task.goalId,
+              workflowKind: 'validate',
+              sourceKind: 'agent_followup',
             });
             console.log(`[${this.name}] Queued HIGH-lane review: ${reviewer} for task ${task.id}`);
           } catch {
@@ -357,7 +436,23 @@ export abstract class BaseAgent {
           }
         }
 
-        awaitReviewTask(task.id, result.output, tokensUsed, costUsd);
+        awaitReviewTask(task.id, envelope, tokensUsed, costUsd);
+        if (run && runStep) {
+          updateRunStep({ stepId: runStep.id, status: 'completed', detail: `Awaiting review: ${envelope.summary}` });
+          createArtifact({
+            runId: run.id,
+            goalId: run.goalId,
+            kind: 'report',
+            title: `${this.name} awaiting review`,
+            content: extractEnvelopeText(envelope).slice(0, 4000),
+          });
+          updateRunStatus({
+            runId: run.id,
+            status: 'paused',
+            retryClass: 'manual_pause',
+            summary: `Awaiting Rafael review: ${envelope.summary}`,
+          });
+        }
         console.log(`[${this.name}] Task ${task.id} → awaiting_review (G4 gate). Cost: $${costUsd.toFixed(4)}`);
 
         writeAudit({
@@ -370,7 +465,23 @@ export abstract class BaseAgent {
         return; // Stop here — no auto-chaining until Rafael approves
       }
 
-      completeTask(task.id, result.output, tokensUsed, costUsd);
+      completeTask(task.id, envelope, tokensUsed, costUsd);
+
+      if (run && runStep) {
+        updateRunStep({ stepId: runStep.id, status: 'completed', detail: envelope.summary });
+        createArtifact({
+          runId: run.id,
+          goalId: run.goalId,
+          kind: 'report',
+          title: `${this.name} output`,
+          content: extractEnvelopeText(envelope).slice(0, 4000),
+        });
+        updateRunStatus({
+          runId: run.id,
+          status: 'completed',
+          summary: envelope.summary,
+        });
+      }
 
       // Overspend detection — log or escalate if task exceeded budget estimate
       const overspend = checkOverspend(this.name, task.id, task.lane, costUsd);
@@ -406,20 +517,21 @@ export abstract class BaseAgent {
               originalTaskId: task.id,
               originalDescription: task.description,
               output: typeof result.output === 'object' && result.output !== null
-                ? (result.output as Record<string, unknown>).text ?? JSON.stringify(result.output).slice(0, 3000)
+                ? extractEnvelopeText(envelope).slice(0, 3000)
                 : String(result.output).slice(0, 3000),
             },
             parentTaskId: task.id,
             projectId: task.projectId ?? 'organism',
+            goalId: task.goalId,
+            workflowKind: 'validate',
+            sourceKind: 'agent_followup',
           });
         } catch { /* codex-review optional — don't fail the task */ }
       }
 
       // Store task completion in agent's long-term memory
       try {
-        const outputText = typeof result.output === 'object' && result.output !== null
-          ? (result.output as Record<string, unknown>).text as string ?? JSON.stringify(result.output).slice(0, 1000)
-          : String(result.output).slice(0, 1000);
+        const outputText = extractEnvelopeText(envelope).slice(0, 1000);
         await storeTaskMemory(this.name, {
           id: task.id,
           description: task.description,
@@ -450,6 +562,20 @@ export abstract class BaseAgent {
     } catch (err) {
       clearTimeout(timeoutHandle);
       const errorMsg = String(err);
+      const providerFailure = mapProviderFailure(errorMsg);
+      const retryAt = withRetryBackoff(providerFailure.pauseUntilMs, attemptCount);
+
+      if (run && runStep) {
+        updateRunStep({ stepId: runStep.id, status: 'failed', detail: errorMsg.slice(0, 500) });
+        updateRunStatus({
+          runId: run.id,
+          status: retryAt ? 'retry_scheduled' : 'paused',
+          retryClass: providerFailure.retryClass,
+          retryAt,
+          providerFailureKind: providerFailure.providerFailureKind,
+          summary: errorMsg.slice(0, 500),
+        });
+      }
       writeAudit({
         agent: this.name,
         taskId: task.id,
@@ -457,7 +583,18 @@ export abstract class BaseAgent {
         payload: { error: errorMsg },
         outcome: 'failure',
       });
-      failTask(task.id, errorMsg);
+      if (providerFailure.retryClass !== 'transient_error' || providerFailure.pauseUntilMs) {
+        updateTaskRuntimeState({
+          taskId: task.id,
+          status: retryAt ? 'retry_scheduled' : 'paused',
+          error: errorMsg,
+          retryClass: providerFailure.retryClass,
+          retryAt,
+          providerFailureKind: providerFailure.providerFailureKind,
+        });
+      } else {
+        failTask(task.id, errorMsg);
+      }
       console.error(`[${this.name}] Task ${task.id} failed: ${errorMsg}`);
     }
   }

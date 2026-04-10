@@ -64,6 +64,15 @@ export async function GET(req: NextRequest) {
   // 2. Historical tasks: LOW-lane + completed status are excluded entirely
   // Only MEDIUM/HIGH completed tasks and all awaiting_review tasks appear.
 
+  // Auto-complete non-HIGH awaiting_review tasks — they don't need Rafael's review
+  try {
+    await client.execute(`
+      UPDATE tasks SET status = 'completed', completed_at = ${Date.now()}
+      WHERE status = 'awaiting_review' AND lane != 'HIGH'
+        AND agent NOT IN ('grill-me', 'codex-review', 'quality-agent')
+    `);
+  } catch { /* best effort */ }
+
   const [tasksResult, reviewedResult] = await Promise.all([
     client.execute({
       sql: `SELECT t.id, t.agent, t.status, t.lane, t.description,
@@ -73,7 +82,7 @@ export async function GET(req: NextRequest) {
             FROM tasks t
             WHERE t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent')
               AND (
-                t.status = 'awaiting_review'
+                (t.status = 'awaiting_review' AND t.lane = 'HIGH')
                 OR (t.status = 'completed' AND t.lane = 'HIGH')
               )${projectFilter}
               AND NOT EXISTS (

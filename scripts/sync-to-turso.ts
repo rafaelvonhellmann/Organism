@@ -35,7 +35,8 @@ if (!TURSO_URL || !TURSO_TOKEN) {
   process.exit(1);
 }
 
-const localDbPath = resolve(import.meta.dirname ?? '.', '../state/tasks.db');
+import { DB_PATH } from '../packages/shared/src/state-dir.js';
+const localDbPath = DB_PATH;
 if (!existsSync(localDbPath)) {
   console.error(`Local DB not found at ${localDbPath}`);
   process.exit(1);

@@ -32,6 +32,7 @@ function runMigrations(db: DatabaseSync) {
       id TEXT PRIMARY KEY,
       agent TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
+      attempt_count INTEGER NOT NULL DEFAULT 0,
       lane TEXT NOT NULL,
       description TEXT NOT NULL,
       input TEXT,
@@ -44,7 +45,13 @@ function runMigrations(db: DatabaseSync) {
       error TEXT,
       parent_task_id TEXT,
       project_id TEXT NOT NULL DEFAULT 'organism',
-      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      goal_id TEXT,
+      workflow_kind TEXT,
+      source_kind TEXT,
+      retry_class TEXT,
+      retry_at INTEGER,
+      provider_failure_kind TEXT
     );
 
     CREATE TABLE IF NOT EXISTS audit_log (
@@ -89,10 +96,99 @@ function runMigrations(db: DatabaseSync) {
       ts INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
 
+    CREATE TABLE IF NOT EXISTS goals (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL DEFAULT 'organism',
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      source_kind TEXT NOT NULL DEFAULT 'user',
+      workflow_kind TEXT NOT NULL DEFAULT 'implement',
+      input_hash TEXT NOT NULL,
+      latest_run_id TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+
+    CREATE TABLE IF NOT EXISTS run_sessions (
+      id TEXT PRIMARY KEY,
+      goal_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'organism',
+      agent TEXT NOT NULL,
+      workflow_kind TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      retry_class TEXT NOT NULL DEFAULT 'none',
+      retry_at INTEGER,
+      provider_failure_kind TEXT NOT NULL DEFAULT 'none',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      completed_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS run_steps (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      detail TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      completed_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS interrupts (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      summary TEXT NOT NULL,
+      detail TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      resolved_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS artifacts (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      goal_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      path TEXT,
+      content TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+
+    CREATE TABLE IF NOT EXISTS approvals (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      requested_by TEXT NOT NULL,
+      requested_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      decided_at INTEGER,
+      decided_by TEXT,
+      reason TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS runtime_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      goal_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload TEXT,
+      ts INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent);
     CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent);
     CREATE INDEX IF NOT EXISTS idx_audit_task ON audit_log(task_id);
+    CREATE INDEX IF NOT EXISTS idx_goals_hash ON goals(project_id, workflow_kind, input_hash);
+    CREATE INDEX IF NOT EXISTS idx_run_sessions_goal ON run_sessions(goal_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_run_steps_run ON run_steps(run_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_interrupts_run ON interrupts(run_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_goal ON artifacts(goal_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_runtime_events_run ON runtime_events(run_id, id);
   `);
 
   // Additive migrations for existing databases — safe to re-run (errors caught and ignored)
@@ -101,6 +197,14 @@ function runMigrations(db: DatabaseSync) {
     `ALTER TABLE agent_spend ADD COLUMN project_id TEXT NOT NULL DEFAULT 'organism'`,
     `CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)`,
     `ALTER TABLE tasks ADD COLUMN quality_reviewed INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE tasks ADD COLUMN goal_id TEXT`,
+    `ALTER TABLE tasks ADD COLUMN workflow_kind TEXT`,
+    `ALTER TABLE tasks ADD COLUMN source_kind TEXT`,
+    `ALTER TABLE tasks ADD COLUMN retry_class TEXT`,
+    `ALTER TABLE tasks ADD COLUMN retry_at INTEGER`,
+    `ALTER TABLE tasks ADD COLUMN provider_failure_kind TEXT`,
+    `ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0`,
+    `CREATE INDEX IF NOT EXISTS idx_tasks_goal ON tasks(goal_id)`,
     `CREATE TABLE IF NOT EXISTS clarifications (
       id TEXT PRIMARY KEY,
       task_id TEXT,
@@ -244,6 +348,88 @@ function runMigrations(db: DatabaseSync) {
       status TEXT NOT NULL DEFAULT 'running'
     )`,
     `CREATE INDEX IF NOT EXISTS idx_review_cycles_project ON review_cycles(project_id)`,
+    `CREATE TABLE IF NOT EXISTS goals (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL DEFAULT 'organism',
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      source_kind TEXT NOT NULL DEFAULT 'user',
+      workflow_kind TEXT NOT NULL DEFAULT 'implement',
+      input_hash TEXT NOT NULL,
+      latest_run_id TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_goals_hash ON goals(project_id, workflow_kind, input_hash)`,
+    `CREATE TABLE IF NOT EXISTS run_sessions (
+      id TEXT PRIMARY KEY,
+      goal_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'organism',
+      agent TEXT NOT NULL,
+      workflow_kind TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      retry_class TEXT NOT NULL DEFAULT 'none',
+      retry_at INTEGER,
+      provider_failure_kind TEXT NOT NULL DEFAULT 'none',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      completed_at INTEGER
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_run_sessions_goal ON run_sessions(goal_id, created_at)`,
+    `CREATE TABLE IF NOT EXISTS run_steps (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      detail TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      completed_at INTEGER
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_run_steps_run ON run_steps(run_id, created_at)`,
+    `CREATE TABLE IF NOT EXISTS interrupts (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      summary TEXT NOT NULL,
+      detail TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      resolved_at INTEGER
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_interrupts_run ON interrupts(run_id, created_at)`,
+    `CREATE TABLE IF NOT EXISTS artifacts (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      goal_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      path TEXT,
+      content TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_artifacts_goal ON artifacts(goal_id, created_at)`,
+    `CREATE TABLE IF NOT EXISTS approvals (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      requested_by TEXT NOT NULL,
+      requested_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      decided_at INTEGER,
+      decided_by TEXT,
+      reason TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS runtime_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      goal_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload TEXT,
+      ts INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_runtime_events_run ON runtime_events(run_id, id)`,
   ];
   for (const sql of additiveMigrations) {
     try { db.exec(sql); } catch { /* column/index already exists — safe to ignore */ }
@@ -258,6 +444,12 @@ export function createTask(params: {
   parentTaskId?: string;
   projectId?: string;
   betId?: string;
+  goalId?: string;
+  workflowKind?: string;
+  sourceKind?: string;
+  retryClass?: string;
+  retryAt?: number | null;
+  providerFailureKind?: string;
 }): Task {
   const db = getDb();
   const id = crypto.randomUUID();
@@ -281,9 +473,28 @@ export function createTask(params: {
   }
 
   db.prepare(`
-    INSERT INTO tasks (id, agent, status, lane, description, input, input_hash, parent_task_id, project_id, bet_id)
-    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, params.agent, params.lane, params.description, inputJson, inputHash, params.parentTaskId ?? null, projectId, params.betId ?? null);
+    INSERT INTO tasks (
+      id, agent, status, lane, description, input, input_hash, parent_task_id, project_id, bet_id,
+      goal_id, workflow_kind, source_kind, retry_class, retry_at, provider_failure_kind
+    )
+    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    params.agent,
+    params.lane,
+    params.description,
+    inputJson,
+    inputHash,
+    params.parentTaskId ?? null,
+    projectId,
+    params.betId ?? null,
+    params.goalId ?? null,
+    params.workflowKind ?? null,
+    params.sourceKind ?? null,
+    params.retryClass ?? null,
+    params.retryAt ?? null,
+    params.providerFailureKind ?? null,
+  );
 
   return getTask(id)!;
 }
@@ -292,7 +503,8 @@ export function createTask(params: {
 export function checkoutTask(taskId: string, agent: string): Task | null {
   const db = getDb();
   const result = db.prepare(`
-    UPDATE tasks SET status = 'in_progress', agent = ?, started_at = ?
+    UPDATE tasks
+    SET status = 'in_progress', agent = ?, started_at = ?, attempt_count = COALESCE(attempt_count, 0) + 1
     WHERE id = ? AND status = 'pending'
   `).run(agent, Date.now(), taskId);
 
@@ -333,6 +545,67 @@ export function failTask(taskId: string, error: string): void {
     UPDATE tasks SET status = 'failed', error = ?, completed_at = ?
     WHERE id = ?
   `).run(error, Date.now(), taskId);
+}
+
+export function updateTaskRuntimeState(params: {
+  taskId: string;
+  status: TaskStatus;
+  error?: string | null;
+  retryClass?: string | null;
+  retryAt?: number | null;
+  providerFailureKind?: string | null;
+}): void {
+  getDb().prepare(`
+    UPDATE tasks
+    SET status = ?, error = COALESCE(?, error), retry_class = COALESCE(?, retry_class),
+        retry_at = ?, provider_failure_kind = COALESCE(?, provider_failure_kind),
+        completed_at = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN ? ELSE completed_at END
+    WHERE id = ?
+  `).run(
+    params.status,
+    params.error ?? null,
+    params.retryClass ?? null,
+    params.retryAt ?? null,
+    params.providerFailureKind ?? null,
+    params.status,
+    Date.now(),
+    params.taskId,
+  );
+}
+
+export function releaseRetryScheduledTasks(now = Date.now(), maxAttempts = 5): { released: number; paused: number } {
+  const db = getDb();
+  const paused = db.prepare(`
+    UPDATE tasks
+    SET status = 'paused',
+        retry_class = 'manual_pause',
+        retry_at = NULL,
+        error = CASE
+          WHEN error IS NULL OR error = '' THEN 'Retry limit reached after repeated autonomous attempts'
+          ELSE error || ' | Retry limit reached after repeated autonomous attempts'
+        END
+    WHERE status = 'retry_scheduled'
+      AND retry_at IS NOT NULL
+      AND retry_at <= ?
+      AND COALESCE(attempt_count, 0) >= ?
+  `).run(now, maxAttempts);
+
+  const released = db.prepare(`
+    UPDATE tasks
+    SET status = 'pending',
+        started_at = NULL,
+        completed_at = NULL,
+        retry_at = NULL
+    WHERE status = 'retry_scheduled'
+      AND retry_at IS NOT NULL
+      AND retry_at <= ?
+      AND COALESCE(attempt_count, 0) < ?
+  `).run(now, maxAttempts);
+
+  return {
+    released: (released as { changes: number }).changes,
+    paused: (paused as { changes: number }).changes,
+  };
 }
 
 export function reapDeadLetters(maxAgeMs = 30 * 60 * 1000): number {
@@ -513,6 +786,7 @@ function rowToTask(row: Record<string, unknown>): Task {
     id: row.id as string,
     agent: row.agent as string,
     status: row.status as TaskStatus,
+    attemptCount: row.attempt_count as number | undefined,
     lane: row.lane as RiskLane,
     description: row.description as string,
     input: row.input ? JSON.parse(row.input as string) : null,
@@ -526,5 +800,11 @@ function rowToTask(row: Record<string, unknown>): Task {
     parentTaskId: row.parent_task_id as string | undefined,
     projectId: (row.project_id as string | undefined) ?? 'organism',
     betId: row.bet_id as string | undefined,
+    goalId: row.goal_id as string | undefined,
+    workflowKind: row.workflow_kind as Task['workflowKind'],
+    sourceKind: row.source_kind as Task['sourceKind'],
+    retryClass: row.retry_class as Task['retryClass'],
+    retryAt: row.retry_at as number | null | undefined,
+    providerFailureKind: row.provider_failure_kind as Task['providerFailureKind'],
   };
 }

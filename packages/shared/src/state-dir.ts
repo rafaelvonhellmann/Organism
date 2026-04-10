@@ -13,3 +13,6 @@ export const STATE_DIR = process.env.ORGANISM_STATE_DIR
 
 export const DB_PATH = path.join(STATE_DIR, 'tasks.db');
 export const PIDS_DIR = path.join(STATE_DIR, 'pids');
+export const RUNS_DIR = path.join(STATE_DIR, 'runs');
+export const EVENTS_DIR = path.join(STATE_DIR, 'events');
+export const RUNTIME_EVENTS_LOG = path.join(EVENTS_DIR, 'runtime-events.jsonl');

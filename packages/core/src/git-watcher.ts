@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { listProjectPolicies } from './project-policy.js';
 
 // Track last seen commit per project
 const LAST_COMMIT_FILE = path.resolve(process.cwd(), 'state/git-last-commit.json');
@@ -10,10 +11,14 @@ interface ProjectRepo {
   repoPath: string;
 }
 
-// Known project repos — add more as needed
-const PROJECT_REPOS: ProjectRepo[] = [
-  { projectId: 'synapse', repoPath: 'C:/Users/rafae/OneDrive/Desktop/synapse' },
-];
+function getProjectRepos(): ProjectRepo[] {
+  return listProjectPolicies()
+    .filter((policy) => policy.repoPath)
+    .map((policy) => ({
+      projectId: policy.projectId,
+      repoPath: policy.repoPath!,
+    }));
+}
 
 function loadLastCommits(): Record<string, string> {
   try {
@@ -50,7 +55,7 @@ export function checkForNewCommits(): Array<{ projectId: string; commit: string;
   const lastCommits = loadLastCommits();
   const newCommits: Array<{ projectId: string; commit: string; message: string; changedFiles: string[] }> = [];
 
-  for (const repo of PROJECT_REPOS) {
+  for (const repo of getProjectRepos()) {
     const latest = getLatestCommit(repo.repoPath);
     if (!latest) continue;
 

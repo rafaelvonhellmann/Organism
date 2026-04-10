@@ -222,7 +222,6 @@ def _rag_retrieve(args: dict[str, Any]) -> list[mcp_types.TextContent]:
 
 def _check_policy(args: dict[str, Any]) -> list[mcp_types.TextContent]:
     action = args["action"]
-    context = args.get("context", {})
 
     # Policy rules — expand as Organism grows
     BLOCKED_ACTIONS = [

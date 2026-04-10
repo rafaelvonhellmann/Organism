@@ -16,6 +16,7 @@ interface TaskSummary {
   costUsd: number | null;
   completedAt: number | null;
   createdAt: number;
+  error: string | null;
 }
 
 interface ProgressData {
@@ -124,7 +125,7 @@ export default function ProgressPage() {
         fetch(`/api/tasks?status=completed&limit=200${pf}`, { cache: 'no-store' }),
         fetch(`/api/tasks?status=in_progress&limit=50${pf}`, { cache: 'no-store' }),
         fetch(`/api/tasks?status=pending&limit=50${pf}`, { cache: 'no-store' }),
-        fetch(`/api/tasks?status=awaiting_review&limit=50${pf}`, { cache: 'no-store' }),
+        fetch(`/api/review-queue${project ? `?project=${project}` : ''}`, { cache: 'no-store' }),
         fetch(`/api/tasks?status=failed&limit=50${pf}`, { cache: 'no-store' }),
       ]);
 
@@ -161,10 +162,14 @@ export default function ProgressPage() {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  const totalTasks = data
-    ? data.completed.length + data.inProgress.length + data.pending.length + data.awaitingReview.length + data.failed.length
+  const realFailedCount = data
+    ? data.failed.filter(t => !t.error?.match(/(Dismissed|Rejected) by/i)).length
     : 0;
-  const doneCount = data ? data.completed.length : 0;
+  const dismissedCount = data ? data.failed.length - realFailedCount : 0;
+  const totalTasks = data
+    ? data.completed.length + data.inProgress.length + data.pending.length + data.awaitingReview.length + realFailedCount
+    : 0;
+  const doneCount = data ? data.completed.length + dismissedCount : 0;
   const completionPct = totalTasks > 0 ? Math.round((doneCount / totalTasks) * 100) : 0;
 
   return (
@@ -200,8 +205,11 @@ export default function ProgressPage() {
                   <span className="text-indigo-400">{data.inProgress.length} in progress</span>
                   <span className="text-amber-400">{data.awaitingReview.length} to review</span>
                   <span className="text-zinc-500">{data.pending.length} queued</span>
-                  {data.failed.length > 0 && (
-                    <span className="text-red-400">{data.failed.length} failed</span>
+                  {realFailedCount > 0 && (
+                    <span className="text-red-400">{realFailedCount} failed</span>
+                  )}
+                  {dismissedCount > 0 && (
+                    <span className="text-zinc-500">{dismissedCount} dismissed</span>
                   )}
                 </div>
               </div>
@@ -251,25 +259,34 @@ export default function ProgressPage() {
               </div>
             </div>
 
-            {/* ── Failed tasks (separate section if any) ───── */}
-            {data.failed.length > 0 && (
-              <div className="max-w-6xl mx-auto mt-6">
-                <div className="flex items-center gap-2 mb-3 px-1">
-                  <span className="w-2 h-2 rounded-full bg-red-500" />
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-red-400">
-                    Failed
-                  </h3>
-                  <span className="text-xs text-zinc-600 font-mono">
-                    {data.failed.length}
-                  </span>
+            {/* ── Failed tasks (collapsed, excludes dismissed) ───── */}
+            {(() => {
+              const realFailures = data.failed.filter(t =>
+                !t.error?.match(/(Dismissed|Rejected) by/i)
+              );
+              if (realFailures.length === 0) return null;
+              return (
+                <div className="max-w-6xl mx-auto mt-6">
+                  <details>
+                    <summary className="flex items-center gap-2 mb-3 px-1 cursor-pointer list-none">
+                      <span className="w-2 h-2 rounded-full bg-red-500" />
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-red-400">
+                        Failed
+                      </h3>
+                      <span className="text-xs text-zinc-600 font-mono">
+                        {realFailures.length}
+                      </span>
+                      <span className="text-xs text-zinc-600 ml-auto">click to expand</span>
+                    </summary>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2">
+                      {realFailures.slice(0, 8).map(task => (
+                        <KanbanCard key={task.id} task={task} />
+                      ))}
+                    </div>
+                  </details>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2">
-                  {data.failed.slice(0, 8).map(task => (
-                    <KanbanCard key={task.id} task={task} />
-                  ))}
-                </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Empty state */}
             {totalTasks === 0 && (

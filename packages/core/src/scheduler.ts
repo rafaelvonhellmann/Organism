@@ -258,6 +258,8 @@ async function schedulerTick(): Promise<void> {
             targetAgents,
           },
           projectId: commit.projectId,
+          sourceKind: 'monitor',
+          workflowKind: 'validate',
         });
       }
     }
@@ -268,7 +270,7 @@ async function schedulerTick(): Promise<void> {
     const { checkProgressAndCreateTasks } = await import('./progress-monitor.js');
     const created = checkProgressAndCreateTasks();
     if (created > 0) {
-      console.log(`[Scheduler] Progress monitor created ${created} objective tasks`);
+      console.log(`[Scheduler] Progress monitor created ${created} recovery tasks`);
     }
   } catch { /* non-critical */ }
 

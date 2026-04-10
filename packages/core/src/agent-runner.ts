@@ -8,7 +8,7 @@
  * 2. One-shot: dispatchPendingTasks() — dispatch once and return (tests, scripts)
  */
 
-import { getPendingTasks, getRecentCompletedTasks, markQualityReviewed, createTask } from './task-queue.js';
+import { getPendingTasks, getRecentCompletedTasks, markQualityReviewed, createTask, releaseRetryScheduledTasks } from './task-queue.js';
 import { BaseAgent } from '../../../agents/_base/agent.js';
 import { isRateLimited, getRateLimitStatus } from '../../../agents/_base/mcp-client.js';
 
@@ -96,6 +96,11 @@ function getAgentPriority(agentName: string): number {
  * in parallel using Promise.allSettled. Levels execute sequentially.
  */
 export async function dispatchPendingTasks(): Promise<number> {
+  const retryRelease = releaseRetryScheduledTasks();
+  if (retryRelease.released > 0 || retryRelease.paused > 0) {
+    console.log(`[Runner] Retry release: ${retryRelease.released} task(s) resumed, ${retryRelease.paused} task(s) paused after exhausting retry attempts`);
+  }
+
   // Check rate limit before doing anything
   if (isRateLimited()) {
     const status = getRateLimitStatus();

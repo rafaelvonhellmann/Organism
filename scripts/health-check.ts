@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { requireSecrets } from '../packages/shared/src/secrets.js';
+import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
 import { getDb } from '../packages/core/src/task-queue.js';
 
 const REQUIRED_SECRETS = ['ANTHROPIC_API_KEY'];
@@ -73,6 +74,16 @@ async function healthCheck() {
   process.stdout.write('OpenAI API key (optional): ');
   const openaiKey = process.env.OPENAI_API_KEY;
   console.log(openaiKey ? 'Present' : 'Missing — Codex Review will not function');
+
+  // 7. Code executor availability
+  process.stdout.write('Code executor: ');
+  try {
+    const executor = resolveCodeExecutor();
+    console.log(`${executor.selected} (preferred=${executor.preferred}, claude=${executor.available.claude}, codex=${executor.available.codex})`);
+  } catch (err) {
+    console.log(`FAIL — ${err}`);
+    allOk = false;
+  }
 
   console.log(`\n${allOk ? '✓ All checks passed. Safe to start agents.' : '✗ Fix the issues above before running agents.'}\n`);
 

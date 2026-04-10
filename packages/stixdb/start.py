@@ -4,7 +4,6 @@ Start: python packages/stixdb/start.py
 Serves REST API on port 4020.
 """
 import os
-import sys
 
 # Configure StixDB via env vars — all secrets must be set in the environment,
 # not loaded from files on disk.

@@ -276,6 +276,98 @@ export async function ensureTables(): Promise<void> {
       ON review_cycles(project_id)
     `);
 
+    // ── Runtime v2 tables (created by core, readable from dashboard) ──
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS goals (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL DEFAULT 'organism',
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        source_kind TEXT NOT NULL DEFAULT 'user',
+        workflow_kind TEXT NOT NULL DEFAULT 'implement',
+        input_hash TEXT NOT NULL,
+        latest_run_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS run_sessions (
+        id TEXT PRIMARY KEY,
+        goal_id TEXT NOT NULL,
+        project_id TEXT NOT NULL DEFAULT 'organism',
+        agent TEXT NOT NULL,
+        workflow_kind TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        retry_class TEXT NOT NULL DEFAULT 'none',
+        retry_at INTEGER,
+        provider_failure_kind TEXT NOT NULL DEFAULT 'none',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER
+      )
+    `);
+
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS run_steps (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        detail TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER
+      )
+    `);
+
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS interrupts (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        summary TEXT NOT NULL,
+        detail TEXT,
+        created_at INTEGER NOT NULL,
+        resolved_at INTEGER
+      )
+    `);
+
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS approvals (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        requested_by TEXT NOT NULL,
+        requested_at INTEGER NOT NULL,
+        decided_at INTEGER,
+        decided_by TEXT,
+        reason TEXT
+      )
+    `);
+
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS runtime_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        goal_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        payload TEXT,
+        ts INTEGER NOT NULL
+      )
+    `);
+
+    await client.execute(`CREATE INDEX IF NOT EXISTS idx_goals_project_status ON goals(project_id, status)`);
+    await client.execute(`CREATE INDEX IF NOT EXISTS idx_run_sessions_project_status ON run_sessions(project_id, status)`);
+    await client.execute(`CREATE INDEX IF NOT EXISTS idx_run_steps_run_created ON run_steps(run_id, created_at)`);
+    await client.execute(`CREATE INDEX IF NOT EXISTS idx_interrupts_run_status ON interrupts(run_id, status)`);
+    await client.execute(`CREATE INDEX IF NOT EXISTS idx_approvals_run_status ON approvals(run_id, status)`);
+    await client.execute(`CREATE INDEX IF NOT EXISTS idx_runtime_events_goal_id ON runtime_events(goal_id, id)`);
+
     _migrationsRun = true;
   } catch {
     // Tables may already exist or DB may not support these — not fatal

@@ -15,6 +15,7 @@ const NAV: NavItem[] = [
   { href: '/progress', label: 'Activity', icon: '~' },
   { href: '/', label: 'Review', icon: '>' },
   { href: '/plan', label: 'Plan', icon: '!' },
+  { href: '/runtime', label: 'Runtime', icon: '@' },
   { href: '/insights', label: 'Insights', icon: '&' },
   { href: '/system', label: 'System', icon: '#' },
   { href: '/command', label: 'Command', icon: '$' },
