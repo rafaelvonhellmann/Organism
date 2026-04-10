@@ -1,12 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { loadRegistry } from './registry.js';
+import { getCapabilitiesForProject, loadRegistry } from './registry.js';
 import { writeAudit } from './audit.js';
 import { assertBudget, recordSpend, estimateCost } from './budget.js';
 import { callModel } from '../../../agents/_base/mcp-client.js';
 import { AgentCapability } from '../../shared/src/types.js';
 import { getApprovedSourcesByTags, recordSourceInjection } from './palate-sources.js';
+import { STATE_DIR } from '../../shared/src/state-dir.js';
 
 // Palate: capability-scoped knowledge injection with distillation + caching.
 
@@ -29,14 +30,9 @@ export function resolveTaskSources(
   taskDescription: string,
   projectId?: string,
 ): SourceInjection | null {
-  const allActive = loadRegistry().filter((c) => c.status === 'active');
-
   const registry = projectId
-    ? allActive.filter((c) => {
-        if (!c.projectScope || c.projectScope === 'all') return true;
-        return Array.isArray(c.projectScope) && c.projectScope.includes(projectId);
-      })
-    : allActive;
+    ? getCapabilitiesForProject(projectId)
+    : loadRegistry().filter((c) => c.status === 'active');
 
   const lower = taskDescription.toLowerCase();
 
@@ -107,7 +103,7 @@ export function resolveTaskSources(
 
 // ── Distillation + Cache ──────────────────────────────────────────────────
 
-const CACHE_DIR = path.resolve(process.cwd(), 'state/palate-cache');
+const CACHE_DIR = path.join(STATE_DIR, 'palate-cache');
 const DISTILL_PROMPT_VERSION = 1;
 const DISTILL_MODEL = 'haiku' as const;
 

@@ -55,6 +55,10 @@ function isEnabledForProject(capability: AgentCapability, projectId?: string): b
     && capability.projectScope.includes(projectId);
 }
 
+export function getCapabilitiesForProject(projectId?: string): AgentCapability[] {
+  return loadRegistry().filter((capability) => isEnabledForProject(capability, projectId));
+}
+
 export function loadRegistry(): AgentCapability[] {
   if (_registry) return _registry;
   if (!fs.existsSync(REGISTRY_PATH)) {
@@ -75,7 +79,7 @@ export function reloadRegistry(): void {
 // projectId narrows results to agents scoped for that project (plus all generalist agents).
 // Returns the owner if unambiguous; returns null if multiple match (CEO will disambiguate).
 export function resolveOwner(taskDescription: string, projectId?: string): AgentCapability | null {
-  const registry = loadRegistry().filter((c) => isEnabledForProject(c, projectId));
+  const registry = getCapabilitiesForProject(projectId);
 
   const lower = taskDescription.toLowerCase();
 
@@ -92,7 +96,7 @@ export function resolveOwner(taskDescription: string, projectId?: string): Agent
 
 // Return all agents that can work on a given project
 export function getAgentsForProject(projectId: string): AgentCapability[] {
-  return loadRegistry().filter((c) => isEnabledForProject(c, projectId));
+  return getCapabilitiesForProject(projectId);
 }
 
 export function getCapability(id: string): AgentCapability | undefined {
@@ -122,7 +126,7 @@ export function getShadowRunCount(agentName: string): number {
 }
 
 export function canAgentExecute(agentName: string, projectId?: string): boolean {
-  return loadRegistry().some((capability) => capability.owner === agentName && isEnabledForProject(capability, projectId));
+  return getCapabilitiesForProject(projectId).some((capability) => capability.owner === agentName);
 }
 
 export function getProjectCoreAgents(projectId: string): string[] {

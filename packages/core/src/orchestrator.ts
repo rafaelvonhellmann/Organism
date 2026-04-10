@@ -235,7 +235,7 @@ export async function submitTask(
   loadRegistry(); // warm cache
   let intendedAgent = options.agent;
   if (!intendedAgent) {
-    const resolved = resolveOwner(description, projectId === 'organism' ? undefined : projectId);
+    const resolved = resolveOwner(description, projectId);
     intendedAgent = resolved?.owner ?? 'ceo'; // CEO handles ambiguous and unknown tasks
   }
 
