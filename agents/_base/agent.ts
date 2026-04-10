@@ -14,6 +14,7 @@ import { resolveTaskSources, loadDistilledSources } from '../../packages/core/sr
 import { canAgentExecute, loadRegistry } from '../../packages/core/src/registry.js';
 import { normalizeAgentEnvelope, extractEnvelopeText } from '../../packages/core/src/agent-envelope.js';
 import { createArtifact, createRunSession, getLatestRunForGoal, mapProviderFailure, updateRunStatus, createRunStep, updateRunStep } from '../../packages/core/src/run-state.js';
+import { readRunMemory } from '../../packages/core/src/run-memory.js';
 
 // Tasklist candidates — checked in order, first found wins
 const TASKLIST_CANDIDATES = [
@@ -54,18 +55,29 @@ export abstract class BaseAgent {
     let runtimeConfig = config;
     try {
       const registryCap = loadRegistry().find((cap) => cap.owner === config.name);
-      if (registryCap) {
+      if (!registryCap) {
+        throw new Error(`Agent '${config.name}' is missing from capability-registry.json`);
+      }
+      runtimeConfig = {
+        ...config,
+        model: registryCap.model,
+        capability: {
+          ...config.capability,
+          ...registryCap,
+        },
+      };
+    } catch (err) {
+      if (process.env.NODE_ENV === 'test') {
         runtimeConfig = {
           ...config,
-          model: registryCap.model,
           capability: {
             ...config.capability,
-            ...registryCap,
+            status: 'shadow',
           },
         };
+      } else {
+        throw err;
       }
-    } catch {
-      // Registry is optional at constructor time; keep the local config if unavailable.
     }
 
     this.name = runtimeConfig.name;
@@ -218,9 +230,29 @@ export abstract class BaseAgent {
     let run = null;
     let runStep = null;
     if (task.goalId) {
+      const resumeMemory = readRunMemory(task.goalId);
+      if (task.input && typeof task.input === 'object') {
+        (task as { input: unknown }).input = {
+          ...(task.input as Record<string, unknown>),
+          resumeContext: {
+            handoff: resumeMemory.handoff.slice(-2000),
+            progress: resumeMemory.progress.slice(-2000),
+            facts: resumeMemory.facts,
+            recentCommands: resumeMemory.commandLog.slice(-10),
+          },
+        };
+      }
+
       const latest = getLatestRunForGoal(task.goalId);
-      if (latest && latest.status === 'running' && latest.agent === this.name) {
+      if (latest && ['pending', 'running', 'paused', 'retry_scheduled'].includes(latest.status) && latest.agent === this.name) {
         run = latest;
+        if (latest.status !== 'running') {
+          updateRunStatus({
+            runId: latest.id,
+            status: 'running',
+            summary: `Resuming ${this.name} from the latest verified checkpoint.`,
+          });
+        }
       } else {
         run = createRunSession({
           goalId: task.goalId,
@@ -243,15 +275,32 @@ export abstract class BaseAgent {
     try {
       assertBudget(this.name, estimated);
     } catch (err) {
+      const message = String(err);
+      if (run && runStep) {
+        updateRunStep({ stepId: runStep.id, status: 'failed', detail: message.slice(0, 500) });
+        updateRunStatus({
+          runId: run.id,
+          status: 'paused',
+          retryClass: 'budget_pause',
+          providerFailureKind: 'policy_block',
+          summary: message.slice(0, 500),
+        });
+      }
       writeAudit({
         agent: this.name,
         taskId: task.id,
         action: 'budget_check',
-        payload: { error: String(err) },
+        payload: { error: message },
         outcome: 'blocked',
         errorCode: OrganismError.BUDGET_CAP_EXCEEDED,
       });
-      failTask(task.id, String(err));
+      updateTaskRuntimeState({
+        taskId: task.id,
+        status: 'paused',
+        error: message,
+        retryClass: 'budget_pause',
+        providerFailureKind: 'policy_block',
+      });
       return;
     }
 
@@ -564,12 +613,13 @@ export abstract class BaseAgent {
       const errorMsg = String(err);
       const providerFailure = mapProviderFailure(errorMsg);
       const retryAt = withRetryBackoff(providerFailure.pauseUntilMs, attemptCount);
+      const nextStatus = retryAt ? 'retry_scheduled' : 'paused';
 
       if (run && runStep) {
         updateRunStep({ stepId: runStep.id, status: 'failed', detail: errorMsg.slice(0, 500) });
         updateRunStatus({
           runId: run.id,
-          status: retryAt ? 'retry_scheduled' : 'paused',
+          status: nextStatus,
           retryClass: providerFailure.retryClass,
           retryAt,
           providerFailureKind: providerFailure.providerFailureKind,
@@ -583,18 +633,14 @@ export abstract class BaseAgent {
         payload: { error: errorMsg },
         outcome: 'failure',
       });
-      if (providerFailure.retryClass !== 'transient_error' || providerFailure.pauseUntilMs) {
-        updateTaskRuntimeState({
-          taskId: task.id,
-          status: retryAt ? 'retry_scheduled' : 'paused',
-          error: errorMsg,
-          retryClass: providerFailure.retryClass,
-          retryAt,
-          providerFailureKind: providerFailure.providerFailureKind,
-        });
-      } else {
-        failTask(task.id, errorMsg);
-      }
+      updateTaskRuntimeState({
+        taskId: task.id,
+        status: nextStatus,
+        error: errorMsg,
+        retryClass: providerFailure.retryClass,
+        retryAt,
+        providerFailureKind: providerFailure.providerFailureKind,
+      });
       console.error(`[${this.name}] Task ${task.id} failed: ${errorMsg}`);
     }
   }

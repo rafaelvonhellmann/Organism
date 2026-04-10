@@ -472,6 +472,22 @@ export function createTask(params: {
     );
   }
 
+  if (params.goalId && params.workflowKind) {
+    const activeGoalTask = db.prepare(`
+      SELECT id FROM tasks
+      WHERE goal_id = ? AND agent = ? AND workflow_kind = ?
+        AND status IN ('pending', 'in_progress', 'paused', 'retry_scheduled', 'awaiting_review')
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(params.goalId, params.agent, params.workflowKind) as { id: string } | undefined;
+
+    if (activeGoalTask) {
+      throw new Error(
+        `Active goal task already exists for goal ${params.goalId} (existing: ${activeGoalTask.id}). Code: ${OrganismError.TASK_CHECKOUT_CONFLICT}`
+      );
+    }
+  }
+
   db.prepare(`
     INSERT INTO tasks (
       id, agent, status, lane, description, input, input_hash, parent_task_id, project_id, bet_id,

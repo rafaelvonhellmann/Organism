@@ -16,6 +16,7 @@ import { enforceDormancy } from './perspectives.js';
 import { syncToTurso } from './turso-sync.js';
 import { processDashboardActions } from './action-processor.js';
 import { AgentCapability } from '../../shared/src/types.js';
+import { STATE_DIR } from '../../shared/src/state-dir.js';
 
 // --- Types ---
 
@@ -256,9 +257,10 @@ async function schedulerTick(): Promise<void> {
             commit: commit.commit,
             changedFiles: commit.changedFiles,
             targetAgents,
+            dedupeKey: `${commit.projectId}:${commit.commit}`,
           },
           projectId: commit.projectId,
-          sourceKind: 'monitor',
+          sourceKind: 'git_watcher',
           workflowKind: 'validate',
         });
       }
@@ -394,7 +396,7 @@ async function schedulerTick(): Promise<void> {
 
   // Write daemon status for health check
   try {
-    const statusPath = path.resolve(process.cwd(), 'state/daemon-status.json');
+    const statusPath = path.join(STATE_DIR, 'daemon-status.json');
     const stateDir = path.dirname(statusPath);
     if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(statusPath, JSON.stringify({

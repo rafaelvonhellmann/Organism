@@ -2,9 +2,10 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { listProjectPolicies } from './project-policy.js';
+import { STATE_DIR } from '../../shared/src/state-dir.js';
 
 // Track last seen commit per project
-const LAST_COMMIT_FILE = path.resolve(process.cwd(), 'state/git-last-commit.json');
+const LAST_COMMIT_FILE = path.join(STATE_DIR, 'git-last-commit.json');
 
 interface ProjectRepo {
   projectId: string;
@@ -60,6 +61,10 @@ export function checkForNewCommits(): Array<{ projectId: string; commit: string;
     if (!latest) continue;
 
     const lastSeen = lastCommits[repo.projectId];
+    if (!lastSeen) {
+      lastCommits[repo.projectId] = latest.hash;
+      continue;
+    }
     if (lastSeen !== latest.hash) {
       newCommits.push({
         projectId: repo.projectId,

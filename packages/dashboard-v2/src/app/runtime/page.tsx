@@ -105,6 +105,20 @@ interface RuntimeSnapshot {
   recentEvents: RuntimeEvent[];
   compareTargets: CompareTarget[];
   autonomy: AutonomyHealth[];
+  daemon: {
+    runtime: {
+      modelBackend: string | null;
+      codeExecutor: string | null;
+      webSearchAvailable: boolean;
+    };
+    rateLimitStatus: {
+      limited: boolean;
+      resetsAt: string | null;
+      usagePct: number;
+    };
+    startedAt: string | null;
+    version: string | null;
+  } | null;
 }
 
 function formatTime(ms: number | null): string {
@@ -177,12 +191,53 @@ export default function RuntimePage() {
     () => snapshot?.runs.filter((run) => run.status !== 'completed' && run.status !== 'failed' && run.status !== 'cancelled') ?? [],
     [snapshot],
   );
+  const pausedRuns = useMemo(
+    () => snapshot?.runs.filter((run) => run.status === 'paused' || run.status === 'retry_scheduled') ?? [],
+    [snapshot],
+  );
 
   return (
     <>
       <Header title="Runtime" project={project} onProjectChange={setProject} lastUpdated={lastUpdated} />
 
       <div className="p-4 md:p-6 space-y-5">
+        <section className="bg-surface rounded-xl border border-edge p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-zinc-100">Control Plane</h3>
+              <p className="text-xs text-zinc-500 mt-1">Current runtime backend, executor, rate limit posture, and paused workload.</p>
+            </div>
+            {snapshot?.daemon?.version && (
+              <span className="text-xs text-zinc-500">v{snapshot.daemon.version}</span>
+            )}
+          </div>
+          <div className="mt-4 grid grid-cols-2 lg:grid-cols-6 gap-3 text-xs">
+            <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">
+              Model backend: {snapshot?.daemon?.runtime.modelBackend ?? 'unknown'}
+            </div>
+            <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">
+              Code executor: {snapshot?.daemon?.runtime.codeExecutor ?? 'unknown'}
+            </div>
+            <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">
+              Web search: {snapshot?.daemon?.runtime.webSearchAvailable ? 'available' : 'unavailable'}
+            </div>
+            <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">
+              Paused runs: {pausedRuns.length}
+            </div>
+            <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">
+              Pending interrupts: {snapshot?.interrupts.filter((item) => item.status === 'pending').length ?? 0}
+            </div>
+            <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">
+              Rate limit: {snapshot?.daemon?.rateLimitStatus.limited ? `yes (${snapshot.daemon.rateLimitStatus.usagePct.toFixed(0)}%)` : 'clear'}
+            </div>
+          </div>
+          {snapshot?.daemon?.rateLimitStatus.limited && snapshot.daemon.rateLimitStatus.resetsAt && (
+            <div className="mt-3 text-xs text-amber-400">
+              Provider rate limit active until {snapshot.daemon.rateLimitStatus.resetsAt}
+            </div>
+          )}
+        </section>
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <section className="bg-surface rounded-xl border border-edge p-5 lg:col-span-2">
             <div className="flex items-center justify-between mb-4">

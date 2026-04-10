@@ -92,6 +92,13 @@ export function updateRunProgress(goalId: string, lines: string[]): void {
   fs.writeFileSync(progress, body + '\n');
 }
 
+export function appendRunProgress(goalId: string, lines: string[]): void {
+  const { progress } = ensureRunMemory(goalId, 'organism');
+  const current = fs.existsSync(progress) ? fs.readFileSync(progress, 'utf8').trimEnd() : '# Progress';
+  const next = [current, '', ...lines].join('\n');
+  fs.writeFileSync(progress, next.endsWith('\n') ? next : next + '\n');
+}
+
 export function writeRunHandoff(goalId: string, markdown: string): void {
   const { handoff } = ensureRunMemory(goalId, 'organism');
   fs.writeFileSync(handoff, markdown.endsWith('\n') ? markdown : markdown + '\n');

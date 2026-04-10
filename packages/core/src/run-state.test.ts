@@ -81,4 +81,31 @@ describe('run-state', () => {
     assert.equal(mapped.providerFailureKind, 'overload');
     assert.ok(mapped.pauseUntilMs);
   });
+
+  it('supports source-specific dedupe seeds for goals', () => {
+    const goalA = ensureGoal({
+      projectId: 'organism',
+      title: 'Git-triggered review',
+      description: 'Git-triggered review: feat runtime',
+      sourceKind: 'git_watcher',
+      workflowKind: 'validate',
+      dedupeSeed: 'git:abc123',
+    });
+    const goalB = ensureGoal({
+      projectId: 'organism',
+      title: 'Git-triggered review',
+      description: 'Git-triggered review: feat runtime',
+      sourceKind: 'git_watcher',
+      workflowKind: 'validate',
+      dedupeSeed: 'git:def456',
+    });
+
+    assert.notEqual(goalA.id, goalB.id);
+  });
+
+  it('maps auth, policy, and tool failures into non-retryable runtime states', () => {
+    assert.equal(mapProviderFailure('Unauthorized: invalid API key').providerFailureKind, 'auth_failure');
+    assert.equal(mapProviderFailure('Action "deploy" is not allowed by policy').providerFailureKind, 'policy_block');
+    assert.equal(mapProviderFailure('Requested code executor "claude" is not available on PATH').providerFailureKind, 'tool_failure');
+  });
 });

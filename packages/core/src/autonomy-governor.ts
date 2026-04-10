@@ -1,5 +1,5 @@
 import { getDb } from './task-queue.js';
-import { getProjectCoreAgents } from './registry.js';
+import { getProjectCoreAgents, getShadowRunCount, loadRegistry } from './registry.js';
 import { listProjectPolicies } from './project-policy.js';
 import { AutonomyMode } from '../../shared/src/types.js';
 
@@ -60,6 +60,13 @@ export function getProjectAutonomyHealth(projectId: string): ProjectAutonomyHeal
     provider_failures: number | null;
   } | undefined;
 
+  const coreAgents = getProjectCoreAgents(projectId);
+  const registry = loadRegistry();
+  const coreShadowGaps = coreAgents.filter((agent) => {
+    const capability = registry.find((entry) => entry.owner === agent);
+    return capability?.status === 'active' && getShadowRunCount(agent) < 10;
+  });
+
   const pendingInterrupts = getDb().prepare(`
     SELECT COUNT(*) AS count
     FROM interrupts i
@@ -88,6 +95,9 @@ export function getProjectAutonomyHealth(projectId: string): ProjectAutonomyHeal
   if ((pendingApprovals?.count ?? 0) > 0) {
     blockers.push('Pending approvals still exist');
   }
+  if (coreShadowGaps.length > 0) {
+    blockers.push(`Core roster has ${coreShadowGaps.length} active agent(s) without 10 shadow runs recorded`);
+  }
 
   return {
     projectId,
@@ -101,7 +111,7 @@ export function getProjectAutonomyHealth(projectId: string): ProjectAutonomyHeal
     pendingApprovals: pendingApprovals?.count ?? 0,
     rolloutReady: blockers.length === 0,
     blockers,
-    coreAgents: getProjectCoreAgents(projectId),
+    coreAgents,
   };
 }
 

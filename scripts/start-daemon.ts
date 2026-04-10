@@ -17,11 +17,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 import { getDb } from '../packages/core/src/task-queue.js';
 import { loadRegistry } from '../packages/core/src/registry.js';
 import { startScheduler } from '../packages/core/src/scheduler.js';
 import { startDaemon, dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
 import { listProjectAutonomyHealth } from '../packages/core/src/autonomy-governor.js';
+import { recoverInterruptedWork } from '../packages/core/src/run-recovery.js';
 import { isRateLimited, getRateLimitStatus, resolveModelBackend } from '../agents/_base/mcp-client.js';
 import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
 // Dashboard import is conditional — skip if port is already in use (started by ensure-services)
@@ -168,6 +170,18 @@ function persistStatus(): void {
   } catch (err) {
     console.error('[Lifecycle] Failed to write daemon status:', err);
   }
+}
+
+export function recoverWorkOnStartup(logger: (line: string) => void = console.log): ReturnType<typeof recoverInterruptedWork> {
+  const recovered = recoverInterruptedWork();
+  if (recovered.recoveredRuns > 0 || recovered.retriedTasks > 0 || recovered.pausedTasks > 0) {
+    logger(
+      `[Daemon] Recovered interrupted work: ${recovered.recoveredRuns} run(s), ${recovered.retriedTasks} retry task(s), ${recovered.pausedTasks} paused task(s)`,
+    );
+  } else {
+    logger('[Daemon] No interrupted runs to recover');
+  }
+  return recovered;
 }
 
 // ── Execute cycle: approved action items + pending tasks ──────────────────
@@ -444,11 +458,10 @@ function runHealthCheck(): void {
 
   // State directory
   process.stdout.write('State directory: ');
-  const stateDir = path.resolve(process.cwd(), 'state');
-  if (fs.existsSync(stateDir)) {
+  if (fs.existsSync(STATE_DIR)) {
     console.log('OK');
   } else {
-    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(STATE_DIR, { recursive: true });
     console.log('Created');
   }
 
@@ -574,6 +587,9 @@ async function main(): Promise<void> {
   // 4. Migrations already run inside getDb() (called during health check above).
   console.log('[Daemon] Database migrations OK');
 
+  // 4b. Recover any interrupted work before the scheduler/runner resume.
+  recoverWorkOnStartup();
+
   // 5. Start scheduler (60s tick)
   const schedulerHandle = startScheduler(SCHEDULER_TICK_MS);
   console.log(`[Daemon] Scheduler started (tick: ${SCHEDULER_TICK_MS / 1000}s)`);
@@ -615,7 +631,13 @@ async function main(): Promise<void> {
   console.log('\nOrganism is running. Press Ctrl+C to stop.\n');
 }
 
-main().catch((err) => {
-  console.error('[Daemon] Fatal startup error:', err);
-  process.exit(1);
-});
+const isMainModule = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
+
+if (isMainModule) {
+  main().catch((err) => {
+    console.error('[Daemon] Fatal startup error:', err);
+    process.exit(1);
+  });
+}

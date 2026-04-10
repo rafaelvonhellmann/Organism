@@ -1,5 +1,5 @@
 import { classifyRisk } from './risk-classifier.js';
-import { createTask, checkoutTask, completeTask, failTask, reapDeadLetters, getPendingTasks, getDeadLetterTasks } from './task-queue.js';
+import { createTask, checkoutTask, completeTask, reapDeadLetters, getPendingTasks, getDeadLetterTasks, updateTaskRuntimeState } from './task-queue.js';
 import { assertBudget, recordSpend, getSpendSummary, getTaskBudget } from './budget.js';
 import { writeAudit } from './audit.js';
 import { loadRegistry, resolveOwner } from './registry.js';
@@ -10,7 +10,7 @@ import {
   getBet, getActiveBetForProject, checkBetCircuitBreaker, checkBetBoundaries,
   recordBetSpend, resolveSpecialistTriggers,
 } from './shapeup.js';
-import { ensureGoal, getGoal } from './run-state.js';
+import { ensureGoal, getGoal, mapProviderFailure } from './run-state.js';
 import { loadProjectPolicy, isActionBlocked } from './project-policy.js';
 
 // Orchestrator is the single main loop. Agents submit tasks here.
@@ -126,15 +126,8 @@ function resolveShapingRequirement(
   return { type: 'convert_to_pitch' };
 }
 
-// HARD BLOCKS — Organism must NEVER contact humans or spend money.
-// Deploying code and pushing to git IS allowed.
-const BLOCKED_PATTERNS = [
-  /\b(send|email|notify|contact|message|reach out)\b.*\b(user|customer|patient|partner|investor)\b/i,
-  /\b(post|publish|tweet|share)\b.*\b(social|facebook|twitter|linkedin|instagram|reddit|discord|slack)\b/i,
-  /\b(purchase|buy|subscribe|pay|charge|invoice|billing)\b/i,
-  /\b(sign up|register|create account)\b.*\b(service|platform|provider)\b/i,
-  /\b(stripe|sendgrid|mailgun|twilio|mailchimp)\b/i,
-];
+// Sensitive actions are governed by project policy.
+// Stabilization blocks them today; later autonomy modes can loosen them deliberately.
 
 function sanitizeDescription(description: string): string {
   const withoutEmbeddedJson = description
@@ -161,6 +154,36 @@ function inferRequestedActions(description: string): Array<'purchase' | 'contact
   if (/\b(send|email|notify|contact|message|reach out)\b/i.test(description)) matches.push('contact');
   if (/\b(sign up|register|create account)\b/i.test(description)) matches.push('create_account');
   return matches;
+}
+
+function resolveBlockedRequestedAction(
+  description: string,
+  policy: ReturnType<typeof loadProjectPolicy>,
+): 'purchase' | 'contact' | 'create_account' | null {
+  return inferRequestedActions(description).find((action) => isActionBlocked(policy, action)) ?? null;
+}
+
+function resolveGoalDedupeSeed(
+  description: string,
+  sourceKind: GoalSourceKind,
+  workflowKind: WorkflowKind,
+  input: Record<string, unknown> | null,
+): string {
+  if (typeof input?.dedupeKey === 'string' && input.dedupeKey.trim().length > 0) {
+    return `${workflowKind}::${sourceKind}::${input.dedupeKey.trim()}`;
+  }
+
+  const parts = [description];
+  if (sourceKind === 'git_watcher' && typeof input?.commit === 'string') {
+    parts.push(`commit:${input.commit}`);
+  }
+  if (sourceKind === 'monitor' && input?.recovery === true && typeof input?.previousRunId === 'string') {
+    parts.push(`recover:${input.previousRunId}`);
+  }
+  if (sourceKind === 'scheduler' && input?.scheduledReview === true) {
+    parts.push(`scheduled:${String(input.projectId ?? '')}`);
+  }
+  return `${workflowKind}::${sourceKind}::${parts.join('::')}`;
 }
 
 // Main entry point: submit a task for processing
@@ -191,21 +214,18 @@ export async function submitTask(
     }
   }
 
-  // 0. Safety check — refuse blocked actions at the gate
-  for (const pattern of BLOCKED_PATTERNS) {
-    if (pattern.test(description)) {
-      writeAudit({
-        agent: options.agent ?? 'orchestrator',
-        taskId: 'blocked',
-        action: 'gate_eval',
-        payload: { type: 'safety_block', description, pattern: pattern.source },
-        outcome: 'blocked',
-      });
-      const blockedAction = inferRequestedActions(description).find((action) => isActionBlocked(policy, action));
-      if (blockedAction) {
-        throw new Error(`SAFETY BLOCK: "${description.slice(0, 80)}" — action "${blockedAction}" is blocked in ${policy.autonomyMode} mode for ${projectId}.`);
-      }
-    }
+  // 0. Policy check — sensitive actions stay inside the current autonomy envelope.
+  const blockedAction = resolveBlockedRequestedAction(description, policy);
+  if (blockedAction) {
+    writeAudit({
+      agent: options.agent ?? 'orchestrator',
+      taskId: 'blocked',
+      action: 'gate_eval',
+      payload: { type: 'policy_block', description, action: blockedAction, autonomyMode: policy.autonomyMode },
+      outcome: 'blocked',
+      errorCode: OrganismError.GATE_BLOCKED,
+    });
+    throw new Error(`POLICY BLOCK: "${description.slice(0, 80)}" — action "${blockedAction}" is blocked in ${policy.autonomyMode} mode for ${projectId}.`);
   }
 
   // 1. Classify risk
@@ -226,6 +246,7 @@ export async function submitTask(
         description,
         sourceKind,
         workflowKind,
+        dedupeSeed: resolveGoalDedupeSeed(description, sourceKind, workflowKind, inputRecord),
       })
     : ensureGoal({
         projectId,
@@ -233,6 +254,7 @@ export async function submitTask(
         description,
         sourceKind,
         workflowKind,
+        dedupeSeed: resolveGoalDedupeSeed(description, sourceKind, workflowKind, inputRecord),
       });
 
   // 3. Shape Up gate: MEDIUM/HIGH tasks must reference an approved bet or be rerouted
@@ -346,15 +368,29 @@ export async function submitTask(
 
   // 7. Route to pipeline (async — the pipeline runs the actual agent session)
   routeToPipeline(task.id, agent, classification.lane, resolvedBetId).catch((err) => {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const providerFailure = mapProviderFailure(errorMessage);
+    const nextStatus = providerFailure.pauseUntilMs ? 'retry_scheduled' : 'paused';
     writeAudit({
       agent,
       taskId: task.id,
       action: 'error',
-      payload: { message: err.message },
+      payload: {
+        message: errorMessage,
+        retryClass: providerFailure.retryClass,
+        providerFailureKind: providerFailure.providerFailureKind,
+      },
       outcome: 'failure',
       errorCode: OrganismError.AGENT_TIMEOUT,
     });
-    failTask(task.id, err.message);
+    updateTaskRuntimeState({
+      taskId: task.id,
+      status: nextStatus,
+      error: errorMessage,
+      retryClass: providerFailure.retryClass,
+      retryAt: providerFailure.pauseUntilMs,
+      providerFailureKind: providerFailure.providerFailureKind,
+    });
   });
 
   return task.id;

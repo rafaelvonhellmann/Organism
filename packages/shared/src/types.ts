@@ -21,8 +21,27 @@ export type ProjectPhase = 'BUILD' | 'OPERATE' | 'GROW';
 export type AutonomyMode = 'stabilization' | 'operational' | 'full_autonomy';
 export type GoalSourceKind = 'user' | 'scheduler' | 'git_watcher' | 'agent_followup' | 'dashboard' | 'system' | 'monitor';
 export type WorkflowKind = 'review' | 'plan' | 'implement' | 'validate' | 'ship' | 'monitor' | 'recover' | 'shaping';
-export type RetryClass = 'none' | 'provider_overload' | 'rate_limit' | 'missing_secret' | 'budget_pause' | 'manual_pause' | 'transient_error';
-export type ProviderFailureKind = 'none' | 'rate_limit' | 'overload' | 'timeout' | 'missing_secret' | 'transport_error';
+export type RetryClass =
+  | 'none'
+  | 'provider_overload'
+  | 'rate_limit'
+  | 'missing_secret'
+  | 'budget_pause'
+  | 'manual_pause'
+  | 'transient_error'
+  | 'tool_failure'
+  | 'auth_failure'
+  | 'policy_block';
+export type ProviderFailureKind =
+  | 'none'
+  | 'rate_limit'
+  | 'overload'
+  | 'timeout'
+  | 'missing_secret'
+  | 'transport_error'
+  | 'tool_failure'
+  | 'auth_failure'
+  | 'policy_block';
 export type GoalStatus = 'pending' | 'running' | 'paused' | 'retry_scheduled' | 'completed' | 'failed' | 'cancelled';
 export type RunSessionStatus = 'pending' | 'running' | 'paused' | 'retry_scheduled' | 'completed' | 'failed' | 'cancelled';
 export type RunStepStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'skipped';

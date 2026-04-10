@@ -132,9 +132,10 @@ export function ensureGoal(params: {
   description: string;
   sourceKind: GoalSourceKind;
   workflowKind: WorkflowKind;
+  dedupeSeed?: string;
 }): Goal {
   const db = getDb();
-  const inputHash = hashGoal(params.projectId, params.workflowKind, params.description);
+  const inputHash = hashGoal(params.projectId, params.workflowKind, params.dedupeSeed ?? params.description);
   const existing = db.prepare(`
     SELECT * FROM goals
     WHERE project_id = ? AND workflow_kind = ? AND input_hash = ?
@@ -467,14 +468,52 @@ export function mapProviderFailure(error: string): { retryClass: RetryClass; pro
   if (lower.includes('credit balance is too low') || lower.includes('hit your limit') || lower.includes('rate limit')) {
     return { retryClass: 'rate_limit', providerFailureKind: 'rate_limit', pauseUntilMs: now() + 60 * 60 * 1000 };
   }
-  if (lower.includes('overloaded')) {
+  if (lower.includes('overloaded') || lower.includes('error 529')) {
     return { retryClass: 'provider_overload', providerFailureKind: 'overload', pauseUntilMs: now() + 15 * 60 * 1000 };
   }
-  if (lower.includes('timeout')) {
+  if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('aborterror')) {
     return { retryClass: 'transient_error', providerFailureKind: 'timeout', pauseUntilMs: now() + 10 * 60 * 1000 };
   }
-  if (lower.includes('openai_api_key') || lower.includes('anthropic_api_key') || lower.includes('secret')) {
+  if (lower.includes('openai_api_key') || lower.includes('anthropic_api_key') || lower.includes('missing required secrets') || lower.includes('secret')) {
     return { retryClass: 'missing_secret', providerFailureKind: 'missing_secret', pauseUntilMs: null };
+  }
+  if (
+    lower.includes('unauthorized')
+    || lower.includes('forbidden')
+    || lower.includes('authentication')
+    || lower.includes('invalid api key')
+    || lower.includes('auth token')
+    || lower.includes('permission denied')
+  ) {
+    return { retryClass: 'auth_failure', providerFailureKind: 'auth_failure', pauseUntilMs: null };
+  }
+  if (
+    lower.includes('not allowed by policy')
+    || lower.includes('blocked in')
+    || lower.includes('safety block')
+    || lower.includes('approval required')
+    || lower.includes('policy block')
+  ) {
+    return { retryClass: 'policy_block', providerFailureKind: 'policy_block', pauseUntilMs: null };
+  }
+  if (
+    lower.includes('spawn error')
+    || lower.includes('not available on path')
+    || lower.includes('is not a git repository')
+    || lower.includes('project path does not exist')
+    || lower.includes('no implementation registered')
+    || lower.includes('failed to read output')
+  ) {
+    return { retryClass: 'tool_failure', providerFailureKind: 'tool_failure', pauseUntilMs: null };
+  }
+  if (
+    lower.includes('econnreset')
+    || lower.includes('econnrefused')
+    || lower.includes('socket hang up')
+    || lower.includes('network error')
+    || lower.includes('transport')
+  ) {
+    return { retryClass: 'transient_error', providerFailureKind: 'transport_error', pauseUntilMs: now() + 5 * 60 * 1000 };
   }
   return { retryClass: 'transient_error', providerFailureKind: 'transport_error', pauseUntilMs: now() + 5 * 60 * 1000 };
 }

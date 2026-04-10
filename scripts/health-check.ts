@@ -8,6 +8,7 @@ import * as path from 'path';
 import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
 import { resolveModelBackend } from '../agents/_base/mcp-client.js';
 import { getDb } from '../packages/core/src/task-queue.js';
+import { STATE_DIR } from '../packages/shared/src/state-dir.js';
 
 async function healthCheck() {
   let allOk = true;
@@ -28,11 +29,10 @@ async function healthCheck() {
 
   // 2. State directory
   process.stdout.write('State directory: ');
-  const stateDir = path.resolve(process.cwd(), 'state');
-  if (fs.existsSync(stateDir)) {
+  if (fs.existsSync(STATE_DIR)) {
     console.log('OK');
   } else {
-    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(STATE_DIR, { recursive: true });
     console.log('Created');
   }
 

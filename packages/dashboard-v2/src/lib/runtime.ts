@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import type { Client, Row } from '@libsql/client';
 import { getClient, ensureTables } from './db';
 import { getProjectAutonomyHealth } from '../../../../packages/core/src/autonomy-governor';
+import { STATE_DIR } from '../../../../packages/shared/src/state-dir';
 
 function n(value: unknown): number {
   return Number(value) || 0;
@@ -152,6 +153,35 @@ function readCompareTargets() {
     });
 }
 
+function readDaemonStatus() {
+  const statusPath = resolve(STATE_DIR, 'daemon-status.json');
+  if (!existsSync(statusPath)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(statusPath, 'utf8')) as {
+      runtime?: { modelBackend?: string | null; codeExecutor?: string | null; webSearchAvailable?: boolean };
+      rateLimitStatus?: { limited?: boolean; resetsAt?: string | null; usagePct?: number };
+      startedAt?: string;
+      version?: string;
+    };
+    return {
+      runtime: {
+        modelBackend: raw.runtime?.modelBackend ?? null,
+        codeExecutor: raw.runtime?.codeExecutor ?? null,
+        webSearchAvailable: raw.runtime?.webSearchAvailable ?? false,
+      },
+      rateLimitStatus: {
+        limited: raw.rateLimitStatus?.limited ?? false,
+        resetsAt: raw.rateLimitStatus?.resetsAt ?? null,
+        usagePct: raw.rateLimitStatus?.usagePct ?? 0,
+      },
+      startedAt: raw.startedAt ?? null,
+      version: raw.version ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function getRuntimeSnapshot(projectId?: string) {
   await ensureTables();
   const client = getClient();
@@ -230,6 +260,7 @@ export async function getRuntimeSnapshot(projectId?: string) {
     recentEvents: eventsRows.map(formatEvent).reverse(),
     compareTargets: readCompareTargets(),
     autonomy: projectId ? [getProjectAutonomyHealth(projectId)] : readCompareTargets().map((target) => getProjectAutonomyHealth(target.projectId)),
+    daemon: readDaemonStatus(),
   };
 }
 
