@@ -89,7 +89,7 @@ async function classifyWithHaiku(description: string): Promise<RiskClassificatio
     // Fall through to heuristic if API is unavailable (no key, network error, etc.)
   }
 
-  // Heuristic fallback — used when ANTHROPIC_API_KEY is not set
+  // Heuristic fallback — used when the classifier call fails or no backend is available
   const lower = description.toLowerCase();
   const highSignals = ['deploy', 'send email', 'notify user', 'delete', 'drop table', 'migration', 'spend', 'purchase', 'enrich'];
   const mediumSignals = ['code', 'feature', 'marketing', 'campaign', 'copy', 'design', 'api', 'integration', 'refactor', 'review', 'audit', 'security'];

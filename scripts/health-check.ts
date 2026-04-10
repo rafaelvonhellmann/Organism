@@ -1,26 +1,26 @@
 /**
  * Pre-flight health check — run before starting any agents.
- * Verifies all required secrets, state directory, and database.
+ * Verifies the selected runtime backends, state directory, and database.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { requireSecrets } from '../packages/shared/src/secrets.js';
 import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
+import { resolveModelBackend } from '../agents/_base/mcp-client.js';
 import { getDb } from '../packages/core/src/task-queue.js';
-
-const REQUIRED_SECRETS = ['ANTHROPIC_API_KEY'];
 
 async function healthCheck() {
   let allOk = true;
 
   console.log('\n=== Organism Health Check ===\n');
 
-  // 1. Secrets
-  process.stdout.write('Secrets: ');
+  // 1. Model backend
+  process.stdout.write('Model backend: ');
   try {
-    requireSecrets(REQUIRED_SECRETS);
-    console.log('OK');
+    const backend = resolveModelBackend();
+    console.log(
+      `${backend.selected} (preferred=${backend.preferred}, claudeCli=${backend.available.claudeCli}, anthropicApi=${backend.available.anthropicApi}, webSearch=${backend.capabilities.webSearch})`,
+    );
   } catch (err) {
     console.log(`FAIL — ${err}`);
     allOk = false;
@@ -70,12 +70,16 @@ async function healthCheck() {
   const claudeMdPath = path.resolve(process.cwd(), 'CLAUDE.md');
   console.log(fs.existsSync(claudeMdPath) ? 'OK' : 'MISSING (non-fatal)');
 
-  // 6. OpenAI key (optional but needed for Codex Review)
+  // 6. Anthropic API key (optional unless anthropic-api backend selected)
+  process.stdout.write('Anthropic API key: ');
+  console.log(process.env.ANTHROPIC_API_KEY ? 'Present' : 'Missing — Claude CLI backend required');
+
+  // 7. OpenAI key (optional but needed for Codex Review)
   process.stdout.write('OpenAI API key (optional): ');
   const openaiKey = process.env.OPENAI_API_KEY;
   console.log(openaiKey ? 'Present' : 'Missing — Codex Review will not function');
 
-  // 7. Code executor availability
+  // 8. Code executor availability
   process.stdout.write('Code executor: ');
   try {
     const executor = resolveCodeExecutor();

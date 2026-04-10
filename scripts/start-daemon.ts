@@ -17,13 +17,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseSync } from 'node:sqlite';
-import { requireSecrets } from '../packages/shared/src/secrets.js';
 import { getDb } from '../packages/core/src/task-queue.js';
 import { loadRegistry } from '../packages/core/src/registry.js';
 import { startScheduler } from '../packages/core/src/scheduler.js';
 import { startDaemon, dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
 import { listProjectAutonomyHealth } from '../packages/core/src/autonomy-governor.js';
-import { isRateLimited, getRateLimitStatus } from '../agents/_base/mcp-client.js';
+import { isRateLimited, getRateLimitStatus, resolveModelBackend } from '../agents/_base/mcp-client.js';
+import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
 // Dashboard import is conditional — skip if port is already in use (started by ensure-services)
 let dashboardServer: unknown = null;
 const VERSION = '0.2.0';
@@ -63,6 +63,11 @@ interface DaemonStatus {
     limited: boolean;
     resetsAt: string | null;
     usagePct: number;
+  };
+  runtime: {
+    modelBackend: string | null;
+    codeExecutor: string | null;
+    webSearchAvailable: boolean;
   };
   autonomy: Array<{
     projectId: string;
@@ -110,6 +115,18 @@ function computeNextReview(): string | null {
 
 function buildStatus(): DaemonStatus {
   const rlStatus = getRateLimitStatus();
+  let modelBackend: ReturnType<typeof resolveModelBackend> | null = null;
+  let codeExecutor: ReturnType<typeof resolveCodeExecutor> | null = null;
+  try {
+    modelBackend = resolveModelBackend();
+  } catch {
+    modelBackend = null;
+  }
+  try {
+    codeExecutor = resolveCodeExecutor();
+  } catch {
+    codeExecutor = null;
+  }
   const autonomy = listProjectAutonomyHealth().map((project) => ({
     projectId: project.projectId,
     autonomyMode: project.autonomyMode,
@@ -133,6 +150,11 @@ function buildStatus(): DaemonStatus {
       limited: rlStatus.limited,
       resetsAt: rlStatus.resetsAt ? new Date(rlStatus.resetsAt).toISOString() : null,
       usagePct: rlStatus.usagePct,
+    },
+    runtime: {
+      modelBackend: modelBackend?.selected ?? null,
+      codeExecutor: codeExecutor?.selected ?? null,
+      webSearchAvailable: modelBackend?.capabilities.webSearch ?? false,
     },
     autonomy,
     config: DAEMON_CONFIG,
@@ -393,12 +415,31 @@ function runHealthCheck(): void {
 
   let allOk = true;
 
-  // LLM access — agents use `claude -p` CLI, so ANTHROPIC_API_KEY is optional
-  process.stdout.write('LLM access: ');
+  process.stdout.write('Model backend: ');
+  try {
+    const backend = resolveModelBackend();
+    console.log(
+      `${backend.selected} (preferred=${backend.preferred}, claudeCli=${backend.available.claudeCli}, anthropicApi=${backend.available.anthropicApi}, webSearch=${backend.capabilities.webSearch})`,
+    );
+  } catch (err) {
+    console.log(`FAIL — ${err}`);
+    allOk = false;
+  }
+
+  process.stdout.write('Code executor: ');
+  try {
+    const executor = resolveCodeExecutor();
+    console.log(`${executor.selected} (preferred=${executor.preferred}, claude=${executor.available.claude}, codex=${executor.available.codex})`);
+  } catch (err) {
+    console.log(`FAIL — ${err}`);
+    allOk = false;
+  }
+
+  process.stdout.write('Anthropic API key: ');
   if (process.env.ANTHROPIC_API_KEY) {
-    console.log('OK (API key set — can use direct API)');
+    console.log('Present');
   } else {
-    console.log('OK (using claude CLI — no API key needed)');
+    console.log('Missing — Claude CLI backend required');
   }
 
   // State directory
@@ -470,6 +511,19 @@ function printBanner(): void {
   const shadowAgents = capabilities.filter((c) => c.status === 'shadow').map((c) => c.owner);
   const uniqueActive = [...new Set(activeAgents)];
   const uniqueShadow = [...new Set(shadowAgents)];
+  let modelBackendLabel = 'unavailable';
+  let codeExecutorLabel = 'unavailable';
+  try {
+    const backend = resolveModelBackend();
+    modelBackendLabel = `${backend.selected}${backend.capabilities.webSearch ? ' (web search)' : ''}`;
+  } catch {
+    modelBackendLabel = 'unavailable';
+  }
+  try {
+    codeExecutorLabel = resolveCodeExecutor().selected;
+  } catch {
+    codeExecutorLabel = 'unavailable';
+  }
 
   console.log('╔══════════════════════════════════════════════╗');
   console.log('║            O R G A N I S M                  ║');
@@ -477,6 +531,7 @@ function printBanner(): void {
   console.log('╚══════════════════════════════════════════════╝');
   console.log(`  Started:    ${new Date().toISOString()}`);
   console.log(`  Dashboard:  http://localhost:${DASHBOARD_PORT}`);
+  console.log(`  Runtime:    model=${modelBackendLabel}, executor=${codeExecutorLabel}`);
   console.log(`  Active agents (${uniqueActive.length}): ${uniqueActive.join(', ') || 'none'}`);
   console.log(`  Shadow agents (${uniqueShadow.length}): ${uniqueShadow.join(', ') || 'none'}`);
   console.log('');

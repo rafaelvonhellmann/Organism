@@ -1,7 +1,7 @@
 /**
  * Research — internet research before perspectives form opinions.
- * Uses claude CLI's built-in web search to gather competitor intel,
- * market context, and technical documentation.
+ * Uses the selected model backend's web-search capability to gather
+ * competitor intel, market context, and technical documentation.
  *
  * Results are cached as markdown in knowledge/projects/{id}/research/
  * and mirrored to the Obsidian vault at Organism/Research/{project}/.
@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { callModelUltra } from '../../../agents/_base/mcp-client.js';
+import { callModelUltra, resolveModelBackend } from '../../../agents/_base/mcp-client.js';
 
 const ROOT = path.resolve(import.meta.dirname, '../../..');
 const KNOWLEDGE_DIR = path.join(ROOT, 'knowledge', 'projects');
@@ -72,7 +72,7 @@ function ensureDir(dir: string): void {
 }
 
 /**
- * Research a topic for a project. Uses the claude CLI's web search.
+ * Research a topic for a project.
  * Results are cached as markdown files.
  */
 export async function researchTopic(
@@ -87,6 +87,13 @@ export async function researchTopic(
     const vaultPath = getVaultResearchPath(projectId, topic);
     console.log(`  [Research] Cache hit: ${topic} (< 7 days old)`);
     return { topic, projectId, content: cached, cachedAt: Date.now(), filePath, vaultPath };
+  }
+
+  const backend = resolveModelBackend();
+  if (!backend.capabilities.webSearch) {
+    throw new Error(
+      'Research requires a web-search-capable model backend. Install Claude Code or set ORGANISM_MODEL_BACKEND=claude-cli.',
+    );
   }
 
   console.log(`  [Research] Searching: ${topic}...`);
