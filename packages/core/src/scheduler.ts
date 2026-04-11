@@ -205,6 +205,10 @@ function tierLabel(tier: AgentCapability['frequencyTier']): string {
 async function schedulerTick(): Promise<void> {
   const capabilities = loadRegistry();
 
+  // Pull remote dashboard actions first so website-triggered work is visible
+  // during the same scheduler cycle instead of waiting for the next one.
+  try { await syncToTurso(); } catch { /* non-critical */ }
+
   // ── Autonomous project reviews ──────────────────────────────────────────
   for (const schedule of PROJECT_SCHEDULE) {
     const now = new Date();

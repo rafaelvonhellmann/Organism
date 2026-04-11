@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 
+const SELECTED_PROJECT_KEY = 'organism.selectedProject';
+
 const PROJECT_DISPLAY_NAMES: Record<string, string> = {
   'synapse': 'Synapse',
   'tokens-for-good': 'Tokens for Good',
@@ -12,8 +14,32 @@ function displayName(id: string): string {
   return PROJECT_DISPLAY_NAMES[id] ?? id;
 }
 
-/** Pick the best default: first non-organism project, or empty (all). */
-function pickDefault(projects: string[]): string {
+function readSavedProject(): string {
+  try {
+    return window.localStorage.getItem(SELECTED_PROJECT_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function persistProject(projectId: string): void {
+  try {
+    if (projectId) {
+      window.localStorage.setItem(SELECTED_PROJECT_KEY, projectId);
+    } else {
+      window.localStorage.removeItem(SELECTED_PROJECT_KEY);
+    }
+  } catch {
+    // Storage is best-effort only.
+  }
+}
+
+/** Pick the best default: keep prior selection when possible, otherwise prefer All Projects. */
+function pickDefault(projects: string[], allowAllProjects: boolean, currentProject: string): string {
+  if (currentProject && projects.includes(currentProject)) return currentProject;
+  const savedProject = readSavedProject();
+  if (savedProject && projects.includes(savedProject)) return savedProject;
+  if (allowAllProjects) return '';
   const nonInternal = projects.find(p => p !== 'organism');
   return nonInternal ?? '';
 }
@@ -45,7 +71,8 @@ export function Header({
       .then((list: string[]) => {
         setProjects(list);
         if (!initialized && autoSelectProject) {
-          onProjectChange(pickDefault(list));
+          const nextProject = pickDefault(list, allowAllProjects, project);
+          onProjectChange(nextProject);
           setInitialized(true);
         }
         if (!initialized && !autoSelectProject) {
@@ -53,7 +80,12 @@ export function Header({
         }
       })
       .catch(() => {});
-  }, [autoSelectProject, initialized, onProjectChange]);
+  }, [allowAllProjects, autoSelectProject, initialized, onProjectChange, project]);
+
+  useEffect(() => {
+    if (!initialized) return;
+    persistProject(project);
+  }, [initialized, project]);
 
   // Update "ago" every second
   useEffect(() => {
@@ -83,7 +115,11 @@ export function Header({
         {/* Project selector */}
         <select
           value={project}
-          onChange={e => onProjectChange(e.target.value)}
+          onChange={e => {
+            const nextProject = e.target.value;
+            persistProject(nextProject);
+            onProjectChange(nextProject);
+          }}
           className="bg-zinc-800 border border-edge rounded-md px-2.5 py-1.5 text-sm text-zinc-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
         >
           {allowAllProjects && <option value="">All Projects</option>}

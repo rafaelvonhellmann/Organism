@@ -81,9 +81,22 @@ function resolveShapingRequirement(
   lane: RiskLane,
   projectId: string,
   options: SubmitTaskOptions,
+  workflowKind?: WorkflowKind,
 ): ShapingAction {
   // LOW tasks always proceed — no shaping required
   if (lane === 'LOW') {
+    return { type: 'proceed', betId: options.betId };
+  }
+
+  // Read-only or recovery-oriented workflows should not be blocked behind
+  // Shape Up execution gating. They help the system inspect, validate, and
+  // stabilize work without widening the implementation surface.
+  if (
+    workflowKind === 'review'
+    || workflowKind === 'validate'
+    || workflowKind === 'monitor'
+    || workflowKind === 'recover'
+  ) {
     return { type: 'proceed', betId: options.betId };
   }
 
@@ -285,7 +298,7 @@ export async function submitTask(
       });
 
   // 3. Shape Up gate: MEDIUM/HIGH tasks must reference an approved bet or be rerouted
-  const shapingAction = resolveShapingRequirement(classification.lane, projectId, options);
+  const shapingAction = resolveShapingRequirement(classification.lane, projectId, options, workflowKind);
 
   if (shapingAction.type === 'rejected') {
     writeAudit({

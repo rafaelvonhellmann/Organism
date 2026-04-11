@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveModelBackend } from '../../../agents/_base/mcp-client.js';
+import { resolveModelBackend, shouldFallbackFromClaudeCliToApi } from '../../../agents/_base/mcp-client.js';
 
 const ORIGINAL_MODEL_BACKEND = process.env.ORGANISM_MODEL_BACKEND;
 const ORIGINAL_USE_API_DIRECT = process.env.USE_API_DIRECT;
@@ -48,5 +48,19 @@ describe('model backend resolution', () => {
     process.env.USE_API_DIRECT = 'true';
     const result = resolveModelBackend(undefined, { claudeCli: true, anthropicApi: true });
     assert.equal(result.selected, 'anthropic-api');
+  });
+
+  it('auto-falls back to the Anthropic API for exhausted claude-cli credit', () => {
+    assert.equal(
+      shouldFallbackFromClaudeCliToApi(new Error('claude CLI returned error: Credit balance is too low')),
+      true,
+    );
+  });
+
+  it('does not treat unrelated claude-cli errors as automatic API fallback triggers', () => {
+    assert.equal(
+      shouldFallbackFromClaudeCliToApi(new Error('claude CLI spawn error: executable missing')),
+      false,
+    );
   });
 });

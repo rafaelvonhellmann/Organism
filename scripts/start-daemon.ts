@@ -26,6 +26,8 @@ import { startScheduler } from '../packages/core/src/scheduler.js';
 import { startDaemon, dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
 import { listProjectAutonomyHealth } from '../packages/core/src/autonomy-governor.js';
 import { recoverInterruptedWork } from '../packages/core/src/run-recovery.js';
+import { syncToTurso } from '../packages/core/src/turso-sync.js';
+import { processDashboardActions } from '../packages/core/src/action-processor.js';
 import { isRateLimited, getRateLimitStatus, resolveModelBackend } from '../agents/_base/mcp-client.js';
 import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
 import { bootstrapRuntimeEnv } from '../packages/shared/src/runtime-env.js';
@@ -37,6 +39,7 @@ const VERSION = '0.2.0';
 const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? '7391');
 const DAEMON_POLL_MS = 10_000;   // 10 seconds — agent runner polling interval
 const SCHEDULER_TICK_MS = 300_000; // 5 minutes — scheduler tick interval
+const DASHBOARD_ACTION_POLL_MS = 15_000; // 15 seconds — responsive website action pickup
 
 // ── Daemon config ─────────────────────────────────────────────────────────
 
@@ -473,6 +476,18 @@ async function lifecycleTick(): Promise<void> {
   }
 }
 
+async function dashboardActionTick(): Promise<void> {
+  try {
+    await syncToTurso();
+    await processDashboardActions();
+    await dispatchPendingTasks();
+    await syncToTurso();
+    persistStatus();
+  } catch (err) {
+    console.error('[Dashboard Actions] Tick error:', err);
+  }
+}
+
 // --- Health check ---
 
 function runHealthCheck(): void {
@@ -655,6 +670,13 @@ async function main(): Promise<void> {
   }, 60_000);
   console.log('[Daemon] Lifecycle manager started (execute: 3h, sync: 6h, review: daily)');
 
+  // 7b. Pull and execute dashboard-triggered actions on a shorter cadence.
+  const dashboardActionHandle = setInterval(() => {
+    dashboardActionTick().catch(console.error);
+  }, DASHBOARD_ACTION_POLL_MS);
+  dashboardActionTick().catch(console.error);
+  console.log(`[Daemon] Dashboard action bridge started (poll: ${DASHBOARD_ACTION_POLL_MS / 1000}s)`);
+
   // 8. Write initial daemon status
   persistStatus();
   console.log(`[Daemon] Status file: ${STATUS_FILE}`);
@@ -665,6 +687,7 @@ async function main(): Promise<void> {
     clearInterval(schedulerHandle);
     clearInterval(daemonHandle);
     clearInterval(lifecycleHandle);
+    clearInterval(dashboardActionHandle);
     persistStatus(); // Write final status before exit
     if (dashboardServer && typeof (dashboardServer as any).close === 'function') {
       (dashboardServer as any).close(() => {

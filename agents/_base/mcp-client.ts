@@ -264,6 +264,16 @@ interface ClaudeJsonResult {
   is_error?: boolean;
 }
 
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error ?? '');
+}
+
+export function shouldFallbackFromClaudeCliToApi(error: unknown): boolean {
+  const message = errorMessage(error);
+  return /credit balance is too low|RATE_LIMITED|rate limit|429|529|overloaded/i.test(message);
+}
+
 function callClaude(
   prompt: string,
   model: string,
@@ -412,11 +422,24 @@ async function callSelectedBackend(
   systemPrompt: string | undefined,
   maxTokens: number,
 ): Promise<ModelCallResult> {
-  const backend = resolveModelBackend().selected;
-  if (backend === 'anthropic-api') {
+  const backend = resolveModelBackend();
+  if (backend.selected === 'anthropic-api') {
     return callApiDirect(prompt, model, systemPrompt, maxTokens);
   }
-  return callClaude(prompt, model, systemPrompt);
+
+  try {
+    return await callClaude(prompt, model, systemPrompt);
+  } catch (error) {
+    if (
+      backend.preferred === 'auto'
+      && backend.available.anthropicApi
+      && shouldFallbackFromClaudeCliToApi(error)
+    ) {
+      console.warn(`[ModelBackend] Claude CLI failed (${errorMessage(error)}). Falling back to Anthropic API.`);
+      return callApiDirect(prompt, model, systemPrompt, maxTokens);
+    }
+    throw error;
+  }
 }
 
 export async function callModel(

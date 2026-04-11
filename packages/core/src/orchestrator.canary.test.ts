@@ -1,6 +1,6 @@
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { getDb } from './task-queue.js';
+import { getDb, getTask } from './task-queue.js';
 import { submitTask } from './orchestrator.js';
 
 describe('orchestrator early canary guard', () => {
@@ -48,5 +48,9 @@ describe('orchestrator early canary guard', () => {
     );
 
     assert.ok(taskId);
+    const task = getTask(taskId);
+    assert.ok(task);
+    assert.equal(task?.workflowKind, 'review');
+    assert.equal(task?.description.startsWith('[SHAPING]'), false);
   });
 });
