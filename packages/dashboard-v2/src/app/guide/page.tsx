@@ -29,6 +29,10 @@ const CAPABILITY_CARDS = [
     body: 'Runs are durable. If the daemon stops mid-flight, Organism recovers orphaned runs, pauses or retries them deterministically, and resumes from run memory instead of starting from scratch.',
   },
   {
+    title: 'Isolated Worktrees',
+    body: 'In stabilization mode, Organism can prepare an isolated git worktree for a run so dirty day-to-day repos do not get mixed with autonomous changes.',
+  },
+  {
     title: 'Project Policies',
     body: 'Every project can declare its repo path, default branch, install/lint/test/build/deploy commands, allowed actions, blocked actions, budgets, deploy targets, and autonomy mode.',
   },
@@ -39,6 +43,10 @@ const CAPABILITY_CARDS = [
   {
     title: 'Cross-Executor Operation',
     body: 'The runtime can use Claude or Codex for engineering execution, and the model backend can prefer Claude CLI or Anthropic API depending on the environment.',
+  },
+  {
+    title: 'Bounded Tool Providers',
+    body: 'Optional sidecar tools such as MiniMax are project-scoped and allowlisted. They are not the main brain of Organism and are only used for narrow capabilities such as external search when policy enables them.',
   },
 ];
 
@@ -70,6 +78,7 @@ const LIMITS = [
   'In stabilization mode, purchases, human contact, and account creation remain blocked or approval-gated by project policy.',
   'The safest first live pilot is Tokens for Good. Synapse should start with review or validation work only because it is medical and currently has a very dirty worktree.',
   'The website is an operator cockpit, not the full brain. The daemon must be running locally for the dashboard to reflect real work.',
+  'The Command page now requires an explicit project selection before it will launch work. This is intentional safety behavior.',
 ];
 
 const HARNESS_APPLIED = [
@@ -226,9 +235,9 @@ export default function GuidePage() {
             </Card>
           ))}
         </div>
-        <div className="mt-4 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4">
+          <div className="mt-4 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4">
           <p className="text-sm text-amber-200">
-            Important: the Runtime page is the best monitoring surface, but the Command page is still the clearest place to launch work from the website today.
+            Important: the Runtime page is the best monitoring surface, but the Command page is still the clearest place to launch work from the website today. The Command page now requires an explicit project selection before it will submit anything.
           </p>
         </div>
       </Section>
@@ -242,6 +251,7 @@ export default function GuidePage() {
           <Checklist items={[
             'Open the dashboard and go to Command.',
             'Select Tokens for Good in the project selector.',
+            'If the selector is empty, do not launch anything yet. Choose the project first and check Runtime for blockers.',
             'Start with a constrained engineering or review command, not a deploy.',
             'Open Runtime in another tab and watch Live Runs, Interrupt Queue, and Autonomy Rollout.',
             'Treat the first run as PR-oriented validation, not as broad unattended shipping.',
@@ -267,6 +277,9 @@ export default function GuidePage() {
           </Concept>
           <Concept title="Failure safeguards">
             Provider overload, rate limits, auth failures, missing secrets, tool failures, and transport issues are all normalized into structured retry or pause behavior instead of becoming silent task chaos.
+          </Concept>
+          <Concept title="Canary safeguards">
+            In stabilization mode, autonomous launch requires a clean worktree and deploys stay PR-oriented until the project earns a healthy-run streak. This keeps the first pilot in canary mode instead of broad shipping mode.
           </Concept>
         </div>
       </Section>

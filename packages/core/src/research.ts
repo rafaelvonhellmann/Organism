@@ -10,6 +10,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { callModelUltra, resolveModelBackend } from '../../../agents/_base/mcp-client.js';
+import { runMiniMaxSearch } from './minimax.js';
+import { loadProjectPolicy } from './project-policy.js';
 
 const ROOT = path.resolve(import.meta.dirname, '../../..');
 const KNOWLEDGE_DIR = path.join(ROOT, 'knowledge', 'projects');
@@ -90,21 +92,14 @@ export async function researchTopic(
   }
 
   const backend = resolveModelBackend();
-  if (!backend.capabilities.webSearch) {
-    throw new Error(
-      'Research requires a web-search-capable model backend. Install Claude Code or set ORGANISM_MODEL_BACKEND=claude-cli.',
-    );
-  }
+  const policy = loadProjectPolicy(projectId);
 
   console.log(`  [Research] Searching: ${topic}...`);
 
-  const prompt = `Research the following topic thoroughly using web search. Find current, factual information.
-
-Topic: ${topic}
+  const sharedRequirements = `Topic: ${topic}
 Project context: ${projectId}${context ? `\n\nAdditional context: ${context}` : ''}
 
 Requirements:
-- Search the web for up-to-date information
 - Include specific facts, numbers, URLs where available
 - For competitors: pricing, features, user counts, funding, tech stack
 - For market research: trends, size estimates, key players
@@ -114,7 +109,28 @@ Requirements:
 - Be factual, not speculative
 - Maximum 1500 words`;
 
-  const result = await callModelUltra(prompt, 'sonnet');
+  let result;
+  if (backend.capabilities.webSearch) {
+    const prompt = `Research the following topic thoroughly using web search. Find current, factual information.
+
+${sharedRequirements}
+
+- Search the web for up-to-date information`;
+    result = await callModelUltra(prompt, 'sonnet');
+  } else {
+    const search = runMiniMaxSearch(policy, `${projectId}: ${topic}${context ? ` ${context}` : ''}`);
+    const prompt = `You are writing a structured research memo using search results that were already collected by a bounded external search tool.
+
+${sharedRequirements}
+
+Search results:
+${search.summary}
+
+Raw search payload:
+${typeof search.structured === 'string' ? search.structured : JSON.stringify(search.structured, null, 2)}
+`;
+    result = await callModelUltra(prompt, 'sonnet');
+  }
 
   const date = new Date().toISOString().slice(0, 10);
   const frontmatter = `---

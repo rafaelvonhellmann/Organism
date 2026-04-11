@@ -2,11 +2,13 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, execSync } from 'child_process';
+import { getProjectAutonomyHealth } from './autonomy-governor.js';
 import { appendCommandLog, updateRunProgress } from './run-memory.js';
 import { loadProjectPolicy, getV2DeployTargets, isActionAllowed, isActionBlocked, requiresApproval } from './project-policy.js';
 import { createApprovalRecord, createArtifact, createInterrupt, getLatestRunForGoal } from './run-state.js';
 import { recordRuntimeEvent } from './runtime-events.js';
 import { Task, CommandProposal, ApprovalRequest, ProjectAction, ProjectPolicy } from '../../shared/src/types.js';
+import { STATE_DIR } from '../../shared/src/state-dir.js';
 
 interface GitStatusEntry {
   code: string;
@@ -15,12 +17,14 @@ interface GitStatusEntry {
 
 export interface EngineeringWorkspace {
   projectId: string;
+  repoRootPath: string;
   projectPath: string;
   policy: ProjectPolicy;
   branchName: string;
   defaultBranch: string;
   baselineDirty: boolean;
   baselineStatus: GitStatusEntry[];
+  isolatedWorktree: boolean;
 }
 
 export interface ControllerCommandResult {
@@ -101,6 +105,17 @@ function resolveDefaultBranch(projectPath: string, policy: ProjectPolicy): strin
 
 function buildBranchName(task: Task): string {
   return `agent/engineering/${task.id.slice(0, 8)}/${slugify(task.description)}`;
+}
+
+function worktreePathForTask(projectId: string, task: Task): string {
+  return path.join(STATE_DIR, 'worktrees', projectId, `${task.id.slice(0, 8)}-${slugify(task.description)}`);
+}
+
+function previewDirtyFiles(entries: GitStatusEntry[]): string {
+  return entries
+    .slice(0, 5)
+    .map((entry) => `${entry.code || '??'} ${entry.path}`)
+    .join(', ');
 }
 
 function quoteForCmd(value: string): string {
@@ -189,21 +204,52 @@ export function prepareEngineeringWorkspace(task: Task): EngineeringWorkspace {
 
   const defaultBranch = resolveDefaultBranch(policy.repoPath, policy);
   const branchName = buildBranchName(task);
-  const baselineStatus = listStatus(policy.repoPath);
+  const repoBaselineStatus = listStatus(policy.repoPath);
+  if (policy.workspaceMode === 'clean_required' && repoBaselineStatus.length > 0) {
+    throw new Error(
+      `Project ${projectId} requires a clean worktree before autonomous execution. ` +
+      `Found ${repoBaselineStatus.length} git status entr${repoBaselineStatus.length === 1 ? 'y' : 'ies'}: ${previewDirtyFiles(repoBaselineStatus)}`,
+    );
+  }
 
-  if (!tryRunGit(['branch', '--list', branchName], policy.repoPath)) {
+  let projectPath = policy.repoPath;
+  let isolatedWorktree = false;
+  if (policy.workspaceMode === 'isolated_worktree') {
+    const worktreePath = worktreePathForTask(projectId, task);
+    const parentDir = path.dirname(worktreePath);
+    if (!fs.existsSync(parentDir)) {
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
+
+    if (!fs.existsSync(path.join(worktreePath, '.git'))) {
+      try {
+        runGit(['worktree', 'add', '--force', '-B', branchName, worktreePath, `origin/${defaultBranch}`], policy.repoPath);
+      } catch {
+        runGit(['worktree', 'add', '--force', '-B', branchName, worktreePath, defaultBranch], policy.repoPath);
+      }
+    } else {
+      runGit(['checkout', branchName], worktreePath);
+    }
+
+    projectPath = worktreePath;
+    isolatedWorktree = true;
+  }
+
+  const baselineStatus = listStatus(projectPath);
+
+  if (!isolatedWorktree && !tryRunGit(['branch', '--list', branchName], policy.repoPath)) {
     try {
       runGit(['checkout', '-b', branchName, `origin/${defaultBranch}`], policy.repoPath);
     } catch {
       runGit(['checkout', '-b', branchName, defaultBranch], policy.repoPath);
     }
-  } else {
+  } else if (!isolatedWorktree) {
     runGit(['checkout', branchName], policy.repoPath);
   }
 
   if (task.goalId) {
     updateRunProgress(task.goalId, [
-      `- Controller prepared workspace \`${policy.repoPath}\``,
+      `- Controller prepared workspace \`${projectPath}\``,
       `- Branch: \`${branchName}\``,
     ]);
   }
@@ -211,7 +257,7 @@ export function prepareEngineeringWorkspace(task: Task): EngineeringWorkspace {
   recordToolEvent(task, 'tool.started', {
     action: 'edit_code',
     branchName,
-    projectPath: policy.repoPath,
+    projectPath,
   });
   recordToolEvent(task, 'tool.finished', {
     action: 'edit_code',
@@ -221,12 +267,14 @@ export function prepareEngineeringWorkspace(task: Task): EngineeringWorkspace {
 
   return {
     projectId,
-    projectPath: policy.repoPath,
+    repoRootPath: policy.repoPath,
+    projectPath,
     policy,
     branchName,
     defaultBranch,
     baselineDirty: baselineStatus.length > 0,
     baselineStatus,
+    isolatedWorktree,
   };
 }
 
@@ -351,6 +399,23 @@ function proposedAction(task: Task, workspace: EngineeringWorkspace, action: Pro
   return { proposal, approval };
 }
 
+export function getDeployGate(projectId: string, policy: ProjectPolicy): { locked: boolean; reason: string | null } {
+  const minimumHealthyRuns = policy.launchGuards.minimumHealthyRunsForDeploy;
+  if (minimumHealthyRuns <= 0) {
+    return { locked: false, reason: null };
+  }
+
+  const autonomy = getProjectAutonomyHealth(projectId);
+  if (autonomy.consecutiveHealthyRuns >= minimumHealthyRuns) {
+    return { locked: false, reason: null };
+  }
+
+  return {
+    locked: true,
+    reason: `Deploy remains canary-gated until ${minimumHealthyRuns} consecutive healthy runs. Current streak: ${autonomy.consecutiveHealthyRuns}.`,
+  };
+}
+
 function executeOrQueueAction(params: {
   task: Task;
   workspace: EngineeringWorkspace;
@@ -361,6 +426,27 @@ function executeOrQueueAction(params: {
   const proposalResult = proposedAction(params.task, params.workspace, params.action, params.reason);
   if (!proposalResult.proposal) {
     return { actionResult: null, proposal: null, approval: null };
+  }
+
+  if (params.action === 'deploy') {
+    const gate = getDeployGate(params.workspace.projectId, params.workspace.policy);
+    if (gate.locked) {
+      const reason = gate.reason ?? 'Deploy is gated during canary rollout.';
+      return {
+        actionResult: null,
+        proposal: {
+          ...proposalResult.proposal,
+          requiresApproval: true,
+          reason,
+        },
+        approval: maybeCreateApproval(
+          params.task,
+          params.action,
+          reason,
+          `Deploy is still gated for ${params.workspace.projectId} during canary rollout.`,
+        ),
+      };
+    }
   }
 
   if (!params.autoExecute || proposalResult.proposal.requiresApproval) {

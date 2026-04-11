@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { AutonomyMode, ProjectAction, ProjectConfig, ProjectPolicy } from '../../shared/src/types.js';
+import { AutonomyMode, MiniMaxCommand, ProjectAction, ProjectConfig, ProjectPolicy, WorkspaceMode } from '../../shared/src/types.js';
 
 const PROJECTS_DIR = path.resolve(process.cwd(), 'knowledge', 'projects');
 
@@ -27,6 +27,38 @@ const MODE_BLOCKS: Record<AutonomyMode, ProjectAction[]> = {
   operational: [],
   full_autonomy: [],
 };
+
+const DEFAULT_MINIMAX_COMMANDS: MiniMaxCommand[] = ['search'];
+
+function normalizeWorkspaceMode(raw: unknown, autonomyMode: AutonomyMode): WorkspaceMode {
+  if (raw === 'direct' || raw === 'clean_required' || raw === 'isolated_worktree') return raw;
+  return autonomyMode === 'stabilization' ? 'isolated_worktree' : 'direct';
+}
+
+function normalizeLaunchGuards(raw: unknown, autonomyMode: AutonomyMode): ProjectPolicy['launchGuards'] {
+  const record = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const minimumHealthyRunsForDeploy = typeof record.minimumHealthyRunsForDeploy === 'number'
+    ? Math.max(0, record.minimumHealthyRunsForDeploy)
+    : autonomyMode === 'stabilization'
+      ? 5
+      : 0;
+  return {
+    minimumHealthyRunsForDeploy,
+  };
+}
+
+function normalizeMiniMax(raw: unknown): ProjectPolicy['toolProviders']['minimax'] {
+  const record = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const allowedCommands = Array.isArray(record.allowedCommands)
+    ? record.allowedCommands.filter((item): item is MiniMaxCommand => item === 'search' || item === 'speech' || item === 'vision')
+    : DEFAULT_MINIMAX_COMMANDS;
+  return {
+    enabled: record.enabled === true,
+    region: record.region === 'cn' ? 'cn' : 'global',
+    allowedCommands: allowedCommands.length > 0 ? allowedCommands : DEFAULT_MINIMAX_COMMANDS,
+    authMode: record.authMode === 'api-key' || record.authMode === 'session' ? record.authMode : 'auto',
+  };
+}
 
 function configPath(projectId: string): string {
   return path.join(PROJECTS_DIR, projectId, 'config.json');
@@ -84,6 +116,11 @@ function coerceConfig(projectId: string, raw: Record<string, unknown>): ProjectP
       : null;
 
   const deployTargets = normalizeDeployTargets(raw.deployTargets);
+  const workspaceMode = normalizeWorkspaceMode(raw.workspaceMode, autonomyMode);
+  const launchGuards = normalizeLaunchGuards(raw.launchGuards, autonomyMode);
+  const toolProviders = raw.toolProviders && typeof raw.toolProviders === 'object'
+    ? raw.toolProviders as Record<string, unknown>
+    : {};
 
   return {
     projectId,
@@ -101,6 +138,11 @@ function coerceConfig(projectId: string, raw: Record<string, unknown>): ProjectP
     envRequirements: Array.isArray(raw.envRequirements)
       ? raw.envRequirements.filter((item): item is string => typeof item === 'string')
       : [],
+    workspaceMode,
+    launchGuards,
+    toolProviders: {
+      minimax: normalizeMiniMax(toolProviders.minimax),
+    },
     budgetCaps: {
       dailyUsd: typeof budgetCaps.dailyUsd === 'number' ? budgetCaps.dailyUsd : null,
       deployUsd: typeof budgetCaps.deployUsd === 'number' ? budgetCaps.deployUsd : null,
@@ -154,6 +196,15 @@ export function getV2DeployTargets(policy: ProjectPolicy): ProjectPolicy['deploy
 }
 
 export function mergeProjectConfig(config: ProjectConfig, policy: ProjectPolicy): ProjectConfig {
+  const mergedLaunchGuards = {
+    ...policy.launchGuards,
+    ...(config.launchGuards ?? {}),
+  };
+  const mergedMiniMax = {
+    ...policy.toolProviders.minimax,
+    ...(config.toolProviders?.minimax ?? {}),
+  };
+
   return {
     ...config,
     repoPath: config.repoPath ?? policy.repoPath ?? undefined,
@@ -164,6 +215,13 @@ export function mergeProjectConfig(config: ProjectConfig, policy: ProjectPolicy)
     blockedActions: config.blockedActions ?? policy.blockedActions,
     approvalThresholds: config.approvalThresholds ?? policy.approvalThresholds,
     envRequirements: config.envRequirements ?? policy.envRequirements,
+    workspaceMode: config.workspaceMode ?? policy.workspaceMode,
+    launchGuards: mergedLaunchGuards,
+    toolProviders: {
+      ...policy.toolProviders,
+      ...(config.toolProviders ?? {}),
+      minimax: mergedMiniMax,
+    },
     budgetCaps: config.budgetCaps ?? {
       dailyUsd: policy.budgetCaps.dailyUsd ?? undefined,
       deployUsd: policy.budgetCaps.deployUsd ?? undefined,

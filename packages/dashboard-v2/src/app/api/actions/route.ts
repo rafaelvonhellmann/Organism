@@ -26,6 +26,10 @@ export async function POST(req: NextRequest) {
   const { action, payload } = body;
 
   if (!action) return Response.json({ error: 'Missing action' }, { status: 400 });
+  const projectRequired = action === 'command' || action === 'review';
+  if (projectRequired && (!payload || typeof payload.project !== 'string' || payload.project.trim().length === 0)) {
+    return Response.json({ error: 'Project selection is required for this action' }, { status: 400 });
+  }
 
   await client.execute({
     sql: 'INSERT INTO dashboard_actions (action, payload, status, created_at) VALUES (?, ?, ?, ?)',

@@ -19,6 +19,7 @@ export default function CommandPage() {
   const [command, setCommand] = useState('');
   const [actions, setActions] = useState<Action[]>([]);
   const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const fetchActions = useCallback(async () => {
@@ -43,21 +44,32 @@ export default function CommandPage() {
 
   const sendCommand = async (cmd: string) => {
     if (!cmd.trim()) return;
+    if (!project) {
+      setError('Select a project before launching work from the dashboard.');
+      return;
+    }
     setSending(true);
+    setError(null);
     try {
-      await fetch('/api/actions', {
+      const res = await fetch('/api/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'command', payload: { command: cmd.trim(), project: project || 'synapse' } }),
+        body: JSON.stringify({ action: 'command', payload: { command: cmd.trim(), project } }),
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: 'Failed to create action' }));
+        throw new Error(body.error ?? 'Failed to create action');
+      }
       setCommand('');
       setTimeout(fetchActions, 500);
-    } catch {}
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to submit command');
+    }
     finally { setSending(false); }
   };
 
   const quickActions = [
-    { label: 'Review Synapse', cmd: 'review synapse' },
+    { label: 'Review Project', cmd: 'review project' },
     { label: 'Execute Tasks', cmd: 'execute' },
     { label: 'Status', cmd: 'status' },
     { label: 'Palate Stats', cmd: 'palate stats' },
@@ -66,7 +78,17 @@ export default function CommandPage() {
 
   return (
     <>
-      <Header title="Command" project={project} onProjectChange={setProject} lastUpdated={null} />
+      <Header
+        title="Command"
+        project={project}
+        onProjectChange={(next) => {
+          setProject(next);
+          if (next) setError(null);
+        }}
+        lastUpdated={null}
+        allowAllProjects={false}
+        autoSelectProject={false}
+      />
 
       <div className="flex flex-col h-[calc(100vh-3.5rem)] md:h-screen">
         {/* Command history */}
@@ -76,6 +98,12 @@ export default function CommandPage() {
               <div className="text-center py-16">
                 <h3 className="text-lg font-semibold text-zinc-300 mb-2">Command Center</h3>
                 <p className="text-sm text-zinc-500">Type any Organism command below, or use the quick actions.</p>
+              </div>
+            )}
+
+            {error && (
+              <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
+                {error}
               </div>
             )}
 
@@ -115,13 +143,19 @@ export default function CommandPage() {
                 <button
                   key={qa.cmd}
                   onClick={() => sendCommand(qa.cmd)}
-                  disabled={sending}
+                  disabled={sending || !project}
                   className="shrink-0 px-3 py-1.5 rounded-lg text-xs bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 border border-zinc-700 transition-colors disabled:opacity-50"
                 >
                   {qa.label}
                 </button>
               ))}
             </div>
+
+            {!project && (
+              <p className="mb-3 text-xs text-amber-300">
+                Select a project first. The dashboard no longer defaults to Synapse for safety.
+              </p>
+            )}
 
             {/* Command input */}
             <div className="flex items-center gap-2">
@@ -131,13 +165,13 @@ export default function CommandPage() {
                 value={command}
                 onChange={e => setCommand(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter' && !sending) sendCommand(command); }}
-                placeholder="Type a command... (e.g. review synapse, palate list, status)"
+                placeholder={project ? `Type a command for ${project}...` : 'Select a project to unlock command launch'}
                 className="flex-1 bg-transparent text-sm text-zinc-200 font-mono placeholder-zinc-600 focus:outline-none"
-                disabled={sending}
+                disabled={sending || !project}
               />
               <button
                 onClick={() => sendCommand(command)}
-                disabled={sending || !command.trim()}
+                disabled={sending || !command.trim() || !project}
                 className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-500 transition-colors disabled:opacity-50"
               >
                 {sending ? 'Sending...' : 'Run'}

@@ -558,11 +558,15 @@ function ReviewQueueInner() {
   }
 
   const handleRunReview = useCallback(async () => {
+    if (!project) {
+      setError('Select a project before launching a review from the dashboard.');
+      return;
+    }
     try {
       await fetch('/api/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'review', payload: { project: project || 'synapse' } }),
+        body: JSON.stringify({ action: 'review', payload: { project } }),
       });
     } catch { /* silent */ }
   }, [project]);

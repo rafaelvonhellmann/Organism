@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runPolicyCommand, type EngineeringWorkspace } from './execution-controller.js';
+import { getDeployGate, runPolicyCommand, type EngineeringWorkspace } from './execution-controller.js';
+import { createRunSession, ensureGoal } from './run-state.js';
+import { getDb } from './task-queue.js';
 import { type Task, type ProjectPolicy } from '../../shared/src/types.js';
 
 function buildPolicy(overrides: Partial<ProjectPolicy> = {}): ProjectPolicy {
@@ -17,6 +19,16 @@ function buildPolicy(overrides: Partial<ProjectPolicy> = {}): ProjectPolicy {
     blockedActions: [],
     approvalThresholds: { majorActions: ['purchase', 'contact', 'create_account', 'cross_project', 'destructive_migration'] },
     envRequirements: [],
+    workspaceMode: 'clean_required',
+    launchGuards: { minimumHealthyRunsForDeploy: 5 },
+    toolProviders: {
+      minimax: {
+        enabled: false,
+        region: 'global',
+        allowedCommands: ['search'],
+        authMode: 'auto',
+      },
+    },
     budgetCaps: { dailyUsd: null, deployUsd: null, contactUsd: null, purchaseUsd: null },
     autonomyMode: 'stabilization',
     ...overrides,
@@ -40,12 +52,22 @@ describe('execution-controller', () => {
   let workspaceDir: string;
 
   beforeEach(() => {
+    getDb().exec(`
+      DELETE FROM runtime_events;
+      DELETE FROM approvals;
+      DELETE FROM interrupts;
+      DELETE FROM artifacts;
+      DELETE FROM run_steps;
+      DELETE FROM run_sessions;
+      DELETE FROM goals;
+    `);
     workspaceDir = mkdtempSync(join(tmpdir(), 'organism-controller-test-'));
   });
 
   it('blocks privileged actions that are disallowed by policy', () => {
     const workspace: EngineeringWorkspace = {
       projectId: 'organism',
+      repoRootPath: workspaceDir,
       projectPath: workspaceDir,
       policy: buildPolicy({
         allowedActions: ['edit_code', 'run_tests', 'build'],
@@ -55,6 +77,7 @@ describe('execution-controller', () => {
       defaultBranch: 'main',
       baselineDirty: false,
       baselineStatus: [],
+      isolatedWorktree: false,
     };
 
     const result = runPolicyCommand(buildTask(), workspace, 'push', 'git push -u origin test');
@@ -67,6 +90,7 @@ describe('execution-controller', () => {
   it('executes allowed verification commands through the controller', () => {
     const workspace: EngineeringWorkspace = {
       projectId: 'organism',
+      repoRootPath: workspaceDir,
       projectPath: workspaceDir,
       policy: buildPolicy({
         allowedActions: ['edit_code', 'run_tests', 'build'],
@@ -75,6 +99,7 @@ describe('execution-controller', () => {
       defaultBranch: 'main',
       baselineDirty: false,
       baselineStatus: [],
+      isolatedWorktree: false,
     };
 
     const result = runPolicyCommand(buildTask(), workspace, 'build', 'echo controller-ok');
@@ -82,5 +107,27 @@ describe('execution-controller', () => {
 
     assert.equal(result.ok, true);
     assert.match(result.output, /controller-ok/i);
+  });
+
+  it('keeps deploy in PR-only mode before the healthy-run gate opens', () => {
+    const goal = ensureGoal({
+      projectId: 'organism',
+      title: 'Canary deploy test',
+      description: 'Canary deploy test',
+      sourceKind: 'user',
+      workflowKind: 'implement',
+    });
+    createRunSession({
+      goalId: goal.id,
+      projectId: 'organism',
+      agent: 'engineering',
+      workflowKind: 'implement',
+    });
+
+    const gate = getDeployGate('organism', buildPolicy());
+    rmSync(workspaceDir, { recursive: true, force: true });
+
+    assert.equal(gate.locked, true);
+    assert.match(gate.reason ?? '', /consecutive healthy runs/i);
   });
 });

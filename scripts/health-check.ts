@@ -7,6 +7,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
 import { resolveModelBackend } from '../agents/_base/mcp-client.js';
+import { listProjectPolicies } from '../packages/core/src/project-policy.js';
+import { getProjectLaunchReadiness } from '../packages/core/src/project-readiness.js';
 import { getDb } from '../packages/core/src/task-queue.js';
 import { STATE_DIR } from '../packages/shared/src/state-dir.js';
 
@@ -87,6 +89,23 @@ async function healthCheck() {
   } catch (err) {
     console.log(`FAIL — ${err}`);
     allOk = false;
+  }
+
+  // 9. Project launch readiness
+  console.log('\nProject launch readiness:');
+  for (const policy of listProjectPolicies()) {
+    const readiness = getProjectLaunchReadiness(policy.projectId);
+    const blockerLabel = readiness.blockers.length === 0 ? 'ready' : `blocked (${readiness.blockers.length})`;
+    console.log(`- ${policy.projectId}: ${blockerLabel}, clean=${readiness.cleanWorktree}, deployUnlocked=${readiness.deployUnlocked}, minimax=${readiness.minimax.ready ? 'ready' : 'off/not-ready'}`);
+    for (const blocker of readiness.blockers) {
+      console.log(`  blocker: ${blocker}`);
+    }
+    for (const warning of readiness.warnings) {
+      console.log(`  warning: ${warning}`);
+    }
+    if (readiness.blockers.length > 0 && policy.projectId === 'organism') {
+      allOk = false;
+    }
   }
 
   console.log(`\n${allOk ? '✓ All checks passed. Safe to start agents.' : '✗ Fix the issues above before running agents.'}\n`);

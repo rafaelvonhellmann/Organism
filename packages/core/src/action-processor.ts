@@ -30,7 +30,10 @@ export async function processDashboardActions(): Promise<void> {
         case 'review': {
           // Dynamic import to avoid circular deps
           const { submitTask } = await import('./orchestrator.js');
-          const project = payload.project ?? 'synapse';
+          if (typeof payload.project !== 'string' || payload.project.trim().length === 0) {
+            throw new Error('Dashboard review action requires an explicit project.');
+          }
+          const project = payload.project.trim();
           await submitTask({
             description: `Full review of ${project}`,
             input: { projectId: project, triggeredBy: 'dashboard' },
@@ -50,8 +53,14 @@ export async function processDashboardActions(): Promise<void> {
           break;
         }
         case 'command': {
-          const cmd = payload.command ?? '';
-          const project = payload.project ?? 'organism';
+          const cmd = typeof payload.command === 'string' ? payload.command.trim() : '';
+          if (!cmd) {
+            throw new Error('Dashboard command action requires a non-empty command.');
+          }
+          if (typeof payload.project !== 'string' || payload.project.trim().length === 0) {
+            throw new Error('Dashboard command action requires an explicit project.');
+          }
+          const project = payload.project.trim();
           const { submitTask } = await import('./orchestrator.js');
           await submitTask({
             description: cmd,

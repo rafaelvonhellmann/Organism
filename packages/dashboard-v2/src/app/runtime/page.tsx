@@ -116,6 +116,19 @@ interface RuntimeSnapshot {
       resetsAt: string | null;
       usagePct: number;
     };
+    readiness: Array<{
+      projectId: string;
+      cleanWorktree: boolean;
+      workspaceMode: string;
+      deployUnlocked: boolean;
+      blockers: string[];
+      warnings: string[];
+      minimax: {
+        enabled: boolean;
+        ready: boolean;
+        allowedCommands: string[];
+      };
+    }>;
     startedAt: string | null;
     version: string | null;
   } | null;
@@ -195,6 +208,13 @@ export default function RuntimePage() {
     () => snapshot?.runs.filter((run) => run.status === 'paused' || run.status === 'retry_scheduled') ?? [],
     [snapshot],
   );
+  const selectedReadiness = useMemo(() => {
+    if (!snapshot?.daemon?.readiness?.length) return null;
+    if (project) {
+      return snapshot.daemon.readiness.find((item) => item.projectId === project) ?? null;
+    }
+    return null;
+  }, [project, snapshot]);
 
   return (
     <>
@@ -234,6 +254,33 @@ export default function RuntimePage() {
           {snapshot?.daemon?.rateLimitStatus.limited && snapshot.daemon.rateLimitStatus.resetsAt && (
             <div className="mt-3 text-xs text-amber-400">
               Provider rate limit active until {snapshot.daemon.rateLimitStatus.resetsAt}
+            </div>
+          )}
+          {selectedReadiness && (
+            <div className="mt-4 rounded-lg border border-edge bg-surface-alt/20 p-3 text-xs">
+              <div className="text-zinc-200">
+                Launch readiness for <span className="font-semibold">{selectedReadiness.projectId}</span>
+              </div>
+              <div className="mt-2 grid grid-cols-2 lg:grid-cols-4 gap-3 text-zinc-300">
+                <div>Worktree: {selectedReadiness.cleanWorktree ? 'clean' : 'dirty'}</div>
+                <div>Workspace mode: {selectedReadiness.workspaceMode}</div>
+                <div>Deploy gate: {selectedReadiness.deployUnlocked ? 'open' : 'PR-only'}</div>
+                <div>MiniMax: {selectedReadiness.minimax.enabled ? (selectedReadiness.minimax.ready ? 'ready' : 'not ready') : 'off'}</div>
+              </div>
+              {selectedReadiness.blockers.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {selectedReadiness.blockers.map((blocker) => (
+                    <div key={blocker} className="text-amber-400">{blocker}</div>
+                  ))}
+                </div>
+              )}
+              {selectedReadiness.warnings.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {selectedReadiness.warnings.map((warning) => (
+                    <div key={warning} className="text-zinc-500">{warning}</div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </section>

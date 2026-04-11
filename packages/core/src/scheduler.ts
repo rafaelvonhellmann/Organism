@@ -6,17 +6,14 @@
  * each agent runs, rather than dispatching ALL pending tasks globally.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import { dispatchPendingTasks } from './agent-runner.js';
 import { runWatchdog } from './orchestrator.js';
 import { loadRegistry } from './registry.js';
-import { createTask, getPendingTasks, getDb } from './task-queue.js';
+import { createTask, getDb, getPendingTasks } from './task-queue.js';
 import { enforceDormancy } from './perspectives.js';
 import { syncToTurso } from './turso-sync.js';
 import { processDashboardActions } from './action-processor.js';
 import { AgentCapability } from '../../shared/src/types.js';
-import { STATE_DIR } from '../../shared/src/state-dir.js';
 
 // --- Types ---
 
@@ -394,21 +391,6 @@ async function schedulerTick(): Promise<void> {
     watchdogLastRunAt = Date.now();
   }
 
-  // Write daemon status for health check
-  try {
-    const statusPath = path.join(STATE_DIR, 'daemon-status.json');
-    const stateDir = path.dirname(statusPath);
-    if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(statusPath, JSON.stringify({
-      lastTick: Date.now(),
-      pendingTasks: getPendingTasks().length,
-      nextReview: PROJECT_SCHEDULE.map(s => ({
-        project: s.projectId,
-        day: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][s.dayOfWeek],
-        hour: s.hour,
-      })),
-    }, null, 2));
-  } catch { /* non-critical */ }
 }
 
 /**

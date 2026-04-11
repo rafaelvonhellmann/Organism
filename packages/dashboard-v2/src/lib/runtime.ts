@@ -306,6 +306,15 @@ function readDaemonStatus() {
     const raw = JSON.parse(readFileSync(statusPath, 'utf8')) as {
       runtime?: { modelBackend?: string | null; codeExecutor?: string | null; webSearchAvailable?: boolean };
       rateLimitStatus?: { limited?: boolean; resetsAt?: string | null; usagePct?: number };
+      readiness?: Array<{
+        projectId?: string;
+        cleanWorktree?: boolean;
+        workspaceMode?: string;
+        deployUnlocked?: boolean;
+        blockers?: string[];
+        warnings?: string[];
+        minimax?: { enabled?: boolean; ready?: boolean; allowedCommands?: string[] };
+      }>;
       startedAt?: string;
       version?: string;
     };
@@ -320,6 +329,21 @@ function readDaemonStatus() {
         resetsAt: raw.rateLimitStatus?.resetsAt ?? null,
         usagePct: raw.rateLimitStatus?.usagePct ?? 0,
       },
+      readiness: Array.isArray(raw.readiness)
+        ? raw.readiness.map((item) => ({
+          projectId: item.projectId ?? '',
+          cleanWorktree: item.cleanWorktree ?? false,
+          workspaceMode: item.workspaceMode ?? 'direct',
+          deployUnlocked: item.deployUnlocked ?? false,
+          blockers: Array.isArray(item.blockers) ? item.blockers : [],
+          warnings: Array.isArray(item.warnings) ? item.warnings : [],
+          minimax: {
+            enabled: item.minimax?.enabled ?? false,
+            ready: item.minimax?.ready ?? false,
+            allowedCommands: Array.isArray(item.minimax?.allowedCommands) ? item.minimax!.allowedCommands! : [],
+          },
+        }))
+        : [],
       startedAt: raw.startedAt ?? null,
       version: raw.version ?? null,
     };

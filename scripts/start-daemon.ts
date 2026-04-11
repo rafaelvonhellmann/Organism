@@ -20,6 +20,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { getDb } from '../packages/core/src/task-queue.js';
 import { loadRegistry } from '../packages/core/src/registry.js';
+import { listProjectPolicies } from '../packages/core/src/project-policy.js';
+import { getProjectLaunchReadiness } from '../packages/core/src/project-readiness.js';
 import { startScheduler } from '../packages/core/src/scheduler.js';
 import { startDaemon, dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
 import { listProjectAutonomyHealth } from '../packages/core/src/autonomy-governor.js';
@@ -79,6 +81,19 @@ interface DaemonStatus {
     rolloutReady: boolean;
     blockers: string[];
   }>;
+  readiness: Array<{
+    projectId: string;
+    cleanWorktree: boolean;
+    workspaceMode: string;
+    deployUnlocked: boolean;
+    blockers: string[];
+    warnings: string[];
+    minimax: {
+      enabled: boolean;
+      ready: boolean;
+      allowedCommands: string[];
+    };
+  }>;
   config: typeof DAEMON_CONFIG;
   version: string;
 }
@@ -137,6 +152,22 @@ function buildStatus(): DaemonStatus {
     rolloutReady: project.rolloutReady,
     blockers: project.blockers,
   }));
+  const readiness = listProjectPolicies().map((policy) => {
+    const project = getProjectLaunchReadiness(policy.projectId);
+    return {
+      projectId: project.projectId,
+      cleanWorktree: project.cleanWorktree,
+      workspaceMode: project.workspaceMode,
+      deployUnlocked: project.deployUnlocked,
+      blockers: project.blockers,
+      warnings: project.warnings,
+      minimax: {
+        enabled: project.minimax.enabled,
+        ready: project.minimax.ready,
+        allowedCommands: project.minimax.allowedCommands,
+      },
+    };
+  });
   return {
     startedAt: daemonState.startedAt,
     lastExecuteCycle: daemonState.lastExecuteCycleMs ? new Date(daemonState.lastExecuteCycleMs).toISOString() : null,
@@ -159,6 +190,7 @@ function buildStatus(): DaemonStatus {
       webSearchAvailable: modelBackend?.capabilities.webSearch ?? false,
     },
     autonomy,
+    readiness,
     config: DAEMON_CONFIG,
     version: VERSION,
   };

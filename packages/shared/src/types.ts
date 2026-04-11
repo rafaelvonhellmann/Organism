@@ -73,6 +73,8 @@ export type ProjectAction =
   | 'create_account'
   | 'destructive_migration'
   | 'cross_project';
+export type WorkspaceMode = 'direct' | 'clean_required' | 'isolated_worktree';
+export type MiniMaxCommand = 'search' | 'speech' | 'vision';
 export type AgentEnvelopeKind =
   | 'finding'
   | 'plan'
@@ -114,6 +116,18 @@ export interface ProjectConfig {
     majorActions?: ProjectAction[];
   };
   envRequirements?: string[];
+  workspaceMode?: WorkspaceMode;
+  launchGuards?: {
+    minimumHealthyRunsForDeploy?: number;
+  };
+  toolProviders?: {
+    minimax?: {
+      enabled?: boolean;
+      region?: 'global' | 'cn';
+      allowedCommands?: MiniMaxCommand[];
+      authMode?: 'auto' | 'api-key' | 'session';
+    };
+  };
   budgetCaps?: {
     dailyUsd?: number;
     deployUsd?: number;
@@ -313,6 +327,18 @@ export interface ProjectPolicy {
     majorActions: ProjectAction[];
   };
   envRequirements: string[];
+  workspaceMode: WorkspaceMode;
+  launchGuards: {
+    minimumHealthyRunsForDeploy: number;
+  };
+  toolProviders: {
+    minimax: {
+      enabled: boolean;
+      region: 'global' | 'cn';
+      allowedCommands: MiniMaxCommand[];
+      authMode: 'auto' | 'api-key' | 'session';
+    };
+  };
   budgetCaps: {
     dailyUsd: number | null;
     deployUsd: number | null;

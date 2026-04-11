@@ -78,7 +78,19 @@
       "create_account"
     ]
   },
-  "envRequirements": ["GH_TOKEN", "VERCEL_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+  "envRequirements": ["GH_TOKEN", "VERCEL_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MINIMAX_API_KEY"],
+  "workspaceMode": "isolated_worktree",
+  "launchGuards": {
+    "minimumHealthyRunsForDeploy": 5
+  },
+  "toolProviders": {
+    "minimax": {
+      "enabled": true,
+      "region": "global",
+      "allowedCommands": ["search"],
+      "authMode": "auto"
+    }
+  },
   "budgetCaps": {
     "dailyUsd": 50,
     "deployUsd": 10,

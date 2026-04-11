@@ -23,9 +23,18 @@ interface HeaderProps {
   project: string;
   onProjectChange: (p: string) => void;
   lastUpdated: Date | null;
+  allowAllProjects?: boolean;
+  autoSelectProject?: boolean;
 }
 
-export function Header({ title, project, onProjectChange, lastUpdated }: HeaderProps) {
+export function Header({
+  title,
+  project,
+  onProjectChange,
+  lastUpdated,
+  allowAllProjects = true,
+  autoSelectProject = true,
+}: HeaderProps) {
   const [projects, setProjects] = useState<string[]>([]);
   const [ago, setAgo] = useState('');
   const [initialized, setInitialized] = useState(false);
@@ -35,13 +44,16 @@ export function Header({ title, project, onProjectChange, lastUpdated }: HeaderP
       .then(r => r.json())
       .then((list: string[]) => {
         setProjects(list);
-        if (!initialized) {
+        if (!initialized && autoSelectProject) {
           onProjectChange(pickDefault(list));
+          setInitialized(true);
+        }
+        if (!initialized && !autoSelectProject) {
           setInitialized(true);
         }
       })
       .catch(() => {});
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [autoSelectProject, initialized, onProjectChange]);
 
   // Update "ago" every second
   useEffect(() => {
@@ -74,7 +86,7 @@ export function Header({ title, project, onProjectChange, lastUpdated }: HeaderP
           onChange={e => onProjectChange(e.target.value)}
           className="bg-zinc-800 border border-edge rounded-md px-2.5 py-1.5 text-sm text-zinc-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
         >
-          <option value="">All Projects</option>
+          {allowAllProjects && <option value="">All Projects</option>}
           {projects.map(p => (
             <option key={p} value={p}>{displayName(p)}</option>
           ))}
