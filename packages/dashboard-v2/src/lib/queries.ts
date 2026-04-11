@@ -132,7 +132,7 @@ export async function getAgents(projectId?: string) {
       client.execute(`SELECT agent, COALESCE(SUM(cost_usd), 0) as spent FROM agent_spend WHERE date='${date}' GROUP BY agent`),
       client.execute(`SELECT agent, COUNT(*) as c FROM tasks WHERE status='pending'${pf} GROUP BY agent`),
       client.execute(`SELECT agent, COUNT(*) as c FROM tasks WHERE status='completed' AND completed_at >= ${dayStart}${pf} GROUP BY agent`),
-      client.execute(`SELECT agent, id, description, lane FROM tasks WHERE status='in_progress' ORDER BY started_at DESC`),
+      client.execute(`SELECT agent, id, description, lane FROM tasks WHERE status='in_progress'${pf} ORDER BY started_at DESC`),
     ]);
 
     for (const row of spendResult.rows) spendMap.set(s(row.agent), n(row.spent));

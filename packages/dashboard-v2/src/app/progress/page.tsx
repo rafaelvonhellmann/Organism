@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { Header } from '@/components/header';
 import { StatusBadge } from '@/components/status-badge';
@@ -117,8 +117,10 @@ export default function ProgressPage() {
   const [data, setData] = useState<ProgressData | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const requestSeq = useRef(0);
 
   const fetchData = useCallback(async () => {
+    const seq = ++requestSeq.current;
     try {
       const pf = project ? `&project=${project}` : '';
       const [completedRes, inProgressRes, pendingRes, reviewRes, failedRes] = await Promise.all([
@@ -137,21 +139,30 @@ export default function ProgressPage() {
         failedRes.json(),
       ]);
 
-      const filterInternal = (tasks: TaskSummary[]) =>
-        tasks.filter(t => !['grill-me', 'codex-review', 'quality-agent', 'risk-classifier'].includes(t.agent));
+      if (seq !== requestSeq.current) {
+        return;
+      }
+
+      const shouldShowPipelineTasks = Boolean(project);
+      const normalizeVisibleTasks = (tasks: TaskSummary[]) =>
+        shouldShowPipelineTasks
+          ? tasks
+          : tasks.filter(t => !['grill-me', 'codex-review', 'quality-agent', 'risk-classifier'].includes(t.agent));
 
       setData({
-        completed: filterInternal(completed.tasks ?? []),
-        inProgress: filterInternal(inProgress.tasks ?? []),
-        pending: filterInternal(pending.tasks ?? []),
-        awaitingReview: filterInternal(review.tasks ?? []),
-        failed: filterInternal(failed.tasks ?? []),
+        completed: normalizeVisibleTasks(completed.tasks ?? []),
+        inProgress: normalizeVisibleTasks(inProgress.tasks ?? []),
+        pending: normalizeVisibleTasks(pending.tasks ?? []),
+        awaitingReview: normalizeVisibleTasks(review.tasks ?? []),
+        failed: normalizeVisibleTasks(failed.tasks ?? []),
       });
       setLastUpdated(new Date());
     } catch {
       // Silent fail
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) {
+        setLoading(false);
+      }
     }
   }, [project]);
 
