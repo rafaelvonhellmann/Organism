@@ -8,6 +8,16 @@ interface DashboardAction {
   status: string;
 }
 
+export function claimDashboardAction(actionId: number): boolean {
+  const result = getDb().prepare(`
+    UPDATE dashboard_actions
+    SET status = 'in_progress', result = NULL, completed_at = NULL
+    WHERE id = ? AND status = 'pending'
+  `).run(actionId);
+
+  return Number(result.changes ?? 0) > 0;
+}
+
 /**
  * Process pending dashboard actions.
  * Called by the scheduler each tick.
@@ -21,6 +31,10 @@ export async function processDashboardActions(): Promise<void> {
   if (pending.length === 0) return;
 
   for (const action of pending) {
+    if (!claimDashboardAction(action.id)) {
+      continue;
+    }
+
     console.log(`[actions] Processing: ${action.action} (id: ${action.id})`);
     const payload = action.payload ? JSON.parse(action.payload) : {};
 

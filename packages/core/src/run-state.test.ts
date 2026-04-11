@@ -58,6 +58,8 @@ describe('run-state', () => {
       workflowKind: 'recover',
     });
 
+    assert.equal(run.status, 'running');
+
     updateRunStatus({
       runId: run.id,
       status: 'retry_scheduled',

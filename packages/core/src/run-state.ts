@@ -204,14 +204,15 @@ export function createRunSession(params: {
   const db = getDb();
   const id = crypto.randomUUID();
   const ts = now();
+  const initialStatus = params.status ?? 'running';
   db.prepare(`
     INSERT INTO run_sessions (
       id, goal_id, project_id, agent, workflow_kind, status, retry_class, retry_at, provider_failure_kind, created_at, updated_at
     )
     VALUES (?, ?, ?, ?, ?, ?, 'none', NULL, 'none', ?, ?)
-  `).run(id, params.goalId, params.projectId, params.agent, params.workflowKind, params.status ?? 'pending', ts, ts);
+  `).run(id, params.goalId, params.projectId, params.agent, params.workflowKind, initialStatus, ts, ts);
 
-  updateGoalStatus(params.goalId, params.status === 'paused' ? 'paused' : 'running', id);
+  updateGoalStatus(params.goalId, initialStatus === 'paused' ? 'paused' : 'running', id);
   recordRuntimeEvent({
     runId: id,
     goalId: params.goalId,

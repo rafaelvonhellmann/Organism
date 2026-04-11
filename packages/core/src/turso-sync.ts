@@ -809,19 +809,21 @@ export async function syncToTurso(): Promise<void> {
     }
   } catch { /* dashboard_actions may not exist remotely yet */ }
 
-  // 2. Push completed/failed results FROM local → Turso
+  // 2. Push active/completed results FROM local → Turso
   let pushedActions = 0;
-  const completedActions = queryLocal(
-    "SELECT * FROM dashboard_actions WHERE status IN ('completed', 'failed') AND completed_at > ?",
+  const localActionUpdates = queryLocal(
+    `SELECT * FROM dashboard_actions
+     WHERE status = 'in_progress'
+        OR (status IN ('completed', 'failed') AND completed_at > ?)`,
     lastSyncTs
   );
-  if (completedActions.length > 0) {
-    const stmts = completedActions.map(a => ({
+  if (localActionUpdates.length > 0) {
+    const stmts = localActionUpdates.map(a => ({
       sql: `UPDATE dashboard_actions SET status = ?, result = ?, completed_at = ? WHERE id = ?`,
       args: [a.status, a.result, a.completed_at, a.id],
     }));
     await batchUpsert(remote, stmts);
-    pushedActions = completedActions.length;
+    pushedActions = localActionUpdates.length;
   }
 
   // ── Log summary ──
