@@ -72,6 +72,20 @@ const LIMITS = [
   'The website is an operator cockpit, not the full brain. The daemon must be running locally for the dashboard to reflect real work.',
 ];
 
+const HARNESS_APPLIED = [
+  'Controller-owned execution: agents propose, while the controller owns verification, approvals, interrupts, commit, push, PR, and deploy actions.',
+  'Durable runs: Organism keeps per-run progress, checklist, facts, handoff, and command logs so work can survive long-running sessions and restarts.',
+  'Typed handoffs: findings, plans, handoff requests, command proposals, and approval requests are normalized into structured envelopes instead of relying on loose prose alone.',
+  'Recoverable runtime: restart recovery can pause or retry interrupted work instead of silently losing state.',
+];
+
+const HARNESS_GAPS = [
+  'Repository knowledge is better than before, but it is not yet a fully validated agent-first docs system with freshness checks and doc gardening.',
+  'Application legibility is still partial. Browser automation exists, but Organism does not yet have the same deep per-worktree observability harness described in the OpenAI article.',
+  'Entropy control is not fully continuous yet. We still need more recurring cleanup and refactoring loops that keep agent-generated code from drifting.',
+  'Organism is mechanically stronger, but it is not yet at the article’s fully proven autonomy stage because the healthy-run graduation history is still being accumulated.',
+];
+
 export default function GuidePage() {
   return (
     <div className="max-w-5xl mx-auto px-4 md:px-6 py-8 md:py-12">
@@ -114,6 +128,20 @@ export default function GuidePage() {
         </P>
       </Section>
 
+      <Section title="Which Version Is This?">
+        <div className="rounded-2xl border border-edge bg-zinc-950/80 p-5 md:p-6 space-y-4">
+          <P>
+            The improved codebase lives in <code className="text-emerald-300">packages/dashboard-v2</code>. That is the new Organism interface and manual.
+          </P>
+          <P>
+            Custom domains can lag behind deployments, so the safest way to verify you are on the improved version is to check this page itself. If you see the <span className="text-zinc-200 font-medium">v2 manual</span> badge and the <span className="text-zinc-200 font-medium">Harness Engineering</span> section below, you are on the updated dashboard.
+          </P>
+          <P>
+            In other words: <span className="text-zinc-200 font-medium">dashboard-v2 is the improved version</span>. The domain pointing to it may be <code className="text-emerald-300">organism-hq-v2</code> or, depending on Vercel aliasing, temporarily <code className="text-emerald-300">organism-hq</code>.
+          </P>
+        </div>
+      </Section>
+
       <Section title="What It Can Do Today">
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {CAPABILITY_CARDS.map((card) => (
@@ -121,6 +149,24 @@ export default function GuidePage() {
               {card.body}
             </Concept>
           ))}
+        </div>
+      </Section>
+
+      <Section title="Harness Engineering">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5 md:p-6">
+            <Subheading>Already Applied</Subheading>
+            <Checklist items={HARNESS_APPLIED} />
+          </div>
+          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-5 md:p-6">
+            <Subheading>Still Missing</Subheading>
+            <Checklist items={HARNESS_GAPS} tone="amber" />
+          </div>
+        </div>
+        <div className="mt-4 rounded-2xl border border-edge bg-zinc-950/80 p-5 md:p-6">
+          <P>
+            Organism already follows the core harness idea that humans steer and agents execute inside a strong control plane. What is still incomplete is the deeper environment around the agents: a fully agent-first knowledge system, richer local observability, and stronger ongoing garbage collection for code and docs.
+          </P>
         </div>
       </Section>
 
