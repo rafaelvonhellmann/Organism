@@ -38,21 +38,32 @@ export async function processDashboardActions(): Promise<void> {
           const baseline = captureProjectLaunchBaseline({
             projectId: project,
             action: 'review',
-            command: 'review project',
+            command: payload.canaryPreset === true ? 'canary review project' : 'review project',
           });
           await submitTask({
-            description: `Full review of ${project}`,
+            description: payload.canaryPreset === true
+              ? `Canary review of ${project} repository`
+              : `Full review of ${project} repository`,
             input: {
               projectId: project,
               triggeredBy: 'dashboard',
+              reviewScope: 'project',
+              canaryPreset: payload.canaryPreset === true,
               launchBaselineId: baseline.snapshot.id,
               launchBaselinePath: baseline.filePath,
             },
             projectId: project,
             workflowKind: 'review',
             sourceKind: 'dashboard',
+          }, {
+            agent: 'quality-agent',
+            projectId: project,
+            workflowKind: 'review',
+            sourceKind: 'dashboard',
           });
-          result = `Review submitted for ${project}\nBaseline snapshot: ${baseline.filePath}`;
+          result = payload.canaryPreset === true
+            ? `Canary repo review submitted for ${project}\nBaseline snapshot: ${baseline.filePath}`
+            : `Review submitted for ${project}\nBaseline snapshot: ${baseline.filePath}`;
           break;
         }
         case 'execute': {
@@ -74,7 +85,12 @@ export async function processDashboardActions(): Promise<void> {
             throw new Error('Dashboard command action requires an explicit project.');
           }
           const project = payload.project.trim();
-          const workflowKind = typeof payload.workflowKind === 'string' ? payload.workflowKind : undefined;
+          const inferredReview = /^\s*(canary\s+)?review\b/i.test(cmd);
+          const workflowKind = typeof payload.workflowKind === 'string'
+            ? payload.workflowKind
+            : inferredReview
+              ? 'review'
+              : undefined;
           const baseline = captureProjectLaunchBaseline({
             projectId: project,
             action: 'command',
@@ -87,13 +103,21 @@ export async function processDashboardActions(): Promise<void> {
               projectId: project,
               triggeredBy: 'dashboard-command',
               canaryPreset: payload.canaryPreset === true,
+              reviewScope: workflowKind === 'review' ? 'project' : undefined,
               launchBaselineId: baseline.snapshot.id,
               launchBaselinePath: baseline.filePath,
             },
             projectId: project,
             workflowKind,
             sourceKind: 'dashboard',
-          });
+          }, workflowKind === 'review'
+            ? {
+                agent: 'quality-agent',
+                projectId: project,
+                workflowKind,
+                sourceKind: 'dashboard',
+              }
+            : undefined);
           result = `Command submitted: ${cmd}\nBaseline snapshot: ${baseline.filePath}`;
           break;
         }

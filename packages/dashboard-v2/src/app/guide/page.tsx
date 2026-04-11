@@ -254,7 +254,7 @@ export default function GuidePage() {
             'Open the dashboard and go to Command.',
             'Select Tokens for Good in the project selector.',
             'Read the launch posture card before sending anything. It shows PR path, deploy gate, worktree mode, and the active canary guard.',
-            'Use the Canary Review preset for the very first run if you want the safest possible start.',
+            'Use the Canary Repo Review preset for the very first run if you want the safest possible start. It performs a read-only project review from repo and launch-state evidence.',
             'If the selector is empty, do not launch anything yet. Choose the project first and check Runtime for blockers.',
             'Start with a constrained engineering or review command, not a deploy.',
             'Open Runtime in another tab and watch Live Runs, Interrupt Queue, and Autonomy Rollout.',
@@ -283,7 +283,7 @@ export default function GuidePage() {
             Provider overload, rate limits, auth failures, missing secrets, tool failures, and transport issues are all normalized into structured retry or pause behavior instead of becoming silent task chaos.
           </Concept>
           <Concept title="Canary safeguards">
-            In stabilization mode, autonomous launch requires a clean worktree and deploys stay PR-oriented until the project earns a healthy-run streak. This keeps the first pilot in canary mode instead of broad shipping mode.
+            In stabilization mode, autonomous launch requires a clean worktree and deploys stay PR-oriented until the project earns a healthy-run streak. The canary repo review is read-only and is meant to tell you whether the project is ready for Organism to operate safely before broader execution begins.
           </Concept>
         </div>
       </Section>

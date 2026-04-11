@@ -239,7 +239,7 @@ export default function CommandPage() {
                       disabled={sending}
                       className="shrink-0 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
                     >
-                      Launch Canary Review
+                      Launch Canary Repo Review
                     </button>
                   )}
                 </div>
@@ -289,11 +289,11 @@ export default function CommandPage() {
               ))}
               {project === 'tokens-for-good' && (
                 <button
-                  onClick={() => sendCommand('review project', { workflowKind: 'review', canaryPreset: true })}
+                  onClick={sendReview}
                   disabled={sending}
                   className="shrink-0 px-3 py-1.5 rounded-lg text-xs bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 border border-emerald-500/30 transition-colors disabled:opacity-50"
                 >
-                  Canary Review Preset
+                  Canary Repo Review
                 </button>
               )}
             </div>

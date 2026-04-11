@@ -5,6 +5,8 @@ import { getTask, createTask, completeTask, countRevisions, getRevisionChainCost
 import { writeAudit } from '../../../packages/core/src/audit.js';
 import { triggerG4Gate } from '../../../packages/core/src/gates.js';
 import { MAX_REVISIONS, REVISION_COST_CAP } from '../../../packages/core/src/budget.js';
+import { buildRepoReviewBrief } from '../../../packages/core/src/repo-review-brief.js';
+import { loadProjectPolicy } from '../../../packages/core/src/project-policy.js';
 
 const QA_SYSTEM = `You are the Quality Agent for Organism. You review outputs from other agents using the autoresearch method.
 
@@ -36,6 +38,106 @@ Rules:
 - NEEDS_REVISION only if a specific, actionable improvement is identified.
 - Be terse. The review itself should not exceed 300 words.`;
 
+const CANARY_REVIEW_SYSTEM = `You are the Quality Agent for Organism running a first-canary project review.
+
+Your job is not to review another agent's output. Your job is to inspect the supplied repo brief and decide whether Organism can safely operate on this project in stabilization mode.
+
+Review principles:
+- Focus on the biggest blockers to safe autonomous work
+- Distinguish project problems from Organism/runtime problems
+- Prefer evidence over speculation
+- If evidence is missing, say so clearly
+- Keep the output useful for a founder deciding whether to proceed
+
+Return ONLY valid JSON with this exact shape:
+{
+  "summary": "1-2 sentence verdict",
+  "decision": "APPROVED" | "NEEDS_REVISION",
+  "score": 0,
+  "review": "## Canary Review\\n...",
+  "nextSteps": ["step 1", "step 2"],
+  "findings": [
+    {
+      "id": "finding-1",
+      "severity": "HIGH" | "MEDIUM" | "LOW",
+      "summary": "what matters most",
+      "evidence": "why you believe this",
+      "remediation": "concrete next step",
+      "actionable": false,
+      "targetCapability": "engineering.code" | "product.prd" | "security-audit" | "quality.review",
+      "followupKind": "implement" | "plan" | "validate" | "review"
+    }
+  ]
+}`;
+
+interface CanaryReviewResponse {
+  summary: string;
+  decision: 'APPROVED' | 'NEEDS_REVISION';
+  score: number;
+  review: string;
+  nextSteps: string[];
+  findings: Array<{
+    id: string;
+    severity: 'HIGH' | 'MEDIUM' | 'LOW';
+    summary: string;
+    evidence?: string;
+    remediation?: string;
+    actionable?: boolean;
+    targetCapability?: string;
+    followupKind?: 'implement' | 'plan' | 'validate' | 'review';
+  }>;
+}
+
+function isProjectRepoReview(task: Task, input: Record<string, unknown>): boolean {
+  if (task.workflowKind !== 'review') return false;
+  if (typeof input.reviewScope === 'string' && input.reviewScope === 'project') return true;
+  if (input.canaryPreset === true) return true;
+  return !input.originalTaskId;
+}
+
+function normalizeCanaryReviewResponse(
+  projectId: string,
+  taskDescription: string,
+  rawText: string,
+): CanaryReviewResponse {
+  try {
+    const parsed = JSON.parse(rawText.trim()) as Partial<CanaryReviewResponse>;
+    return {
+      summary: typeof parsed.summary === 'string' ? parsed.summary : `Canary review completed for ${projectId}.`,
+      decision: parsed.decision === 'APPROVED' ? 'APPROVED' : 'NEEDS_REVISION',
+      score: typeof parsed.score === 'number' ? parsed.score : 6,
+      review: typeof parsed.review === 'string' ? parsed.review : rawText.trim(),
+      nextSteps: Array.isArray(parsed.nextSteps)
+        ? parsed.nextSteps.filter((step): step is string => typeof step === 'string').slice(0, 5)
+        : [],
+      findings: Array.isArray(parsed.findings)
+        ? parsed.findings
+          .filter((finding): finding is CanaryReviewResponse['findings'][number] => !!finding && typeof finding === 'object' && typeof finding.summary === 'string')
+          .slice(0, 5)
+          .map((finding, index) => ({
+            id: typeof finding.id === 'string' ? finding.id : `canary-${projectId}-${index + 1}`,
+            severity: finding.severity === 'HIGH' || finding.severity === 'LOW' ? finding.severity : 'MEDIUM',
+            summary: finding.summary,
+            evidence: typeof finding.evidence === 'string' ? finding.evidence : undefined,
+            remediation: typeof finding.remediation === 'string' ? finding.remediation : undefined,
+            actionable: false,
+            targetCapability: typeof finding.targetCapability === 'string' ? finding.targetCapability : undefined,
+            followupKind: finding.followupKind,
+          }))
+        : [],
+    };
+  } catch {
+    return {
+      summary: `Canary review completed for ${projectId}.`,
+      decision: 'NEEDS_REVISION',
+      score: 5,
+      review: `## Canary Review\n\n**Task:** ${taskDescription}\n\n${rawText.trim()}`,
+      nextSteps: [],
+      findings: [],
+    };
+  }
+}
+
 export default class QualityAgent extends BaseAgent {
   constructor() {
     super({
@@ -57,6 +159,12 @@ export default class QualityAgent extends BaseAgent {
 
   protected async execute(task: Task): Promise<{ output: unknown; tokensUsed?: number }> {
     const input = task.input as Record<string, unknown>;
+    const projectId = task.projectId ?? (typeof input?.projectId === 'string' ? input.projectId : 'organism');
+
+    if (isProjectRepoReview(task, input)) {
+      return this.executeProjectCanaryReview(task, projectId, input);
+    }
+
     const rawOutput = (input?.output as string) ?? '';
     // Cap review payload at ~2K tokens to control cost — quality-agent is a lightweight gate
     const originalOutput = rawOutput.slice(0, 4000);
@@ -194,6 +302,74 @@ Apply the autoresearch method: generate 3 alternative approaches, score the actu
         review: result.text,
         decision: approved ? 'APPROVED' : 'NEEDS_REVISION',
         originalTaskId,
+      },
+      tokensUsed: result.inputTokens + result.outputTokens,
+    };
+  }
+
+  private async executeProjectCanaryReview(
+    task: Task,
+    projectId: string,
+    input: Record<string, unknown>,
+  ): Promise<{ output: unknown; tokensUsed?: number }> {
+    const policy = loadProjectPolicy(projectId);
+    const repoBrief = buildRepoReviewBrief(projectId);
+
+    const prompt = `Run a first-canary review for the project "${projectId}".
+
+Task:
+${task.description}
+
+Policy:
+${JSON.stringify({
+      repoPath: policy.repoPath,
+      defaultBranch: policy.defaultBranch,
+      workspaceMode: policy.workspaceMode,
+      autonomyMode: policy.autonomyMode,
+      allowedActions: policy.allowedActions,
+      blockedActions: policy.blockedActions,
+      launchGuards: policy.launchGuards,
+    }, null, 2)}
+
+Repo brief:
+${JSON.stringify(repoBrief, null, 2)}
+
+Additional dashboard/task context:
+${JSON.stringify(input, null, 2)}
+
+Review what matters most for a safe first autonomous canary.
+Cover:
+- repo clarity and readiness
+- biggest technical or operational blockers
+- whether the project is suitable for review/implement/validate work right now
+- the next 3 best actions`;
+
+    const result = await callModelUltra(prompt, 'sonnet', CANARY_REVIEW_SYSTEM);
+    const parsed = normalizeCanaryReviewResponse(projectId, task.description, result.text);
+    const nextStepsMarkdown = parsed.nextSteps.length > 0
+      ? `\n\n### Next Steps\n${parsed.nextSteps.map((step) => `- ${step}`).join('\n')}`
+      : '';
+
+    return {
+      output: {
+        kind: 'finding',
+        summary: parsed.summary,
+        review: parsed.review + nextStepsMarkdown,
+        decision: parsed.decision,
+        score: parsed.score,
+        mode: 'project_review',
+        projectId,
+        findings: parsed.findings.map((finding) => ({
+          ...finding,
+          actionable: false,
+        })),
+        artifacts: [
+          {
+            kind: 'report' as const,
+            title: `Canary review: ${projectId}`,
+            content: parsed.review + nextStepsMarkdown,
+          },
+        ],
       },
       tokensUsed: result.inputTokens + result.outputTokens,
     };
