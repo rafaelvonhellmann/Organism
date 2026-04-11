@@ -119,6 +119,8 @@ export interface ProjectConfig {
   workspaceMode?: WorkspaceMode;
   launchGuards?: {
     minimumHealthyRunsForDeploy?: number;
+    initialWorkflowLimit?: number;
+    initialAllowedWorkflows?: WorkflowKind[];
   };
   toolProviders?: {
     minimax?: {
@@ -330,6 +332,8 @@ export interface ProjectPolicy {
   workspaceMode: WorkspaceMode;
   launchGuards: {
     minimumHealthyRunsForDeploy: number;
+    initialWorkflowLimit: number;
+    initialAllowedWorkflows: WorkflowKind[];
   };
   toolProviders: {
     minimax: {

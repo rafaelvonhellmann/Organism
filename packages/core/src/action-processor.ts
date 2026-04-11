@@ -1,4 +1,5 @@
 import { getDb } from './task-queue.js';
+import { captureProjectLaunchBaseline } from './launch-baseline.js';
 
 interface DashboardAction {
   id: number;
@@ -34,12 +35,24 @@ export async function processDashboardActions(): Promise<void> {
             throw new Error('Dashboard review action requires an explicit project.');
           }
           const project = payload.project.trim();
+          const baseline = captureProjectLaunchBaseline({
+            projectId: project,
+            action: 'review',
+            command: 'review project',
+          });
           await submitTask({
             description: `Full review of ${project}`,
-            input: { projectId: project, triggeredBy: 'dashboard' },
+            input: {
+              projectId: project,
+              triggeredBy: 'dashboard',
+              launchBaselineId: baseline.snapshot.id,
+              launchBaselinePath: baseline.filePath,
+            },
             projectId: project,
+            workflowKind: 'review',
+            sourceKind: 'dashboard',
           });
-          result = `Review submitted for ${project}`;
+          result = `Review submitted for ${project}\nBaseline snapshot: ${baseline.filePath}`;
           break;
         }
         case 'execute': {
@@ -61,13 +74,27 @@ export async function processDashboardActions(): Promise<void> {
             throw new Error('Dashboard command action requires an explicit project.');
           }
           const project = payload.project.trim();
+          const workflowKind = typeof payload.workflowKind === 'string' ? payload.workflowKind : undefined;
+          const baseline = captureProjectLaunchBaseline({
+            projectId: project,
+            action: 'command',
+            command: cmd,
+          });
           const { submitTask } = await import('./orchestrator.js');
           await submitTask({
             description: cmd,
-            input: { projectId: project, triggeredBy: 'dashboard-command' },
+            input: {
+              projectId: project,
+              triggeredBy: 'dashboard-command',
+              canaryPreset: payload.canaryPreset === true,
+              launchBaselineId: baseline.snapshot.id,
+              launchBaselinePath: baseline.filePath,
+            },
             projectId: project,
+            workflowKind,
+            sourceKind: 'dashboard',
           });
-          result = `Command submitted: ${cmd}`;
+          result = `Command submitted: ${cmd}\nBaseline snapshot: ${baseline.filePath}`;
           break;
         }
         default:

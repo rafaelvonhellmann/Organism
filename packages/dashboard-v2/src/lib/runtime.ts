@@ -311,6 +311,10 @@ function readDaemonStatus() {
         cleanWorktree?: boolean;
         workspaceMode?: string;
         deployUnlocked?: boolean;
+        completedRuns?: number;
+        initialWorkflowLimit?: number;
+        initialAllowedWorkflows?: string[];
+        initialWorkflowGuardActive?: boolean;
         prAuthReady?: boolean;
         prAuthMode?: string;
         vercelAuthReady?: boolean;
@@ -339,6 +343,10 @@ function readDaemonStatus() {
           cleanWorktree: item.cleanWorktree ?? false,
           workspaceMode: item.workspaceMode ?? 'direct',
           deployUnlocked: item.deployUnlocked ?? false,
+          completedRuns: item.completedRuns ?? 0,
+          initialWorkflowLimit: item.initialWorkflowLimit ?? 0,
+          initialAllowedWorkflows: Array.isArray(item.initialAllowedWorkflows) ? item.initialAllowedWorkflows : [],
+          initialWorkflowGuardActive: item.initialWorkflowGuardActive ?? false,
           prAuthReady: item.prAuthReady ?? false,
           prAuthMode: item.prAuthMode ?? 'none',
           vercelAuthReady: item.vercelAuthReady ?? false,

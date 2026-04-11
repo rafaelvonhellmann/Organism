@@ -14,7 +14,11 @@ export interface ProjectLaunchReadiness {
   workspaceMode: string;
   minimumHealthyRunsForDeploy: number;
   consecutiveHealthyRuns: number;
+  completedRuns: number;
   deployUnlocked: boolean;
+  initialWorkflowLimit: number;
+  initialAllowedWorkflows: string[];
+  initialWorkflowGuardActive: boolean;
   gitRemoteUrl: string | null;
   gitRemoteProtocol: 'https' | 'ssh' | 'unknown' | 'none';
   githubHostTrusted: boolean;
@@ -127,6 +131,15 @@ export function getProjectLaunchReadiness(projectId: string): ProjectLaunchReadi
       `Deploy stays approval-gated until ${policy.launchGuards.minimumHealthyRunsForDeploy} healthy runs; current streak is ${autonomy.consecutiveHealthyRuns}.`,
     );
   }
+  if (
+    policy.launchGuards.initialWorkflowLimit > 0
+    && autonomy.recentCompletedRuns < policy.launchGuards.initialWorkflowLimit
+    && policy.launchGuards.initialAllowedWorkflows.length > 0
+  ) {
+    warnings.push(
+      `Early canary guard is active for the first ${policy.launchGuards.initialWorkflowLimit} completed runs; allowed workflows: ${policy.launchGuards.initialAllowedWorkflows.join(', ')}.`,
+    );
+  }
   if (policy.allowedActions.includes('push') && !remoteReachable) {
     blockers.push('Git remote is not reachable non-interactively for push actions.');
   }
@@ -160,7 +173,12 @@ export function getProjectLaunchReadiness(projectId: string): ProjectLaunchReadi
     workspaceMode: policy.workspaceMode,
     minimumHealthyRunsForDeploy: policy.launchGuards.minimumHealthyRunsForDeploy,
     consecutiveHealthyRuns: autonomy.consecutiveHealthyRuns,
+    completedRuns: autonomy.recentCompletedRuns,
     deployUnlocked: autonomy.consecutiveHealthyRuns >= policy.launchGuards.minimumHealthyRunsForDeploy,
+    initialWorkflowLimit: policy.launchGuards.initialWorkflowLimit,
+    initialAllowedWorkflows: policy.launchGuards.initialAllowedWorkflows,
+    initialWorkflowGuardActive: policy.launchGuards.initialWorkflowLimit > 0
+      && autonomy.recentCompletedRuns < policy.launchGuards.initialWorkflowLimit,
     gitRemoteUrl,
     gitRemoteProtocol,
     githubHostTrusted: hostTrusted,

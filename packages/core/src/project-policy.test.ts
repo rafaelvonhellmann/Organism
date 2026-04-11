@@ -29,4 +29,11 @@ describe('project-policy', () => {
     assert.deepEqual(policy.toolProviders.minimax.allowedCommands, ['search']);
     assert.equal(policy.toolProviders.minimax.region, 'global');
   });
+
+  it('loads the early canary workflow guard for Tokens for Good', () => {
+    const policy = loadProjectPolicy('tokens-for-good');
+    assert.equal(policy.launchGuards.initialWorkflowLimit, 3);
+    assert.deepEqual(policy.launchGuards.initialAllowedWorkflows, ['review', 'implement', 'validate']);
+    assert.equal(policy.workspaceMode, 'isolated_worktree');
+  });
 });

@@ -20,7 +20,11 @@ function buildPolicy(overrides: Partial<ProjectPolicy> = {}): ProjectPolicy {
     approvalThresholds: { majorActions: ['purchase', 'contact', 'create_account', 'cross_project', 'destructive_migration'] },
     envRequirements: [],
     workspaceMode: 'clean_required',
-    launchGuards: { minimumHealthyRunsForDeploy: 5 },
+    launchGuards: {
+      minimumHealthyRunsForDeploy: 5,
+      initialWorkflowLimit: 0,
+      initialAllowedWorkflows: [],
+    },
     toolProviders: {
       minimax: {
         enabled: false,

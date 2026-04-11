@@ -89,6 +89,10 @@ interface DaemonStatus {
       cleanWorktree: boolean;
       workspaceMode: string;
       deployUnlocked: boolean;
+      completedRuns: number;
+      initialWorkflowLimit: number;
+      initialAllowedWorkflows: string[];
+      initialWorkflowGuardActive: boolean;
       prAuthReady: boolean;
       prAuthMode: string;
       vercelAuthReady: boolean;
@@ -166,6 +170,10 @@ function buildStatus(): DaemonStatus {
       cleanWorktree: project.cleanWorktree,
       workspaceMode: project.workspaceMode,
       deployUnlocked: project.deployUnlocked,
+      completedRuns: project.completedRuns,
+      initialWorkflowLimit: project.initialWorkflowLimit,
+      initialAllowedWorkflows: project.initialAllowedWorkflows,
+      initialWorkflowGuardActive: project.initialWorkflowGuardActive,
       prAuthReady: project.prAuthReady,
       prAuthMode: project.prAuthMode,
       vercelAuthReady: project.vercelAuthReady,

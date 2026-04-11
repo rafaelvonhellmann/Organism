@@ -42,7 +42,57 @@
     ]
   },
   "projectPath": "C:/Users/rafae/OneDrive/Desktop/Tokens for Good",
+  "repoPath": "C:/Users/rafae/OneDrive/Desktop/Tokens for Good",
+  "defaultBranch": "main",
   "repository": "https://github.com/rafaelvonhellenn/tokens-for-good",
+  "commands": {
+    "install": "pnpm install",
+    "lint": "pnpm lint",
+    "test": "pnpm test",
+    "build": "pnpm build",
+    "deploy": "npx vercel --prod --yes"
+  },
+  "deployTargets": [
+    {
+      "name": "tokens-for-good-portal",
+      "provider": "vercel",
+      "project": "tokens-for-good-portal",
+      "url": "https://tokens-for-good-portal.vercel.app"
+    }
+  ],
+  "allowedActions": [
+    "edit_code",
+    "run_tests",
+    "build",
+    "commit",
+    "push",
+    "open_pr",
+    "deploy"
+  ],
+  "blockedActions": [],
+  "approvalThresholds": {
+    "majorActions": [
+      "destructive_migration",
+      "cross_project",
+      "purchase",
+      "contact",
+      "create_account"
+    ]
+  },
+  "envRequirements": ["GH_TOKEN", "VERCEL_TOKEN", "TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN"],
+  "budgetCaps": {
+    "dailyUsd": 50,
+    "deployUsd": 10,
+    "contactUsd": 0,
+    "purchaseUsd": 0
+  },
+  "autonomyMode": "stabilization",
+  "workspaceMode": "isolated_worktree",
+  "launchGuards": {
+    "minimumHealthyRunsForDeploy": 5,
+    "initialWorkflowLimit": 3,
+    "initialAllowedWorkflows": ["review", "implement", "validate"]
+  },
   "tasklist": "C:/Users/rafae/OneDrive/Desktop/Tokens for Good/docs/EXECUTION_STATUS.md",
   "deployment": {
     "portal": "https://tokens-for-good-portal.vercel.app",

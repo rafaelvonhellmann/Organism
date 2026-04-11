@@ -6,6 +6,7 @@ import { loadRegistry, resolveOwner } from './registry.js';
 import { GoalSourceKind, PerspectiveReviewResult, RiskLane, WorkflowKind } from '../../shared/src/types.js';
 import { OrganismError } from '../../shared/src/error-taxonomy.js';
 import { runPerspectiveReview } from './perspective-runner.js';
+import { getProjectAutonomyHealth } from './autonomy-governor.js';
 import {
   getBet, getActiveBetForProject, checkBetCircuitBreaker, checkBetBoundaries,
   recordBetSpend, resolveSpecialistTriggers,
@@ -145,7 +146,31 @@ function inferWorkflowKind(description: string, submission: TaskSubmission, opti
   if (options.workflowKind) return options.workflowKind;
   if (submission.workflowKind) return submission.workflowKind;
   if (description.startsWith('[SHAPING]')) return 'shaping';
+  if (/^\s*(full\s+)?review\b/i.test(description) || /\breview\b/i.test(description)) return 'review';
+  if (/\b(validate|verification|verify|qa|test review)\b/i.test(description)) return 'validate';
+  if (/\b(deploy|ship|release)\b/i.test(description)) return 'ship';
+  if (/\b(plan|roadmap|shape)\b/i.test(description)) return 'plan';
+  if (/\b(monitor|watch|observe|status)\b/i.test(description)) return 'monitor';
+  if (/\b(recover|resume|retry)\b/i.test(description)) return 'recover';
   return 'implement';
+}
+
+function enforceInitialWorkflowGuard(
+  projectId: string,
+  workflowKind: WorkflowKind,
+  policy: ReturnType<typeof loadProjectPolicy>,
+): void {
+  const { initialWorkflowLimit, initialAllowedWorkflows } = policy.launchGuards;
+  if (initialWorkflowLimit <= 0 || initialAllowedWorkflows.length === 0) return;
+
+  const autonomy = getProjectAutonomyHealth(projectId);
+  if (autonomy.recentCompletedRuns >= initialWorkflowLimit) return;
+  if (initialAllowedWorkflows.includes(workflowKind)) return;
+
+  throw new Error(
+    `EARLY CANARY GUARD: ${projectId} is limited to ${initialAllowedWorkflows.join(', ')} for its first ${initialWorkflowLimit} completed runs. ` +
+    `Current workflow "${workflowKind}" is blocked until the canary lane stabilizes.`,
+  );
 }
 
 function inferRequestedActions(description: string): Array<'purchase' | 'contact' | 'create_account'> {
@@ -196,6 +221,8 @@ export async function submitTask(
   const description = sanitizeDescription(submission.description);
   const workflowKind = inferWorkflowKind(description, submission, options);
   const sourceKind = options.sourceKind ?? submission.sourceKind ?? 'user';
+
+  enforceInitialWorkflowGuard(projectId, workflowKind, policy);
 
   const inputRecord = submission.input && typeof submission.input === 'object'
     ? submission.input as Record<string, unknown>

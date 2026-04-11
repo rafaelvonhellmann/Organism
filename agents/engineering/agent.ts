@@ -2,7 +2,7 @@ import { BaseAgent } from '../_base/agent.js';
 import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
 import * as fs from 'fs';
-import { finalizeEngineeringExecution, prepareEngineeringWorkspace } from '../../packages/core/src/execution-controller.js';
+import { cleanupEngineeringWorkspace, finalizeEngineeringExecution, prepareEngineeringWorkspace } from '../../packages/core/src/execution-controller.js';
 import { runCodeExecutor } from '../../packages/core/src/code-executor.js';
 import { loadProjectPolicy } from '../../packages/core/src/project-policy.js';
 
@@ -203,6 +203,7 @@ After making changes, output:
       });
 
       const controllerSummary = await finalizeEngineeringExecution(task, workspace);
+      const cleanup = cleanupEngineeringWorkspace(workspace);
 
       return {
         output: {
@@ -216,6 +217,7 @@ After making changes, output:
           branch: controllerSummary.branch,
           changedFiles: controllerSummary.changedFiles,
           baselineDirty: controllerSummary.baselineDirty,
+          workspaceCleanup: cleanup,
           verification: controllerSummary.verification,
           controllerActions: controllerSummary.controllerActions,
           commandProposals: controllerSummary.commandProposals,
@@ -236,18 +238,25 @@ After making changes, output:
               title: `Controller action ${step.action}`,
               content: `${step.ok ? 'PASS' : 'FAIL'}\n\n${step.output}`,
             })),
+            {
+              kind: 'command_log' as const,
+              title: 'Workspace cleanup',
+              content: cleanup.reason,
+            },
           ],
           projectId,
         },
       };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
+      const cleanup = cleanupEngineeringWorkspace(workspace);
       return {
         output: {
           summary: `Execution failed for ${projectId}: ${errorMsg.slice(0, 120)}`,
           implementation: `Execution failed: ${errorMsg}`,
           mode: 'failed',
           projectId,
+          workspaceCleanup: cleanup,
           findings: [
             {
               id: `engineering-failure-${task.id}`,

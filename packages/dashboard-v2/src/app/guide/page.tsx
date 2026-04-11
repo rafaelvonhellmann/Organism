@@ -80,6 +80,7 @@ const LIMITS = [
   'The website is an operator cockpit, not the full brain. The daemon must be running locally for the dashboard to reflect real work.',
   'The Command page now requires an explicit project selection before it will launch work. This is intentional safety behavior.',
   'PR creation can now use GitHub CLI auth, environment tokens, or stored Git credentials. Deploy readiness can use either Vercel tokens or an existing local Vercel session.',
+  'The first Tokens for Good runs are canary-restricted: the dashboard shows the launch posture, records a baseline snapshot automatically, and limits the first runs to review, implement, or validate workflows.',
 ];
 
 const HARNESS_APPLIED = [
@@ -252,10 +253,12 @@ export default function GuidePage() {
           <Checklist items={[
             'Open the dashboard and go to Command.',
             'Select Tokens for Good in the project selector.',
+            'Read the launch posture card before sending anything. It shows PR path, deploy gate, worktree mode, and the active canary guard.',
+            'Use the Canary Review preset for the very first run if you want the safest possible start.',
             'If the selector is empty, do not launch anything yet. Choose the project first and check Runtime for blockers.',
             'Start with a constrained engineering or review command, not a deploy.',
             'Open Runtime in another tab and watch Live Runs, Interrupt Queue, and Autonomy Rollout.',
-            'Treat the first run as PR-oriented validation, not as broad unattended shipping.',
+            'Treat the first run as PR-oriented validation, not as broad unattended shipping. Every launch now records a baseline snapshot automatically.',
           ]} />
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
             <div className="text-xs uppercase tracking-[0.18em] text-zinc-500 mb-2">Recommended examples</div>

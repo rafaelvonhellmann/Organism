@@ -42,8 +42,25 @@ function normalizeLaunchGuards(raw: unknown, autonomyMode: AutonomyMode): Projec
     : autonomyMode === 'stabilization'
       ? 5
       : 0;
+  const initialWorkflowLimit = typeof record.initialWorkflowLimit === 'number'
+    ? Math.max(0, record.initialWorkflowLimit)
+    : 0;
+  const initialAllowedWorkflows = Array.isArray(record.initialAllowedWorkflows)
+    ? record.initialAllowedWorkflows.filter((item): item is ProjectPolicy['launchGuards']['initialAllowedWorkflows'][number] => (
+      item === 'review'
+      || item === 'plan'
+      || item === 'implement'
+      || item === 'validate'
+      || item === 'ship'
+      || item === 'monitor'
+      || item === 'recover'
+      || item === 'shaping'
+    ))
+    : [];
   return {
     minimumHealthyRunsForDeploy,
+    initialWorkflowLimit,
+    initialAllowedWorkflows,
   };
 }
 

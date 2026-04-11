@@ -46,6 +46,13 @@ export interface EngineeringExecutionSummary {
   approvalRequests: ApprovalRequest[];
 }
 
+export interface WorkspaceCleanupResult {
+  attempted: boolean;
+  removed: boolean;
+  path: string;
+  reason: string;
+}
+
 function slugify(input: string): string {
   return input
     .toLowerCase()
@@ -285,6 +292,53 @@ export function prepareEngineeringWorkspace(task: Task): EngineeringWorkspace {
     baselineStatus,
     isolatedWorktree,
   };
+}
+
+export function cleanupEngineeringWorkspace(workspace: EngineeringWorkspace): WorkspaceCleanupResult {
+  if (!workspace.isolatedWorktree) {
+    return {
+      attempted: false,
+      removed: false,
+      path: workspace.projectPath,
+      reason: 'Workspace is not isolated, so no cleanup is needed.',
+    };
+  }
+
+  if (!fs.existsSync(workspace.projectPath)) {
+    return {
+      attempted: true,
+      removed: true,
+      path: workspace.projectPath,
+      reason: 'Isolated worktree already removed.',
+    };
+  }
+
+  const dirtyEntries = listStatus(workspace.projectPath);
+  if (dirtyEntries.length > 0) {
+    return {
+      attempted: true,
+      removed: false,
+      path: workspace.projectPath,
+      reason: `Preserved isolated worktree because it still has ${dirtyEntries.length} uncommitted change(s).`,
+    };
+  }
+
+  try {
+    runGit(['worktree', 'remove', '--force', workspace.projectPath], workspace.repoRootPath);
+    return {
+      attempted: true,
+      removed: true,
+      path: workspace.projectPath,
+      reason: 'Removed clean isolated worktree after controller handoff.',
+    };
+  } catch (err) {
+    return {
+      attempted: true,
+      removed: false,
+      path: workspace.projectPath,
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 async function runOpenPrAction(task: Task, workspace: EngineeringWorkspace, command: string): Promise<ControllerCommandResult> {
