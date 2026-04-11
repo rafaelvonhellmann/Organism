@@ -76,6 +76,28 @@ interface RuntimeEvent {
   ts: number;
 }
 
+interface RuntimeArtifact {
+  id: string;
+  runId: string;
+  goalId: string;
+  kind: string;
+  title: string;
+  path: string | null;
+  content: string | null;
+  createdAt: number;
+}
+
+interface RuntimeTaskOutput {
+  id: string;
+  agent: string;
+  status: string;
+  lane: string;
+  description: string;
+  summary: string | null;
+  completedAt: number | null;
+  createdAt: number;
+}
+
 interface CompareTarget {
   projectId: string;
   label: string;
@@ -103,6 +125,8 @@ interface RuntimeSnapshot {
   runs: RuntimeRun[];
   interrupts: RuntimeInterrupt[];
   approvals: RuntimeApproval[];
+  artifacts: RuntimeArtifact[];
+  recentOutputs: RuntimeTaskOutput[];
   recentEvents: RuntimeEvent[];
   compareTargets: CompareTarget[];
   autonomy: AutonomyHealth[];
@@ -158,6 +182,11 @@ function statusTone(status: string): string {
   if (status === 'running' || status === 'completed') return 'text-emerald-400';
   if (status === 'paused' || status === 'retry_scheduled' || status === 'pending') return 'text-amber-400';
   return 'text-red-400';
+}
+
+function trimPreview(value: string | null, max = 280): string | null {
+  if (!value) return null;
+  return value.length > max ? `${value.slice(0, max - 3)}...` : value;
 }
 
 export default function RuntimePage() {
@@ -507,6 +536,69 @@ export default function RuntimePage() {
             )}
           </div>
         </section>
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <section className="bg-surface rounded-xl border border-edge p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-zinc-100">Recent Outputs</h3>
+              <span className="text-xs text-zinc-500">{snapshot?.recentOutputs.length ?? 0} captured</span>
+            </div>
+            <div className="space-y-3">
+              {snapshot?.recentOutputs.length ? snapshot.recentOutputs.map((output) => (
+                <div key={output.id} className="rounded-lg border border-edge/60 px-3 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm text-zinc-100">{output.agent}</div>
+                      <div className="text-xs text-zinc-500 mt-1">
+                        {output.description}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className={`text-[11px] uppercase tracking-wider ${statusTone(output.status)}`}>{output.status}</div>
+                      <div className="text-[11px] text-zinc-500 mt-1">{formatTime(output.completedAt ?? output.createdAt)}</div>
+                    </div>
+                  </div>
+                  {trimPreview(output.summary) && (
+                    <pre className="mt-3 whitespace-pre-wrap text-xs text-zinc-400 font-mono">
+                      {trimPreview(output.summary)}
+                    </pre>
+                  )}
+                </div>
+              )) : (
+                <div className="text-sm text-zinc-500">No captured task outputs yet.</div>
+              )}
+            </div>
+          </section>
+
+          <section className="bg-surface rounded-xl border border-edge p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-zinc-100">Artifacts</h3>
+              <span className="text-xs text-zinc-500">{snapshot?.artifacts.length ?? 0} recorded</span>
+            </div>
+            <div className="space-y-3">
+              {snapshot?.artifacts.length ? snapshot.artifacts.map((artifact) => (
+                <div key={artifact.id} className="rounded-lg border border-edge/60 px-3 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm text-zinc-100">{artifact.title}</div>
+                      <div className="text-xs text-zinc-500 mt-1">
+                        {artifact.kind}{artifact.path ? ` · ${artifact.path}` : ''}
+                      </div>
+                    </div>
+                    <span className="text-[11px] text-zinc-500">{formatTime(artifact.createdAt)}</span>
+                  </div>
+                  {trimPreview(artifact.content) && (
+                    <pre className="mt-3 whitespace-pre-wrap text-xs text-zinc-400 font-mono">
+                      {trimPreview(artifact.content)}
+                    </pre>
+                  )}
+                </div>
+              )) : (
+                <div className="text-sm text-zinc-500">No controller artifacts yet.</div>
+              )}
+            </div>
+          </section>
+        </div>
       </div>
     </>
   );

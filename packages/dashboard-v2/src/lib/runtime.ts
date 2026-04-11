@@ -257,6 +257,46 @@ function formatEvent(row: Row) {
   };
 }
 
+function summarizeTaskOutput(raw: unknown): string | null {
+  const parsed = tryParse(raw);
+  if (parsed == null) return null;
+  if (typeof parsed === 'string') return parsed.slice(0, 1200);
+  if (typeof parsed === 'object') {
+    const record = parsed as Record<string, unknown>;
+    const preferred = [record.summary, record.review, record.text, record.verdict, record.result]
+      .find((value) => typeof value === 'string' && value.trim().length > 0);
+    if (typeof preferred === 'string') return preferred.slice(0, 1200);
+    return JSON.stringify(parsed, null, 2).slice(0, 1200);
+  }
+  return String(parsed).slice(0, 1200);
+}
+
+function formatArtifact(row: Row) {
+  return {
+    id: s(row.id),
+    runId: s(row.run_id),
+    goalId: s(row.goal_id),
+    kind: s(row.kind),
+    title: s(row.title),
+    path: row.path ? s(row.path) : null,
+    content: row.content ? s(row.content) : null,
+    createdAt: n(row.created_at),
+  };
+}
+
+function formatRecentOutput(row: Row) {
+  return {
+    id: s(row.id),
+    agent: s(row.agent),
+    status: s(row.status),
+    lane: s(row.lane),
+    description: s(row.description),
+    summary: summarizeTaskOutput(row.output),
+    completedAt: row.completed_at != null ? n(row.completed_at) : null,
+    createdAt: n(row.created_at),
+  };
+}
+
 async function execute(client: Client | null, sql: string, args: Array<string | number> = []) {
   if (!client) return [];
   const result = await client.execute({ sql, args });
@@ -390,8 +430,9 @@ export async function getRuntimeSnapshot(projectId?: string) {
   const client = getClient();
   const projectFilter = projectId ? 'WHERE project_id = ?' : '';
   const projectArgs = projectId ? [projectId] : [];
+  const taskOutputFilter = projectId ? 'WHERE project_id = ? AND output IS NOT NULL' : 'WHERE output IS NOT NULL';
 
-  const [goalsRows, runsRows, interruptsRows, approvalsRows, eventsRows] = await Promise.all([
+  const [goalsRows, runsRows, interruptsRows, approvalsRows, eventsRows, artifactsRows, outputRows] = await Promise.all([
     execute(
       client,
       `SELECT * FROM goals ${projectFilter} ORDER BY updated_at DESC LIMIT 20`,
@@ -427,6 +468,24 @@ export async function getRuntimeSnapshot(projectId?: string) {
        JOIN goals g ON g.id = e.goal_id
        ${projectId ? 'WHERE g.project_id = ?' : ''}
        ORDER BY e.id DESC LIMIT 80`,
+      projectArgs,
+    ),
+    execute(
+      client,
+      `SELECT a.*
+       FROM artifacts a
+       JOIN run_sessions r ON r.id = a.run_id
+       ${projectId ? 'WHERE r.project_id = ?' : ''}
+       ORDER BY a.created_at DESC LIMIT 20`,
+      projectArgs,
+    ),
+    execute(
+      client,
+      `SELECT id, agent, status, lane, description, output, completed_at, created_at
+       FROM tasks
+       ${taskOutputFilter}
+       ORDER BY COALESCE(completed_at, created_at) DESC
+       LIMIT 12`,
       projectArgs,
     ),
   ]);
@@ -466,6 +525,8 @@ export async function getRuntimeSnapshot(projectId?: string) {
     })),
     interrupts: interruptsRows.map(formatInterrupt),
     approvals: approvalsRows.map(formatApproval),
+    artifacts: artifactsRows.map(formatArtifact),
+    recentOutputs: outputRows.map(formatRecentOutput),
     recentEvents: eventsRows.map(formatEvent).reverse(),
     compareTargets,
     autonomy,

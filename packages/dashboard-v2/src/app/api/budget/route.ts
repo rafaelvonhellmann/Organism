@@ -6,5 +6,6 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   if (!requireAuth(req)) return unauthorizedResponse();
-  return Response.json(await getBudgetSummary());
+  const project = req.nextUrl.searchParams.get('project') ?? undefined;
+  return Response.json(await getBudgetSummary(project));
 }

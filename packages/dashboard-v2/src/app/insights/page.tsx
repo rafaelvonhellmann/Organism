@@ -56,6 +56,13 @@ function domainFor(agent: string): string {
 
 const SEVERITY_ORDER: Record<string, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 
+function normalizeFinding(description: string): string {
+  return cleanForDisplay(description)
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // ── Component ──────────────────────────────────────────────────
 
 export default function InsightsPage() {
@@ -103,12 +110,17 @@ export default function InsightsPage() {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  // Aggregate all findings across runs
+  const latestRun = runs[0] ?? null;
+
+  // Current-state findings come from the latest review run so old polluted history
+  // does not masquerade as the current project state.
   const allFindings = useMemo(() => {
-    const findings = runs.flatMap(r => r.topFindings.map(f => ({ ...f, runDate: r.date, project: r.projectName })));
+    const findings = (latestRun ? latestRun.topFindings : [])
+      .map(f => ({ ...f, runDate: latestRun?.date ?? '', project: latestRun?.projectName ?? '' }))
+      .filter((finding, index, list) => list.findIndex((item) => normalizeFinding(item.description) === normalizeFinding(finding.description)) === index);
     findings.sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 3) - (SEVERITY_ORDER[b.severity] ?? 3));
     return findings;
-  }, [runs]);
+  }, [latestRun]);
 
   // Group findings by domain
   const byDomain = useMemo(() => {
@@ -126,7 +138,7 @@ export default function InsightsPage() {
   }, [allFindings]);
 
   // Latest synthesis
-  const latestSynthesis = runs.find(r => r.synthesisSummary)?.synthesisSummary ?? null;
+  const latestSynthesis = latestRun?.synthesisSummary ?? null;
 
   // Stats
   const totalCost = runs.reduce((s, r) => s + r.totalCost, 0);
@@ -160,7 +172,9 @@ export default function InsightsPage() {
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 md:p-6">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-bold text-zinc-100">State of the Project</h2>
-                  <span className="text-xs text-zinc-600">{runs.length} review{runs.length !== 1 ? 's' : ''} | ${totalCost.toFixed(2)} spent</span>
+                  <span className="text-xs text-zinc-600">
+                    {runs.length} review{runs.length !== 1 ? 's' : ''} overall | latest run drives current state
+                  </span>
                 </div>
 
                 {/* Traffic light summary */}

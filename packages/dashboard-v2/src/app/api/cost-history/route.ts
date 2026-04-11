@@ -11,25 +11,31 @@ export async function GET(req: NextRequest) {
 
   const daysParam = req.nextUrl.searchParams.get('days') ?? '30';
   const days = Math.max(1, Math.min(parseInt(daysParam) || 30, 365));
+  const project = req.nextUrl.searchParams.get('project');
+  const projectFilter = project ? ' AND project_id = ?' : '';
+  const taskProjectFilter = project ? ' AND project_id = ?' : '';
+  const spendArgs = project ? [days, project] : [days];
+  const taskArgs = project ? [Date.now() - days * 24 * 60 * 60 * 1000, project] : [Date.now() - days * 24 * 60 * 60 * 1000];
 
   // Daily cost from agent_spend
   const result = await client.execute({
     sql: `SELECT date, SUM(cost_usd) as total_cost, COUNT(DISTINCT agent) as agent_count
      FROM agent_spend
      WHERE date >= date('now', '-' || ? || ' days')
+       ${projectFilter}
      GROUP BY date ORDER BY date ASC`,
-    args: [days],
+    args: spendArgs,
   });
 
   // Daily task counts
-  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
   const taskResult = await client.execute({
     sql: `SELECT date(created_at/1000, 'unixepoch') as date, COUNT(*) as count,
      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed
      FROM tasks
      WHERE created_at > ?
+       ${taskProjectFilter}
      GROUP BY date(created_at/1000, 'unixepoch') ORDER BY 1 ASC`,
-    args: [cutoffMs],
+    args: taskArgs,
   });
 
   return Response.json({

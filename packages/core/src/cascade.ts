@@ -1,6 +1,7 @@
 import { createTask, getDb } from './task-queue.js';
 import { writeAudit } from './audit.js';
 import { extractFindings, extractHandoffs } from './agent-envelope.js';
+import { hasEquivalentFollowup } from './followup-dedupe.js';
 import { HandoffRequest, RiskLane, TypedFinding } from '../../shared/src/types.js';
 
 const CASCADE_ELIGIBLE_AGENTS = new Set(['security-audit', 'product-manager', 'cto', 'devops']);
@@ -28,16 +29,6 @@ function recentCascadeCount(agent: string, projectId: string): number {
   return row?.c ?? 0;
 }
 
-function canCascade(goalId: string | null, targetAgent: string, workflowKind: string, sourceTaskId: string): boolean {
-  const existing = getDb().prepare(`
-    SELECT id FROM tasks
-    WHERE goal_id IS ? AND agent = ? AND workflow_kind = ? AND input LIKE ?
-      AND status NOT IN ('failed', 'dead_letter')
-    LIMIT 1
-  `).get(goalId, targetAgent, workflowKind, `%"sourceTaskId":"${sourceTaskId}"%`) as { id: string } | undefined;
-  return !existing;
-}
-
 function createCascadeTask(task: {
   id: string;
   agent: string;
@@ -46,7 +37,14 @@ function createCascadeTask(task: {
   project_id: string;
   goal_id: string | null;
 }, targetAgent: string, workflowKind: string, description: string, lane: RiskLane, detail: Record<string, unknown>): boolean {
-  if (!canCascade(task.goal_id, targetAgent, workflowKind, task.id)) return false;
+  if (hasEquivalentFollowup({
+    goalId: task.goal_id,
+    projectId: task.project_id,
+    agent: targetAgent,
+    workflowKind,
+    description,
+    sourceTaskId: task.id,
+  })) return false;
   if (recentCascadeCount(targetAgent, task.project_id) >= MAX_DAILY_CASCADES_PER_AGENT) return false;
 
   try {

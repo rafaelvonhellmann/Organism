@@ -253,6 +253,8 @@ function statusDot(status: string): string {
   return 'bg-zinc-600';
 }
 
+const RECENT_ACTIVITY_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
 // ── Component ──────────────────────────────────────────────────
 
 export default function PlanPage() {
@@ -318,7 +320,7 @@ export default function PlanPage() {
           {plans.map(plan => {
             const text = plan[activePeriod];
             const agentTasks = tasks
-              .filter(t => t.agent === plan.role)
+              .filter(t => t.agent === plan.role && t.createdAt >= Date.now() - RECENT_ACTIVITY_WINDOW_MS)
               .sort((a, b) => (b.completedAt ?? b.createdAt) - (a.completedAt ?? a.createdAt));
             const recentTask = agentTasks[0];
             const completedCount = agentTasks.filter(t => t.status === 'completed').length;

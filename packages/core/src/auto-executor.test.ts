@@ -88,4 +88,53 @@ describe('auto-executor', () => {
       ],
     );
   });
+
+  it('deduplicates equivalent follow-up tasks across separate completed reviews', async () => {
+    const finding = {
+      id: 'finding-dup',
+      severity: 'MEDIUM',
+      summary: 'Fix repo brief parsing',
+      remediation: 'Fix repo-review-brief changed-file parsing and validate the surfaced paths.',
+      actionable: true,
+      targetCapability: 'engineering.code',
+      followupKind: 'implement',
+    } as const;
+
+    const first = createTask({
+      agent: 'quality-agent',
+      lane: 'MEDIUM',
+      description: 'Initial canary review',
+      input: { projectId: 'tokens-for-good' },
+      projectId: 'tokens-for-good',
+      goalId: 'goal-a',
+      workflowKind: 'review',
+      sourceKind: 'dashboard',
+    });
+    completeTask(first.id, { findings: [finding] }, 0, 0);
+
+    const second = createTask({
+      agent: 'quality-agent',
+      lane: 'MEDIUM',
+      description: 'Follow-up canary review',
+      input: { projectId: 'tokens-for-good' },
+      projectId: 'tokens-for-good',
+      goalId: 'goal-b',
+      workflowKind: 'review',
+      sourceKind: 'dashboard',
+    });
+    completeTask(second.id, { findings: [finding] }, 0, 0);
+
+    const created = await processApprovedFindings();
+    assert.equal(created, 1);
+
+    const followups = getDb().prepare(`
+      SELECT description
+      FROM tasks
+      WHERE source_kind = 'agent_followup'
+      ORDER BY created_at ASC
+    `).all() as Array<{ description: string }>;
+
+    assert.equal(followups.length, 1);
+    assert.match(followups[0].description, /repo-review-brief/i);
+  });
 });

@@ -122,6 +122,14 @@ function outcomeBadge(outcome: string): { cls: string; icon: string } {
   return OUTCOME_STYLE[outcome] ?? { cls: 'text-zinc-400', icon: '\u2022' };
 }
 
+function projectLabel(project: string | null): string {
+  if (!project || project === 'all') return 'System';
+  return project
+    .split('-')
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
 // ── Hook: live logs polling at 5s ──────────────────────────────
 
 function useLiveLogs() {
@@ -183,9 +191,11 @@ function computeAlerts(
 ): Alert[] {
   const alerts: Alert[] = [];
 
-  // Daily spend > $30
-  if (budget && budget.systemSpend > 30) {
-    alerts.push({ level: 'red', message: `Daily spend exceeds $30 ($${budget.systemSpend.toFixed(2)})` });
+  // Daily spend near or above cap
+  if (budget && budget.systemPct >= 100) {
+    alerts.push({ level: 'red', message: `Daily spend cap exceeded (${budget.systemPct.toFixed(0)}%)` });
+  } else if (budget && budget.systemPct >= 80) {
+    alerts.push({ level: 'amber', message: `Daily spend is at ${budget.systemPct.toFixed(0)}% of cap` });
   }
 
   // Daemon inactive
@@ -228,9 +238,15 @@ export default function SystemPage() {
   const [rangeMs, setRangeMs] = useState(RANGES[2].ms); // default 14d
 
   const rangeDays = Math.round(rangeMs / (24 * 60 * 60 * 1000));
-  const { data: costHistory } = usePolling<CostHistoryData>(`/api/cost-history?days=${rangeDays}`);
+  const costHistoryUrl = project
+    ? `/api/cost-history?days=${rangeDays}&project=${encodeURIComponent(project)}`
+    : `/api/cost-history?days=${rangeDays}`;
+  const budgetUrl = project
+    ? `/api/budget?project=${encodeURIComponent(project)}`
+    : '/api/budget';
+  const { data: costHistory } = usePolling<CostHistoryData>(costHistoryUrl);
 
-  const { data: budget, lastUpdated: budgetUpdated } = usePolling<BudgetData>('/api/budget');
+  const { data: budget, lastUpdated: budgetUpdated } = usePolling<BudgetData>(budgetUrl);
   const { data: agents, lastUpdated: agentsUpdated } = usePolling<AgentInfo[]>(
     project ? `/api/agents?project=${project}` : '/api/agents',
   );
@@ -294,7 +310,7 @@ export default function SystemPage() {
             {budget && (
               <div className="bg-surface rounded-xl border border-edge p-5">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-semibold text-zinc-200">System -- {budget.date}</span>
+                  <span className="text-sm font-semibold text-zinc-200">{projectLabel(project)} -- {budget.date}</span>
                   <span className={`text-lg font-mono font-semibold ${
                     budget.systemPct >= 90 ? 'text-red-400' : budget.systemPct >= 80 ? 'text-amber-400' : 'text-green-400'
                   }`}>

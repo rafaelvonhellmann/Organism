@@ -2,6 +2,7 @@ import { getDb, createTask } from './task-queue.js';
 import { writeAudit } from './audit.js';
 import { extractFindings, extractHandoffs } from './agent-envelope.js';
 import { loadRegistry } from './registry.js';
+import { hasEquivalentFollowup } from './followup-dedupe.js';
 import { RiskLane, TypedFinding, HandoffRequest } from '../../shared/src/types.js';
 
 function laneFromSeverity(severity: TypedFinding['severity']): RiskLane {
@@ -25,16 +26,6 @@ function resolveTargetAgent(targetCapability: string | undefined, fallback: stri
   return byOwner?.owner ?? fallback;
 }
 
-function followupExists(goalId: string | null, agent: string, workflowKind: string, sourceTaskId: string): boolean {
-  const row = getDb().prepare(`
-    SELECT id FROM tasks
-    WHERE goal_id IS ? AND agent = ? AND workflow_kind = ? AND input LIKE ?
-      AND status NOT IN ('failed', 'dead_letter')
-    LIMIT 1
-  `).get(goalId, agent, workflowKind, `%"sourceTaskId":"${sourceTaskId}"%`) as { id: string } | undefined;
-  return !!row;
-}
-
 function createFindingTask(task: {
   id: string;
   agent: string;
@@ -45,13 +36,21 @@ function createFindingTask(task: {
 }, finding: TypedFinding): boolean {
   const targetAgent = resolveTargetAgent(finding.targetCapability, 'engineering');
   const workflowKind = finding.followupKind ?? 'implement';
-  if (followupExists(task.goal_id, targetAgent, workflowKind, task.id)) return false;
+  const followupDescription = finding.remediation ?? finding.summary;
+  if (hasEquivalentFollowup({
+    goalId: task.goal_id,
+    projectId: task.project_id,
+    agent: targetAgent,
+    workflowKind,
+    description: followupDescription,
+    sourceTaskId: task.id,
+  })) return false;
 
   try {
     const created = createTask({
       agent: targetAgent,
       lane: laneFromSeverity(finding.severity),
-      description: finding.remediation ?? finding.summary,
+      description: followupDescription,
       input: {
         sourceTaskId: task.id,
         sourceAgent: task.agent,
@@ -98,7 +97,14 @@ function createHandoffTask(task: {
   project_id: string;
   goal_id: string | null;
 }, handoff: HandoffRequest): boolean {
-  if (followupExists(task.goal_id, handoff.targetAgent, handoff.workflowKind, task.id)) return false;
+  if (hasEquivalentFollowup({
+    goalId: task.goal_id,
+    projectId: task.project_id,
+    agent: handoff.targetAgent,
+    workflowKind: handoff.workflowKind,
+    description: handoff.summary,
+    sourceTaskId: task.id,
+  })) return false;
 
   try {
     const created = createTask({

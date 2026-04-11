@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getClient, getAgentMeta, ensureTables } from './db';
 import { getAgentCap, getBudgetStatus, SYSTEM_DAILY_CAP } from './constants';
@@ -29,6 +29,21 @@ function workspacePath(...segments: string[]): string {
   const direct = resolve(process.cwd(), ...segments);
   if (existsSync(direct)) return direct;
   return resolve(process.cwd(), '..', '..', ...segments);
+}
+
+function readProjectDailyCap(projectId?: string): number {
+  if (!projectId) return SYSTEM_DAILY_CAP;
+  const configPath = workspacePath('knowledge', 'projects', projectId, 'config.json');
+  if (!existsSync(configPath)) return SYSTEM_DAILY_CAP;
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as {
+      budgetCaps?: { dailyUsd?: number | null };
+    };
+    const projectCap = Number(parsed.budgetCaps?.dailyUsd);
+    return projectCap > 0 ? projectCap : SYSTEM_DAILY_CAP;
+  } catch {
+    return SYSTEM_DAILY_CAP;
+  }
 }
 
 function formatTask(row: Row) {
@@ -284,17 +299,22 @@ export async function getTaskDetail(id: string) {
 
 // ── Budget ──────────────────────────────────────────────────────
 
-export async function getBudgetSummary() {
+export async function getBudgetSummary(projectId?: string) {
   const client = getClient();
   const meta = getAgentMeta();
   const date = todayStr();
+  const projectClause = projectId ? ` AND project_id='${esc(projectId)}'` : '';
+  const effectiveCap = readProjectDailyCap(projectId);
 
   const spendMap = new Map<string, number>();
   let systemSpend = 0;
 
   if (client) {
     const result = await client.execute(
-      `SELECT agent, COALESCE(SUM(cost_usd), 0) as spent FROM agent_spend WHERE date='${date}' GROUP BY agent`,
+      `SELECT agent, COALESCE(SUM(cost_usd), 0) as spent
+       FROM agent_spend
+       WHERE date='${date}'${projectClause}
+       GROUP BY agent`,
     );
     for (const row of result.rows) spendMap.set(s(row.agent), n(row.spent));
   }
@@ -319,8 +339,8 @@ export async function getBudgetSummary() {
   return {
     date,
     systemSpend,
-    systemCap: SYSTEM_DAILY_CAP,
-    systemPct: Math.round((systemSpend / SYSTEM_DAILY_CAP) * 1000) / 10,
+    systemCap: effectiveCap,
+    systemPct: effectiveCap > 0 ? Math.round((systemSpend / effectiveCap) * 1000) / 10 : 0,
     agents,
   };
 }
