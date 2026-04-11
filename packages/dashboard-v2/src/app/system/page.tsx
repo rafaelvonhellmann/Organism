@@ -55,6 +55,25 @@ interface PalateData {
   };
 }
 
+interface UpstreamSource {
+  id: string;
+  label: string;
+  kind: string;
+  repo: string | null;
+  localTargets: string[];
+  lastReviewedAt: string | null;
+  lastAdoptedVersion: string | null;
+  notes: string | null;
+  checkedAt: string;
+  upstreamPushedAt: string | null;
+  latestReleaseTag: string | null;
+  latestReleasePublishedAt: string | null;
+  stars: number | null;
+  openIssues: number | null;
+  homepage: string | null;
+  status: 'manual_only' | 'unavailable' | 'needs_review' | 'recent_activity' | 'up_to_date';
+}
+
 interface HistoryTask {
   id: string;
   agent: string;
@@ -128,6 +147,21 @@ function projectLabel(project: string | null): string {
     .split('-')
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
     .join(' ');
+}
+
+function upstreamTone(status: UpstreamSource['status']): string {
+  switch (status) {
+    case 'needs_review':
+      return 'bg-amber-500/15 text-amber-300';
+    case 'recent_activity':
+      return 'bg-sky-500/15 text-sky-300';
+    case 'up_to_date':
+      return 'bg-emerald-500/15 text-emerald-300';
+    case 'manual_only':
+      return 'bg-zinc-700/40 text-zinc-300';
+    default:
+      return 'bg-red-500/15 text-red-300';
+  }
 }
 
 // ── Hook: live logs polling at 5s ──────────────────────────────
@@ -251,13 +285,14 @@ export default function SystemPage() {
     project ? `/api/agents?project=${project}` : '/api/agents',
   );
   const { data: palate, lastUpdated: palateUpdated } = usePolling<PalateData>('/api/palate');
+  const { data: upstreamSources, lastUpdated: upstreamUpdated } = usePolling<{ sources: UpstreamSource[] }>('/api/upstream-sources');
   const { data: history, lastUpdated: historyUpdated } = usePolling<{ tasks: HistoryTask[] }>('/api/history');
   const { data: health } = usePolling<HealthData>('/api/health');
   const { logs, newIds, polling: logsPolling } = useLiveLogs();
 
   const alerts = computeAlerts(budget, health, history);
   const logsUpdated = logs.length > 0 ? new Date(logs[0].ts) : null;
-  const lastUpdated = { budget: budgetUpdated, agents: agentsUpdated, knowledge: palateUpdated, logs: logsUpdated ?? historyUpdated }[tab];
+  const lastUpdated = { budget: budgetUpdated, agents: agentsUpdated, knowledge: upstreamUpdated ?? palateUpdated, logs: logsUpdated ?? historyUpdated }[tab];
 
   return (
     <>
@@ -507,6 +542,67 @@ export default function SystemPage() {
                 </table>
               </div>
             )}
+            <div className="bg-surface rounded-xl border border-edge overflow-hidden">
+              <div className="border-b border-edge px-5 py-4">
+                <div className="text-sm font-semibold text-zinc-200">Upstream Source Watch</div>
+                <div className="mt-1 text-xs text-zinc-500">
+                  Registered borrowed agent packs, tools, and external repos. Organism can watch them for changes, but it does not auto-apply upstream updates.
+                </div>
+              </div>
+              {upstreamSources?.sources && upstreamSources.sources.length > 0 ? (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-edge text-xs text-zinc-500 uppercase tracking-wider">
+                      <th className="text-left py-2.5 px-5 font-medium">Source</th>
+                      <th className="text-left py-2.5 px-5 font-medium">Status</th>
+                      <th className="text-left py-2.5 px-5 font-medium">Upstream</th>
+                      <th className="text-left py-2.5 px-5 font-medium">Local targets</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {upstreamSources.sources.map((source) => (
+                      <tr key={source.id} className="border-b border-edge/50 hover:bg-surface-alt/30 transition-colors align-top">
+                        <td className="px-5 py-3">
+                          <div className="font-medium text-zinc-200">{source.label}</div>
+                          <div className="mt-1 text-xs text-zinc-500">{source.kind}</div>
+                          {source.notes && <div className="mt-2 text-xs text-zinc-400">{source.notes}</div>}
+                        </td>
+                        <td className="px-5 py-3">
+                          <span className={`rounded px-2 py-0.5 text-xs font-medium ${upstreamTone(source.status)}`}>
+                            {source.status.replace(/_/g, ' ')}
+                          </span>
+                          <div className="mt-2 text-xs text-zinc-500">
+                            reviewed {source.lastReviewedAt ?? 'never'}
+                          </div>
+                          {source.lastAdoptedVersion && (
+                            <div className="mt-1 text-xs text-zinc-500">adopted {source.lastAdoptedVersion}</div>
+                          )}
+                        </td>
+                        <td className="px-5 py-3 text-xs text-zinc-400">
+                          <div>{source.repo ?? 'manual registration needed'}</div>
+                          {source.latestReleaseTag && <div className="mt-1">release {source.latestReleaseTag}</div>}
+                          {source.upstreamPushedAt && <div className="mt-1">push {source.upstreamPushedAt}</div>}
+                          {source.stars != null && <div className="mt-1">{source.stars} stars</div>}
+                        </td>
+                        <td className="px-5 py-3">
+                          <div className="flex flex-wrap gap-1">
+                            {source.localTargets.length > 0 ? source.localTargets.map((target) => (
+                              <span key={target} className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-400">
+                                {target}
+                              </span>
+                            )) : (
+                              <span className="text-xs text-zinc-500">No local targets recorded</span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="px-5 py-8 text-sm text-zinc-500">No upstream sources registered yet.</div>
+              )}
+            </div>
             {!palate && <div className="text-center py-12 text-zinc-600">Loading knowledge data...</div>}
           </>
         )}

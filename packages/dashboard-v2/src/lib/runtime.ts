@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Client, Row } from '@libsql/client';
 import { getClient, ensureTables } from './db';
@@ -206,6 +206,61 @@ function formatRun(row: Row) {
   };
 }
 
+type RuntimeRun = ReturnType<typeof formatRun>;
+type RuntimeStep = ReturnType<typeof formatStep>;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function buildDurationKey(projectId: string, agent: string, workflowKind: string): string {
+  return `${projectId}::${agent}::${workflowKind}`;
+}
+
+function estimateRunProgress(
+  run: RuntimeRun,
+  steps: RuntimeStep[],
+  exactDurations: Map<string, number>,
+  fallbackDurations: Map<string, number>,
+) {
+  const now = Date.now();
+  const elapsedMs = Math.max(0, (run.completedAt ?? now) - run.createdAt);
+  const exactKey = buildDurationKey(run.projectId, run.agent, run.workflowKind);
+  const fallbackKey = `${run.agent}::${run.workflowKind}`;
+  const estimatedDurationMs = exactDurations.get(exactKey) ?? fallbackDurations.get(fallbackKey) ?? null;
+
+  const completedSteps = steps.filter((step) => step.status === 'completed').length;
+  const hasRunningStep = steps.some((step) => step.status === 'running');
+  const stepPct = steps.length > 0
+    ? clamp(
+        Math.round(((completedSteps + (hasRunningStep ? 0.35 : 0)) / Math.max(steps.length, 1)) * 100),
+        5,
+        run.status === 'completed' ? 100 : 95,
+      )
+    : null;
+  const historicalPct = estimatedDurationMs && estimatedDurationMs > 0
+    ? clamp(Math.round((elapsedMs / estimatedDurationMs) * 100), 5, run.status === 'completed' ? 100 : 95)
+    : null;
+  const progressPct = run.status === 'completed'
+    ? 100
+    : stepPct != null && historicalPct != null
+      ? Math.max(stepPct, historicalPct)
+      : stepPct ?? historicalPct;
+  const etaMs = run.status === 'completed'
+    ? 0
+    : estimatedDurationMs != null
+      ? Math.max(0, estimatedDurationMs - elapsedMs)
+      : null;
+
+  return {
+    elapsedMs,
+    estimatedDurationMs,
+    etaMs,
+    progressPct,
+    progressBasis: stepPct != null ? 'steps' : historicalPct != null ? 'historical' : 'none',
+  };
+}
+
 function formatStep(row: Row) {
   return {
     id: s(row.id),
@@ -360,8 +415,9 @@ function formatDaemonStatus(raw: {
     minimax?: { enabled?: boolean; ready?: boolean; allowedCommands?: string[] };
   }>;
   startedAt?: string;
+  updatedAt?: string;
   version?: string;
-} | null) {
+} | null, meta?: { observedAt?: number | null; source?: 'file' | 'db' }) {
   if (!raw) return null;
   return {
     runtime: {
@@ -398,6 +454,9 @@ function formatDaemonStatus(raw: {
       }))
       : [],
     startedAt: raw.startedAt ?? null,
+    updatedAt: raw.updatedAt ?? (meta?.observedAt ? new Date(meta.observedAt).toISOString() : null),
+    observedAt: meta?.observedAt ?? null,
+    source: meta?.source ?? 'db',
     version: raw.version ?? null,
   };
 }
@@ -407,7 +466,10 @@ function readDaemonStatusFromFile() {
   if (!existsSync(statusPath)) return null;
   try {
     const raw = JSON.parse(readFileSync(statusPath, 'utf8'));
-    return formatDaemonStatus(raw);
+    return formatDaemonStatus(raw, {
+      observedAt: Math.round(statSync(statusPath).mtimeMs),
+      source: 'file',
+    });
   } catch {
     return null;
   }
@@ -416,10 +478,13 @@ function readDaemonStatusFromFile() {
 async function readDaemonStatusFromDb(client: Client | null) {
   if (!client) return null;
   try {
-    const result = await client.execute(`SELECT payload FROM daemon_status WHERE id = 'primary' LIMIT 1`);
+    const result = await client.execute(`SELECT payload, updated_at FROM daemon_status WHERE id = 'primary' LIMIT 1`);
     if (result.rows.length === 0 || !result.rows[0].payload) return null;
     const raw = JSON.parse(String(result.rows[0].payload));
-    return formatDaemonStatus(raw);
+    return formatDaemonStatus(raw, {
+      observedAt: result.rows[0].updated_at != null ? n(result.rows[0].updated_at) : null,
+      source: 'db',
+    });
   } catch {
     return null;
   }
@@ -511,6 +576,45 @@ export async function getRuntimeSnapshot(projectId?: string) {
     stepsByRun.set(step.runId, list);
   }
 
+  const [exactDurationRows, fallbackDurationRows] = client
+    ? await Promise.all([
+        execute(
+          client,
+          `SELECT project_id, agent, workflow_kind, AVG(completed_at - created_at) as avg_duration_ms
+           FROM run_sessions
+           WHERE status = 'completed'
+             AND completed_at IS NOT NULL
+             AND completed_at > created_at
+           GROUP BY project_id, agent, workflow_kind`,
+        ),
+        execute(
+          client,
+          `SELECT agent, workflow_kind, AVG(completed_at - created_at) as avg_duration_ms
+           FROM run_sessions
+           WHERE status = 'completed'
+             AND completed_at IS NOT NULL
+             AND completed_at > created_at
+           GROUP BY agent, workflow_kind`,
+        ),
+      ])
+    : [[], []];
+
+  const exactDurations = new Map<string, number>();
+  for (const row of exactDurationRows) {
+    const avgDuration = n(row.avg_duration_ms);
+    if (avgDuration > 0) {
+      exactDurations.set(buildDurationKey(s(row.project_id), s(row.agent), s(row.workflow_kind)), avgDuration);
+    }
+  }
+
+  const fallbackDurations = new Map<string, number>();
+  for (const row of fallbackDurationRows) {
+    const avgDuration = n(row.avg_duration_ms);
+    if (avgDuration > 0) {
+      fallbackDurations.set(`${s(row.agent)}::${s(row.workflow_kind)}`, avgDuration);
+    }
+  }
+
   const compareTargets = readCompareTargets();
   const autonomy = projectId
     ? [await getProjectAutonomyHealthSnapshot(client, projectId)]
@@ -518,10 +622,12 @@ export async function getRuntimeSnapshot(projectId?: string) {
   const daemon = readDaemonStatusFromFile() ?? await readDaemonStatusFromDb(client);
 
   return {
+    generatedAt: Date.now(),
     goals: goalsRows.map(formatGoal),
     runs: runs.map((run) => ({
       ...run,
       steps: stepsByRun.get(run.id) ?? [],
+      ...estimateRunProgress(run, stepsByRun.get(run.id) ?? [], exactDurations, fallbackDurations),
     })),
     interrupts: interruptsRows.map(formatInterrupt),
     approvals: approvalsRows.map(formatApproval),

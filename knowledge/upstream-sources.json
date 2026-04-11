@@ -1,0 +1,28 @@
+{
+  "sources": [
+    {
+      "id": "marking-skills",
+      "label": "Marking Skills",
+      "kind": "borrowed-agent-pack",
+      "repo": null,
+      "localTargets": [
+        "knowledge/capability-registry.json"
+      ],
+      "lastReviewedAt": null,
+      "lastAdoptedVersion": null,
+      "notes": "Register the exact upstream GitHub repository here once confirmed. Organism can only auto-check for updates after the source repo is defined."
+    },
+    {
+      "id": "minimax-cli",
+      "label": "MiniMax CLI",
+      "kind": "tool-provider",
+      "repo": "MiniMax-AI/cli",
+      "localTargets": [
+        "packages/core/src/minimax.ts"
+      ],
+      "lastReviewedAt": "2026-04-11T00:00:00.000Z",
+      "lastAdoptedVersion": null,
+      "notes": "Scoped MiniMax integration used only for bounded external search when project policy enables it."
+    }
+  ]
+}

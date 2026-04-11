@@ -11,7 +11,7 @@
 
 import { createClient, type Client } from '@libsql/client';
 import { getDb } from './task-queue.js';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // ── Module-level state ───────────────────────────────────────────────────────
@@ -351,7 +351,7 @@ function readDaemonStatusSnapshot(): { payload: string; updatedAt: number } | nu
   try {
     const payload = readFileSync(statusPath, 'utf-8');
     const parsed = JSON.parse(payload) as { startedAt?: string };
-    const updatedAt = Date.now();
+    const updatedAt = Math.round(statSync(statusPath).mtimeMs);
     if (!parsed || typeof parsed !== 'object') return null;
     return { payload, updatedAt };
   } catch {

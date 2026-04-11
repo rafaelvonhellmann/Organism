@@ -42,6 +42,11 @@ interface RuntimeRun {
   updatedAt: number;
   completedAt: number | null;
   steps: RuntimeStep[];
+  elapsedMs: number;
+  estimatedDurationMs: number | null;
+  etaMs: number | null;
+  progressPct: number | null;
+  progressBasis: string;
 }
 
 interface RuntimeInterrupt {
@@ -121,6 +126,7 @@ interface AutonomyHealth {
 }
 
 interface RuntimeSnapshot {
+  generatedAt: number;
   goals: RuntimeGoal[];
   runs: RuntimeRun[];
   interrupts: RuntimeInterrupt[];
@@ -163,6 +169,9 @@ interface RuntimeSnapshot {
       };
     }>;
     startedAt: string | null;
+    updatedAt: string | null;
+    observedAt: number | null;
+    source: string;
     version: string | null;
   } | null;
 }
@@ -187,6 +196,17 @@ function statusTone(status: string): string {
 function trimPreview(value: string | null, max = 280): string | null {
   if (!value) return null;
   return value.length > max ? `${value.slice(0, max - 3)}...` : value;
+}
+
+function formatDuration(ms: number | null): string {
+  if (ms == null) return 'n/a';
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${seconds}s`;
 }
 
 export default function RuntimePage() {
@@ -253,6 +273,8 @@ export default function RuntimePage() {
     }
     return null;
   }, [project, snapshot]);
+  const daemonAgeMs = snapshot?.daemon?.observedAt ? Math.max(0, Date.now() - snapshot.daemon.observedAt) : null;
+  const daemonLooksStale = daemonAgeMs != null && daemonAgeMs > 90_000;
 
   return (
     <>
@@ -289,6 +311,19 @@ export default function RuntimePage() {
               Rate limit: {snapshot?.daemon?.rateLimitStatus.limited ? `yes (${snapshot.daemon.rateLimitStatus.usagePct.toFixed(0)}%)` : 'clear'}
             </div>
           </div>
+          {snapshot?.daemon && (
+            <div className="mt-3 text-xs text-zinc-500">
+              Last daemon update: {snapshot.daemon.updatedAt ?? 'unknown'}
+              {snapshot.daemon.source ? ` · source ${snapshot.daemon.source}` : ''}
+              {daemonAgeMs != null ? ` · age ${formatDuration(daemonAgeMs)}` : ''}
+            </div>
+          )}
+          {daemonLooksStale && (
+            <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300">
+              The dashboard snapshot is stale. The daemon has not reported fresh state for {formatDuration(daemonAgeMs)}.
+              The website may still show old in-progress cards until the next successful sync.
+            </div>
+          )}
           {snapshot?.daemon?.rateLimitStatus.limited && snapshot.daemon.rateLimitStatus.resetsAt && (
             <div className="mt-3 text-xs text-amber-400">
               Provider rate limit active until {snapshot.daemon.rateLimitStatus.resetsAt}
@@ -361,6 +396,24 @@ export default function RuntimePage() {
                     </div>
                     <div className={`text-xs font-semibold uppercase tracking-wider ${statusTone(run.status)}`}>
                       {run.status}
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <div className="flex items-center justify-between gap-3 text-[11px] text-zinc-500">
+                      <span>
+                        {run.progressPct != null ? `${run.progressPct}% estimated` : 'estimating progress'}
+                        {run.progressBasis !== 'none' ? ` · ${run.progressBasis}` : ''}
+                      </span>
+                      <span>
+                        elapsed {formatDuration(run.elapsedMs)}
+                        {run.etaMs != null ? ` · ETA ${formatDuration(run.etaMs)}` : ''}
+                      </span>
+                    </div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-900/80">
+                      <div
+                        className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+                        style={{ width: `${run.progressPct ?? 8}%` }}
+                      />
                     </div>
                   </div>
                   <div className="mt-3 space-y-2">

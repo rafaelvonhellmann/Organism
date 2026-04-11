@@ -48,6 +48,10 @@ const CAPABILITY_CARDS = [
     title: 'Bounded Tool Providers',
     body: 'Optional sidecar tools such as MiniMax are project-scoped and allowlisted. They are not the main brain of Organism and are only used for narrow capabilities such as external search when policy enables them and local auth is ready.',
   },
+  {
+    title: 'Upstream Source Watch',
+    body: 'Organism can track registered upstream repos for borrowed agents, skills, and tool providers and surface when they changed. It does not auto-apply those updates without explicit review.',
+  },
 ];
 
 const DASHBOARD_PAGES = [

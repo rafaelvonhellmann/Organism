@@ -60,6 +60,7 @@ const DAEMON_CONFIG = {
 
 interface DaemonStatus {
   startedAt: string;
+  updatedAt: string;
   lastExecuteCycle: string | null;
   nextExecuteCycle: string | null;
   lastSyncCycle: string | null;
@@ -192,6 +193,7 @@ function buildStatus(): DaemonStatus {
   });
   return {
     startedAt: daemonState.startedAt,
+    updatedAt: new Date().toISOString(),
     lastExecuteCycle: daemonState.lastExecuteCycleMs ? new Date(daemonState.lastExecuteCycleMs).toISOString() : null,
     nextExecuteCycle: computeNextCycle(daemonState.lastExecuteCycleMs, DAEMON_CONFIG.executeIntervalMs),
     lastSyncCycle: daemonState.lastSyncCycleMs ? new Date(daemonState.lastSyncCycleMs).toISOString() : null,

@@ -18,6 +18,8 @@ interface TaskSummary {
   completedAt: number | null;
   createdAt: number;
   error: string | null;
+  duplicateCount?: number;
+  mergedTaskIds?: string[];
 }
 
 interface ProgressData {
@@ -66,6 +68,41 @@ function briefTitle(desc: string): string {
   const first = d.split(/[.!?\n]/)[0].trim();
   if (first.length > 60) return first.slice(0, 57) + '...';
   return first || desc.slice(0, 50);
+}
+
+function normalizeTaskKey(task: TaskSummary): string {
+  return [
+    task.agent,
+    task.status,
+    task.lane,
+    briefTitle(task.description).toLowerCase(),
+  ].join('::');
+}
+
+function mergeEquivalentTasks(tasks: TaskSummary[]): TaskSummary[] {
+  const grouped = new Map<string, TaskSummary>();
+
+  for (const task of tasks) {
+    const key = normalizeTaskKey(task);
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, { ...task, duplicateCount: 1, mergedTaskIds: [task.id] });
+      continue;
+    }
+
+    const existingTs = existing.completedAt ?? existing.createdAt;
+    const taskTs = task.completedAt ?? task.createdAt;
+    const winner = taskTs > existingTs ? task : existing;
+    grouped.set(key, {
+      ...winner,
+      duplicateCount: (existing.duplicateCount ?? 1) + 1,
+      mergedTaskIds: [...(existing.mergedTaskIds ?? [existing.id]), task.id],
+    });
+  }
+
+  return [...grouped.values()].sort(
+    (a, b) => (b.completedAt ?? b.createdAt) - (a.completedAt ?? a.createdAt),
+  );
 }
 
 // ── Kanban column config ──────────────────────────────────────
@@ -149,13 +186,14 @@ export default function ProgressPage() {
         shouldShowPipelineTasks
           ? tasks
           : tasks.filter(t => !['grill-me', 'codex-review', 'quality-agent', 'risk-classifier'].includes(t.agent));
+      const groupedTasks = (tasks: TaskSummary[]) => mergeEquivalentTasks(normalizeVisibleTasks(tasks));
 
       setData({
-        completed: normalizeVisibleTasks(completed.tasks ?? []),
-        inProgress: normalizeVisibleTasks(inProgress.tasks ?? []),
-        pending: normalizeVisibleTasks(pending.tasks ?? []),
-        awaitingReview: normalizeVisibleTasks(review.tasks ?? []),
-        failed: normalizeVisibleTasks(failed.tasks ?? []),
+        completed: groupedTasks(completed.tasks ?? []),
+        inProgress: groupedTasks(inProgress.tasks ?? []),
+        pending: groupedTasks(pending.tasks ?? []),
+        awaitingReview: groupedTasks(review.tasks ?? []),
+        failed: groupedTasks(failed.tasks ?? []),
       });
       setLastUpdated(new Date());
     } catch {
@@ -328,6 +366,11 @@ function KanbanCard({ task }: { task: TaskSummary }) {
           {agentRole(task.agent)}
         </span>
         <StatusBadge status={task.lane} variant="lane" />
+        {(task.duplicateCount ?? 1) > 1 && (
+          <span className="text-[10px] rounded-full bg-zinc-800 px-1.5 py-0.5 text-zinc-400">
+            x{task.duplicateCount}
+          </span>
+        )}
       </div>
       <p className="text-xs text-zinc-400 group-hover:text-zinc-300 transition-colors leading-relaxed line-clamp-2">
         {briefTitle(task.description)}
