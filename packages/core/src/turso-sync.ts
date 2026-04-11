@@ -19,6 +19,7 @@ import { resolve } from 'node:path';
 let remoteClient: Client | null = null;
 let schemaCreated = false;
 let lastSyncTs = 0; // epoch ms — only rows newer than this get synced
+let lastDaemonStatusUpdatedAt = 0;
 
 // ── Env loading ──────────────────────────────────────────────────────────────
 
@@ -232,6 +233,93 @@ const SCHEMA = [
     created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
     completed_at INTEGER
   )`,
+  `CREATE TABLE IF NOT EXISTS goals (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL DEFAULT 'organism',
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    source_kind TEXT NOT NULL DEFAULT 'user',
+    workflow_kind TEXT NOT NULL DEFAULT 'implement',
+    input_hash TEXT NOT NULL,
+    latest_run_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS run_sessions (
+    id TEXT PRIMARY KEY,
+    goal_id TEXT NOT NULL,
+    project_id TEXT NOT NULL DEFAULT 'organism',
+    agent TEXT NOT NULL,
+    workflow_kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    retry_class TEXT NOT NULL DEFAULT 'none',
+    retry_at INTEGER,
+    provider_failure_kind TEXT NOT NULL DEFAULT 'none',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER
+  )`,
+  `CREATE TABLE IF NOT EXISTS run_steps (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER
+  )`,
+  `CREATE TABLE IF NOT EXISTS interrupts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    summary TEXT NOT NULL,
+    detail TEXT,
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER
+  )`,
+  `CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    path TEXT,
+    content TEXT,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS approvals (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    requested_by TEXT NOT NULL,
+    requested_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    decided_by TEXT,
+    reason TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS runtime_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload TEXT,
+    ts INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS daemon_status (
+    id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_goals_project_status ON goals(project_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_run_sessions_project_status ON run_sessions(project_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_run_steps_run_created ON run_steps(run_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_interrupts_run_status ON interrupts(run_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_approvals_run_status ON approvals(run_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_runtime_events_goal_id ON runtime_events(goal_id, id)`,
 ];
 
 async function ensureSchema(remote: Client): Promise<void> {
@@ -251,6 +339,23 @@ function queryLocal(sql: string, ...params: unknown[]): Row[] {
     return getDb().prepare(sql).all(...params as Array<string | number | null>) as Row[];
   } catch {
     return []; // table may not exist locally yet
+  }
+}
+
+function readDaemonStatusSnapshot(): { payload: string; updatedAt: number } | null {
+  const stateDir = process.env.ORGANISM_STATE_DIR
+    ?? resolve(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.organism', 'state');
+  const statusPath = resolve(stateDir, 'daemon-status.json');
+  if (!existsSync(statusPath)) return null;
+
+  try {
+    const payload = readFileSync(statusPath, 'utf-8');
+    const parsed = JSON.parse(payload) as { startedAt?: string };
+    const updatedAt = Date.now();
+    if (!parsed || typeof parsed !== 'object') return null;
+    return { payload, updatedAt };
+  } catch {
+    return null;
   }
 }
 
@@ -470,6 +575,192 @@ export async function syncToTurso(): Promise<void> {
     await batchUpsert(remote, stmts);
   }
 
+  // ── Runtime v2 state ──
+  let goals: Row[];
+  if (isFirstSync) {
+    goals = queryLocal('SELECT * FROM goals');
+  } else {
+    goals = queryLocal('SELECT * FROM goals WHERE updated_at > ?', lastSyncTs);
+  }
+
+  if (goals.length > 0) {
+    const stmts = goals.map((goal) => ({
+      sql: `INSERT OR REPLACE INTO goals (id, project_id, title, description, status, source_kind, workflow_kind, input_hash, latest_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        goal.id,
+        goal.project_id,
+        goal.title,
+        goal.description,
+        goal.status,
+        goal.source_kind,
+        goal.workflow_kind,
+        goal.input_hash,
+        goal.latest_run_id,
+        goal.created_at,
+        goal.updated_at,
+      ],
+    }));
+    await batchUpsert(remote, stmts);
+  }
+
+  let runSessions: Row[];
+  if (isFirstSync) {
+    runSessions = queryLocal('SELECT * FROM run_sessions');
+  } else {
+    runSessions = queryLocal('SELECT * FROM run_sessions WHERE updated_at > ? OR completed_at > ?', lastSyncTs, lastSyncTs);
+  }
+
+  if (runSessions.length > 0) {
+    const stmts = runSessions.map((run) => ({
+      sql: `INSERT OR REPLACE INTO run_sessions (id, goal_id, project_id, agent, workflow_kind, status, retry_class, retry_at, provider_failure_kind, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        run.id,
+        run.goal_id,
+        run.project_id,
+        run.agent,
+        run.workflow_kind,
+        run.status,
+        run.retry_class,
+        run.retry_at,
+        run.provider_failure_kind,
+        run.created_at,
+        run.updated_at,
+        run.completed_at,
+      ],
+    }));
+    await batchUpsert(remote, stmts);
+  }
+
+  let runSteps: Row[];
+  if (isFirstSync) {
+    runSteps = queryLocal('SELECT * FROM run_steps');
+  } else {
+    runSteps = queryLocal('SELECT * FROM run_steps WHERE updated_at > ? OR completed_at > ?', lastSyncTs, lastSyncTs);
+  }
+
+  if (runSteps.length > 0) {
+    const stmts = runSteps.map((step) => ({
+      sql: `INSERT OR REPLACE INTO run_steps (id, run_id, name, status, detail, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        step.id,
+        step.run_id,
+        step.name,
+        step.status,
+        step.detail,
+        step.created_at,
+        step.updated_at,
+        step.completed_at,
+      ],
+    }));
+    await batchUpsert(remote, stmts);
+  }
+
+  let interrupts: Row[];
+  if (isFirstSync) {
+    interrupts = queryLocal('SELECT * FROM interrupts');
+  } else {
+    interrupts = queryLocal('SELECT * FROM interrupts WHERE created_at > ? OR resolved_at > ?', lastSyncTs, lastSyncTs);
+  }
+
+  if (interrupts.length > 0) {
+    const stmts = interrupts.map((interrupt) => ({
+      sql: `INSERT OR REPLACE INTO interrupts (id, run_id, type, status, summary, detail, created_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        interrupt.id,
+        interrupt.run_id,
+        interrupt.type,
+        interrupt.status,
+        interrupt.summary,
+        interrupt.detail,
+        interrupt.created_at,
+        interrupt.resolved_at,
+      ],
+    }));
+    await batchUpsert(remote, stmts);
+  }
+
+  let artifacts: Row[];
+  if (isFirstSync) {
+    artifacts = queryLocal('SELECT * FROM artifacts');
+  } else {
+    artifacts = queryLocal('SELECT * FROM artifacts WHERE created_at > ?', lastSyncTs);
+  }
+
+  if (artifacts.length > 0) {
+    const stmts = artifacts.map((artifact) => ({
+      sql: `INSERT OR REPLACE INTO artifacts (id, run_id, goal_id, kind, title, path, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        artifact.id,
+        artifact.run_id,
+        artifact.goal_id,
+        artifact.kind,
+        artifact.title,
+        artifact.path,
+        artifact.content,
+        artifact.created_at,
+      ],
+    }));
+    await batchUpsert(remote, stmts);
+  }
+
+  let approvals: Row[];
+  if (isFirstSync) {
+    approvals = queryLocal('SELECT * FROM approvals');
+  } else {
+    approvals = queryLocal('SELECT * FROM approvals WHERE requested_at > ? OR decided_at > ?', lastSyncTs, lastSyncTs);
+  }
+
+  if (approvals.length > 0) {
+    const stmts = approvals.map((approval) => ({
+      sql: `INSERT OR REPLACE INTO approvals (id, run_id, action, status, requested_by, requested_at, decided_at, decided_by, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        approval.id,
+        approval.run_id,
+        approval.action,
+        approval.status,
+        approval.requested_by,
+        approval.requested_at,
+        approval.decided_at,
+        approval.decided_by,
+        approval.reason,
+      ],
+    }));
+    await batchUpsert(remote, stmts);
+  }
+
+  let runtimeEvents: Row[];
+  if (isFirstSync) {
+    runtimeEvents = queryLocal('SELECT * FROM runtime_events');
+  } else {
+    runtimeEvents = queryLocal('SELECT * FROM runtime_events WHERE ts > ? OR id > ?', lastSyncTs, lastSyncTs);
+  }
+
+  if (runtimeEvents.length > 0) {
+    const stmts = runtimeEvents.map((event) => ({
+      sql: `INSERT OR REPLACE INTO runtime_events (id, run_id, goal_id, event_type, payload, ts) VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [
+        event.id,
+        event.run_id,
+        event.goal_id,
+        event.event_type,
+        event.payload,
+        event.ts,
+      ],
+    }));
+    await batchUpsert(remote, stmts);
+  }
+
+  const daemonStatus = readDaemonStatusSnapshot();
+  let daemonStatusRows = 0;
+  if (daemonStatus && daemonStatus.updatedAt >= lastDaemonStatusUpdatedAt) {
+    await batchUpsert(remote, [{
+      sql: `INSERT OR REPLACE INTO daemon_status (id, payload, updated_at) VALUES (?, ?, ?)`,
+      args: ['primary', daemonStatus.payload, daemonStatus.updatedAt],
+    }]);
+    daemonStatusRows = 1;
+    lastDaemonStatusUpdatedAt = daemonStatus.updatedAt + 1;
+  }
+
   // ── Pull dashboard decisions back to local ──
   // When Rafael approves/dismisses on the dashboard, it updates Turso directly.
   // Pull those status changes back so the local daemon knows.
@@ -537,10 +828,14 @@ export async function syncToTurso(): Promise<void> {
   const totalRows = tasks.length + audits.length + spends.length + gates.length +
     fitness.length + pitches.length + bets.length + betScopes.length +
     hillUpdates.length + betDecisions.length + sourceFitness.length + wikiRatings.length +
+    goals.length + runSessions.length + runSteps.length + interrupts.length +
+    artifacts.length + approvals.length + runtimeEvents.length + daemonStatusRows +
     pulledActions + pushedActions;
 
   if (totalRows > 0) {
-    console.log(`[turso-sync] Synced ${tasks.length} tasks, ${audits.length} audit entries, ${spends.length} spend rows, ${gates.length} gates (${Date.now() - syncStart}ms)`);
+    console.log(
+      `[turso-sync] Synced ${tasks.length} tasks, ${goals.length} goals, ${runSessions.length} runs, ${runtimeEvents.length} runtime events, ${audits.length} audit entries (${Date.now() - syncStart}ms)`,
+    );
   }
 
   // Advance watermark

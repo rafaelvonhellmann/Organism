@@ -361,6 +361,14 @@ export async function ensureTables(): Promise<void> {
       )
     `);
 
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS daemon_status (
+        id TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+
     await client.execute(`CREATE INDEX IF NOT EXISTS idx_goals_project_status ON goals(project_id, status)`);
     await client.execute(`CREATE INDEX IF NOT EXISTS idx_run_sessions_project_status ON run_sessions(project_id, status)`);
     await client.execute(`CREATE INDEX IF NOT EXISTS idx_run_steps_run_created ON run_steps(run_id, created_at)`);

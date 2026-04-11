@@ -299,70 +299,87 @@ function readCompareTargets() {
     });
 }
 
-function readDaemonStatus() {
+function formatDaemonStatus(raw: {
+  runtime?: { modelBackend?: string | null; codeExecutor?: string | null; webSearchAvailable?: boolean };
+  rateLimitStatus?: { limited?: boolean; resetsAt?: string | null; usagePct?: number };
+  readiness?: Array<{
+    projectId?: string;
+    cleanWorktree?: boolean;
+    workspaceMode?: string;
+    deployUnlocked?: boolean;
+    completedRuns?: number;
+    initialWorkflowLimit?: number;
+    initialAllowedWorkflows?: string[];
+    initialWorkflowGuardActive?: boolean;
+    prAuthReady?: boolean;
+    prAuthMode?: string;
+    vercelAuthReady?: boolean;
+    vercelAuthMode?: string;
+    blockers?: string[];
+    warnings?: string[];
+    minimax?: { enabled?: boolean; ready?: boolean; allowedCommands?: string[] };
+  }>;
+  startedAt?: string;
+  version?: string;
+} | null) {
+  if (!raw) return null;
+  return {
+    runtime: {
+      modelBackend: raw.runtime?.modelBackend ?? null,
+      codeExecutor: raw.runtime?.codeExecutor ?? null,
+      webSearchAvailable: raw.runtime?.webSearchAvailable ?? false,
+    },
+    rateLimitStatus: {
+      limited: raw.rateLimitStatus?.limited ?? false,
+      resetsAt: raw.rateLimitStatus?.resetsAt ?? null,
+      usagePct: raw.rateLimitStatus?.usagePct ?? 0,
+    },
+    readiness: Array.isArray(raw.readiness)
+      ? raw.readiness.map((item) => ({
+        projectId: item.projectId ?? '',
+        cleanWorktree: item.cleanWorktree ?? false,
+        workspaceMode: item.workspaceMode ?? 'direct',
+        deployUnlocked: item.deployUnlocked ?? false,
+        completedRuns: item.completedRuns ?? 0,
+        initialWorkflowLimit: item.initialWorkflowLimit ?? 0,
+        initialAllowedWorkflows: Array.isArray(item.initialAllowedWorkflows) ? item.initialAllowedWorkflows : [],
+        initialWorkflowGuardActive: item.initialWorkflowGuardActive ?? false,
+        prAuthReady: item.prAuthReady ?? false,
+        prAuthMode: item.prAuthMode ?? 'none',
+        vercelAuthReady: item.vercelAuthReady ?? false,
+        vercelAuthMode: item.vercelAuthMode ?? 'none',
+        blockers: Array.isArray(item.blockers) ? item.blockers : [],
+        warnings: Array.isArray(item.warnings) ? item.warnings : [],
+        minimax: {
+          enabled: item.minimax?.enabled ?? false,
+          ready: item.minimax?.ready ?? false,
+          allowedCommands: Array.isArray(item.minimax?.allowedCommands) ? item.minimax!.allowedCommands! : [],
+        },
+      }))
+      : [],
+    startedAt: raw.startedAt ?? null,
+    version: raw.version ?? null,
+  };
+}
+
+function readDaemonStatusFromFile() {
   const statusPath = resolve(STATE_DIR, 'daemon-status.json');
   if (!existsSync(statusPath)) return null;
   try {
-    const raw = JSON.parse(readFileSync(statusPath, 'utf8')) as {
-      runtime?: { modelBackend?: string | null; codeExecutor?: string | null; webSearchAvailable?: boolean };
-      rateLimitStatus?: { limited?: boolean; resetsAt?: string | null; usagePct?: number };
-      readiness?: Array<{
-        projectId?: string;
-        cleanWorktree?: boolean;
-        workspaceMode?: string;
-        deployUnlocked?: boolean;
-        completedRuns?: number;
-        initialWorkflowLimit?: number;
-        initialAllowedWorkflows?: string[];
-        initialWorkflowGuardActive?: boolean;
-        prAuthReady?: boolean;
-        prAuthMode?: string;
-        vercelAuthReady?: boolean;
-        vercelAuthMode?: string;
-        blockers?: string[];
-        warnings?: string[];
-        minimax?: { enabled?: boolean; ready?: boolean; allowedCommands?: string[] };
-      }>;
-      startedAt?: string;
-      version?: string;
-    };
-    return {
-      runtime: {
-        modelBackend: raw.runtime?.modelBackend ?? null,
-        codeExecutor: raw.runtime?.codeExecutor ?? null,
-        webSearchAvailable: raw.runtime?.webSearchAvailable ?? false,
-      },
-      rateLimitStatus: {
-        limited: raw.rateLimitStatus?.limited ?? false,
-        resetsAt: raw.rateLimitStatus?.resetsAt ?? null,
-        usagePct: raw.rateLimitStatus?.usagePct ?? 0,
-      },
-      readiness: Array.isArray(raw.readiness)
-        ? raw.readiness.map((item) => ({
-          projectId: item.projectId ?? '',
-          cleanWorktree: item.cleanWorktree ?? false,
-          workspaceMode: item.workspaceMode ?? 'direct',
-          deployUnlocked: item.deployUnlocked ?? false,
-          completedRuns: item.completedRuns ?? 0,
-          initialWorkflowLimit: item.initialWorkflowLimit ?? 0,
-          initialAllowedWorkflows: Array.isArray(item.initialAllowedWorkflows) ? item.initialAllowedWorkflows : [],
-          initialWorkflowGuardActive: item.initialWorkflowGuardActive ?? false,
-          prAuthReady: item.prAuthReady ?? false,
-          prAuthMode: item.prAuthMode ?? 'none',
-          vercelAuthReady: item.vercelAuthReady ?? false,
-          vercelAuthMode: item.vercelAuthMode ?? 'none',
-          blockers: Array.isArray(item.blockers) ? item.blockers : [],
-          warnings: Array.isArray(item.warnings) ? item.warnings : [],
-          minimax: {
-            enabled: item.minimax?.enabled ?? false,
-            ready: item.minimax?.ready ?? false,
-            allowedCommands: Array.isArray(item.minimax?.allowedCommands) ? item.minimax!.allowedCommands! : [],
-          },
-        }))
-        : [],
-      startedAt: raw.startedAt ?? null,
-      version: raw.version ?? null,
-    };
+    const raw = JSON.parse(readFileSync(statusPath, 'utf8'));
+    return formatDaemonStatus(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function readDaemonStatusFromDb(client: Client | null) {
+  if (!client) return null;
+  try {
+    const result = await client.execute(`SELECT payload FROM daemon_status WHERE id = 'primary' LIMIT 1`);
+    if (result.rows.length === 0 || !result.rows[0].payload) return null;
+    const raw = JSON.parse(String(result.rows[0].payload));
+    return formatDaemonStatus(raw);
   } catch {
     return null;
   }
@@ -439,6 +456,7 @@ export async function getRuntimeSnapshot(projectId?: string) {
   const autonomy = projectId
     ? [await getProjectAutonomyHealthSnapshot(client, projectId)]
     : await Promise.all(compareTargets.map((target) => getProjectAutonomyHealthSnapshot(client, target.projectId)));
+  const daemon = readDaemonStatusFromFile() ?? await readDaemonStatusFromDb(client);
 
   return {
     goals: goalsRows.map(formatGoal),
@@ -451,7 +469,7 @@ export async function getRuntimeSnapshot(projectId?: string) {
     recentEvents: eventsRows.map(formatEvent).reverse(),
     compareTargets,
     autonomy,
-    daemon: readDaemonStatus(),
+    daemon,
   };
 }
 

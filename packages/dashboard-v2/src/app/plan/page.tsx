@@ -30,7 +30,7 @@ interface PerspectivePlan {
   sixMonths: string;
 }
 
-const PLANS: PerspectivePlan[] = [
+const SYNAPSE_PLANS: PerspectivePlan[] = [
   {
     name: 'Strategy',
     role: 'ceo',
@@ -123,6 +123,102 @@ const PLANS: PerspectivePlan[] = [
   },
 ];
 
+const TOKENS_FOR_GOOD_PLANS: PerspectivePlan[] = [
+  {
+    name: 'Strategy',
+    role: 'ceo',
+    thisWeek: 'Run the first safe canary review and confirm Organism can inspect Tokens for Good without widening risk.',
+    fifteenDays: 'Move from review-only into constrained implementation with PR-only output and no deploy.',
+    oneMonth: 'Graduate the project from first-canary mode if healthy-run evidence is building.',
+    threeMonths: 'Let Tokens for Good become the first stable external proof that Organism can operate on a real repo.',
+    sixMonths: 'Use the project as the template for onboarding additional mission-aligned products.',
+  },
+  {
+    name: 'Product',
+    role: 'product-manager',
+    thisWeek: 'Clarify the smallest user-visible improvement worth shipping after the canary review.',
+    fifteenDays: 'Sequence a few low-blast-radius product improvements into PR-sized missions.',
+    oneMonth: 'Use real run history to separate platform bugs from genuine product backlog.',
+    threeMonths: 'Turn project memory into a clearer long-horizon roadmap powered by completed agent work.',
+    sixMonths: 'Make the project a polished showcase of autonomous product iteration under policy.',
+  },
+  {
+    name: 'Engineering',
+    role: 'engineering',
+    thisWeek: 'Keep worktree isolation, verification, commit, and PR handoff clean on the first review and first implementation task.',
+    fifteenDays: 'Land one or two small PRs with clean controller-owned execution and zero recursive noise.',
+    oneMonth: 'Automate repeated repo-safe changes with less operator involvement.',
+    threeMonths: 'Treat Tokens for Good as a stable proving ground for cross-executor engineering autonomy.',
+    sixMonths: 'Reach boring reliability where routine engineering changes feel normal rather than experimental.',
+  },
+  {
+    name: 'Operations',
+    role: 'devops',
+    thisWeek: 'Keep deploy locked behind the healthy-run gate and make sure PR-oriented flow is stable first.',
+    fifteenDays: 'Validate deploy readiness and environment expectations without widening autonomy too early.',
+    oneMonth: 'Open deploys only after stable PR output and recovery behavior are repeatedly confirmed.',
+    threeMonths: 'Promote deployment from guarded to routine for this project if the rollout gate is genuinely earned.',
+    sixMonths: 'Use the project as the template for safe deploy governance across future client repos.',
+  },
+  {
+    name: 'Quality',
+    role: 'quality-agent',
+    thisWeek: 'Verify that review tasks stay review tasks and do not collapse into shaping or recursive follow-ups.',
+    fifteenDays: 'Build confidence that the first few runs produce usable findings rather than orchestration churn.',
+    oneMonth: 'Use run history to tune guardrails and remove false positives from the review path.',
+    threeMonths: 'Make quality review feel like a reliable control plane signal instead of a fragile checkpoint.',
+    sixMonths: 'Treat quality artifacts as first-class evidence for graduation into broader autonomy.',
+  },
+  {
+    name: 'Security',
+    role: 'security-audit',
+    thisWeek: 'Keep credentials scoped, review launch posture, and make sure the project stays inside its declared policy envelope.',
+    fifteenDays: 'Validate that PR-only flow, isolated worktrees, and sensitive-action gating are holding under real use.',
+    oneMonth: 'Use Tokens for Good to prove the controller can stay least-privilege without becoming brittle.',
+    threeMonths: 'Codify the project’s secure operating pattern into reusable defaults for the rest of Organism.',
+    sixMonths: 'Make security review mostly about exceptions, not about cleaning up runtime drift.',
+  },
+];
+
+function buildGenericPlans(projectLabel: string): PerspectivePlan[] {
+  return [
+    {
+      name: 'Strategy',
+      role: 'ceo',
+      thisWeek: `Stabilize the first safe autonomous run for ${projectLabel}.`,
+      fifteenDays: 'Move from observation into constrained implementation with clear success criteria.',
+      oneMonth: 'Prove the controller can deliver routine work with minimal operator intervention.',
+      threeMonths: 'Turn repeated healthy runs into a reusable autonomy pattern.',
+      sixMonths: 'Treat this project as a mature reference deployment for Organism.',
+    },
+    {
+      name: 'Engineering',
+      role: 'engineering',
+      thisWeek: 'Focus on small, auditable, PR-oriented work with clean verification.',
+      fifteenDays: 'Reduce operator rescue work by improving execution and recovery loops.',
+      oneMonth: 'Make common repo operations predictable and policy-driven.',
+      threeMonths: 'Reach stable repo-native autonomy for routine coding work.',
+      sixMonths: 'Have boringly reliable execution that no longer feels experimental.',
+    },
+    {
+      name: 'Quality',
+      role: 'quality-agent',
+      thisWeek: 'Confirm tasks route correctly and produce actionable findings.',
+      fifteenDays: 'Tune the review path using real run evidence.',
+      oneMonth: 'Reduce false alarms and noisy follow-ups.',
+      threeMonths: 'Turn validation history into stronger rollout confidence.',
+      sixMonths: 'Keep the project inside a healthy autonomy envelope by default.',
+    },
+  ];
+}
+
+function plansForProject(projectId: string): PerspectivePlan[] {
+  if (projectId === 'synapse') return SYNAPSE_PLANS;
+  if (projectId === 'tokens-for-good') return TOKENS_FOR_GOOD_PLANS;
+  if (projectId === 'organism') return buildGenericPlans('Organism');
+  return buildGenericPlans(projectId.replace(/-/g, ' '));
+}
+
 const TIME_PERIODS = [
   { key: 'thisWeek' as const, label: 'This Week', color: 'emerald' },
   { key: 'fifteenDays' as const, label: '15 Days', color: 'blue' },
@@ -161,11 +257,13 @@ function statusDot(status: string): string {
 export default function PlanPage() {
   const [project, setProject] = useState('');
   const [activePeriod, setActivePeriod] = useState<PeriodKey>('thisWeek');
-  const { data: tasksData, lastUpdated } = usePolling<{ tasks: TaskRow[] }>('/api/tasks?limit=200');
+  const taskUrl = project ? `/api/tasks?limit=200&project=${project}` : '/api/tasks?limit=200';
+  const { data: tasksData, lastUpdated } = usePolling<{ tasks: TaskRow[] }>(taskUrl);
 
   const tasks = tasksData?.tasks ?? [];
   const needsDecision = tasks.filter(t => t.status === 'awaiting_review').length;
   const inProgress = tasks.filter(t => t.status === 'in_progress' || t.status === 'pending').length;
+  const plans = plansForProject(project || 'organism');
 
   const activeColor = TIME_PERIODS.find(p => p.key === activePeriod)!.color;
   const colors = COLOR_MAP[activeColor];
@@ -216,7 +314,7 @@ export default function PlanPage() {
 
         {/* Perspective cards for selected period */}
         <div className="grid gap-3 md:grid-cols-2">
-          {PLANS.map(plan => {
+          {plans.map(plan => {
             const text = plan[activePeriod];
             const agentTasks = tasks
               .filter(t => t.agent === plan.role)

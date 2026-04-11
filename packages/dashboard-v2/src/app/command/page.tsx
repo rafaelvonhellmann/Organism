@@ -58,13 +58,14 @@ export default function CommandPage() {
 
   const fetchActions = useCallback(async () => {
     try {
-      const res = await fetch('/api/actions', { cache: 'no-store' });
+      const url = project ? `/api/actions?project=${project}` : '/api/actions';
+      const res = await fetch(url, { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
         setActions(data.actions ?? []);
       }
     } catch {}
-  }, []);
+  }, [project]);
 
   useEffect(() => {
     fetchActions();
@@ -179,7 +180,11 @@ export default function CommandPage() {
             {actions.length === 0 && (
               <div className="text-center py-16">
                 <h3 className="text-lg font-semibold text-zinc-300 mb-2">Command Center</h3>
-                <p className="text-sm text-zinc-500">Type any Organism command below, or use the quick actions.</p>
+                <p className="text-sm text-zinc-500">
+                  {project
+                    ? `No dashboard actions recorded for ${project} yet.`
+                    : 'Type any Organism command below, or use the quick actions.'}
+                </p>
               </div>
             )}
 

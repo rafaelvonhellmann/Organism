@@ -9,11 +9,22 @@ export async function GET(req: NextRequest) {
   if (!requireAuth(req)) return unauthorizedResponse();
   const client = getClient();
   if (!client) return Response.json({ actions: [] });
+  const project = req.nextUrl.searchParams.get('project')?.trim();
 
   const result = await client.execute(
-    'SELECT * FROM dashboard_actions ORDER BY created_at DESC LIMIT 30'
+    'SELECT * FROM dashboard_actions ORDER BY created_at DESC LIMIT 100'
   );
-  return Response.json({ actions: result.rows });
+  const actions = project
+    ? result.rows.filter((row) => {
+        try {
+          const payload = row.payload ? JSON.parse(String(row.payload)) as { project?: string } : {};
+          return payload.project === project;
+        } catch {
+          return false;
+        }
+      })
+    : result.rows;
+  return Response.json({ actions });
 }
 
 // POST: create a new action request

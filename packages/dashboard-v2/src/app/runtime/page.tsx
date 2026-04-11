@@ -121,6 +121,10 @@ interface RuntimeSnapshot {
       cleanWorktree: boolean;
       workspaceMode: string;
       deployUnlocked: boolean;
+      completedRuns: number;
+      initialWorkflowLimit: number;
+      initialAllowedWorkflows: string[];
+      initialWorkflowGuardActive: boolean;
       prAuthReady: boolean;
       prAuthMode: string;
       vercelAuthReady: boolean;
@@ -273,6 +277,12 @@ export default function RuntimePage() {
                 <div>Deploy auth: {selectedReadiness.vercelAuthReady ? selectedReadiness.vercelAuthMode : 'not ready'}</div>
                 <div>MiniMax: {selectedReadiness.minimax.enabled ? (selectedReadiness.minimax.ready ? 'ready' : 'not ready') : 'off'}</div>
               </div>
+              {selectedReadiness.initialWorkflowGuardActive && (
+                <div className="mt-2 text-amber-400">
+                  Early canary guard: only {selectedReadiness.initialAllowedWorkflows.join(', ')} are allowed for the first {selectedReadiness.initialWorkflowLimit} completed runs.
+                  {' '}Completed runs so far: {selectedReadiness.completedRuns}.
+                </div>
+              )}
               {selectedReadiness.blockers.length > 0 && (
                 <div className="mt-2 space-y-1">
                   {selectedReadiness.blockers.map((blocker) => (
