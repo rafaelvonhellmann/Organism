@@ -1,3 +1,5 @@
+import { existsSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { getClient, getAgentMeta, ensureTables } from './db';
 import { getAgentCap, getBudgetStatus, SYSTEM_DAILY_CAP } from './constants';
 import type { Client, Row, InArgs } from '@libsql/client';
@@ -21,6 +23,12 @@ function esc(v: string): string { return v.replace(/'/g, "''"); }
 function tryParse(json: unknown): unknown {
   if (!json || typeof json !== 'string') return json ?? null;
   try { return JSON.parse(json); } catch { return json; }
+}
+
+function workspacePath(...segments: string[]): string {
+  const direct = resolve(process.cwd(), ...segments);
+  if (existsSync(direct)) return direct;
+  return resolve(process.cwd(), '..', '..', ...segments);
 }
 
 function formatTask(row: Row) {
@@ -321,11 +329,29 @@ export async function getBudgetSummary() {
 
 export async function getProjects() {
   const client = getClient();
-  if (!client) return ['organism'];
-  const result = await client.execute('SELECT DISTINCT project_id FROM tasks ORDER BY project_id');
-  const projects = result.rows.map(r => s(r.project_id));
-  if (!projects.includes('organism')) projects.unshift('organism');
-  return projects;
+  const projectSet = new Set<string>();
+
+  const projectsDir = workspacePath('knowledge', 'projects');
+  if (existsSync(projectsDir)) {
+    for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) projectSet.add(entry.name);
+    }
+  }
+
+  if (client) {
+    const result = await client.execute('SELECT DISTINCT project_id FROM tasks ORDER BY project_id');
+    for (const row of result.rows) {
+      const projectId = s(row.project_id);
+      if (projectId) projectSet.add(projectId);
+    }
+  }
+
+  projectSet.add('organism');
+  return [...projectSet].sort((a, b) => {
+    if (a === 'organism') return 1;
+    if (b === 'organism') return -1;
+    return a.localeCompare(b);
+  });
 }
 
 // ── Action Items ───────────────────────────────────────────────
