@@ -2,8 +2,6 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Client, Row } from '@libsql/client';
 import { getClient, ensureTables } from './db';
-import { getProjectAutonomyHealth } from '../../../../packages/core/src/autonomy-governor';
-import { STATE_DIR } from '../../../../packages/shared/src/state-dir';
 
 function n(value: unknown): number {
   return Number(value) || 0;
@@ -26,6 +24,154 @@ function workspacePath(...segments: string[]): string {
   const direct = resolve(process.cwd(), ...segments);
   if (existsSync(direct)) return direct;
   return resolve(process.cwd(), '..', '..', ...segments);
+}
+
+const HOME = process.env.USERPROFILE ?? process.env.HOME ?? '.';
+const STATE_DIR = process.env.ORGANISM_STATE_DIR ?? resolve(HOME, '.organism', 'state');
+const DEFAULT_CORE_AGENTS = ['ceo', 'product-manager', 'engineering', 'devops', 'quality-agent', 'security-audit', 'legal', 'quality-guardian', 'codex-review'];
+
+function readProjectConfig(projectId: string): {
+  autonomyMode: string;
+  coreAgents: string[];
+} {
+  const configPath = workspacePath('knowledge', 'projects', projectId, 'config.json');
+  if (!existsSync(configPath)) {
+    return { autonomyMode: 'stabilization', coreAgents: DEFAULT_CORE_AGENTS };
+  }
+
+  try {
+    const raw = JSON.parse(readFileSync(configPath, 'utf8')) as {
+      autonomyMode?: string;
+      agents?: { generalist?: string[] };
+    };
+    return {
+      autonomyMode: raw.autonomyMode ?? 'stabilization',
+      coreAgents: Array.isArray(raw.agents?.generalist) && raw.agents.generalist.length > 0
+        ? raw.agents.generalist
+        : DEFAULT_CORE_AGENTS,
+    };
+  } catch {
+    return { autonomyMode: 'stabilization', coreAgents: DEFAULT_CORE_AGENTS };
+  }
+}
+
+async function getProjectAutonomyHealthSnapshot(client: Client | null, projectId: string) {
+  const { autonomyMode, coreAgents } = readProjectConfig(projectId);
+  const requiredConsecutiveRuns = 20;
+
+  if (!client) {
+    return {
+      projectId,
+      autonomyMode,
+      requiredConsecutiveRuns,
+      consecutiveHealthyRuns: 0,
+      recentCompletedRuns: 0,
+      recentProviderFailures: 0,
+      activeRuns: 0,
+      pendingInterrupts: 0,
+      pendingApprovals: 0,
+      rolloutReady: false,
+      blockers: ['Database not connected'],
+      coreAgents,
+    };
+  }
+
+  const [
+    recentRunsResult,
+    completedResult,
+    providerFailuresResult,
+    activeRunsResult,
+    pendingInterruptsResult,
+    pendingApprovalsResult,
+  ] = await Promise.all([
+    client.execute({
+      sql: `SELECT status, provider_failure_kind
+            FROM run_sessions
+            WHERE project_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 50`,
+      args: [projectId],
+    }),
+    client.execute({
+      sql: `SELECT COUNT(*) as c
+            FROM run_sessions
+            WHERE project_id = ? AND status = 'completed'`,
+      args: [projectId],
+    }),
+    client.execute({
+      sql: `SELECT COUNT(*) as c
+            FROM run_sessions
+            WHERE project_id = ?
+              AND provider_failure_kind IS NOT NULL
+              AND provider_failure_kind != ''
+              AND provider_failure_kind != 'none'`,
+      args: [projectId],
+    }),
+    client.execute({
+      sql: `SELECT COUNT(*) as c
+            FROM run_sessions
+            WHERE project_id = ?
+              AND status IN ('pending', 'running', 'paused', 'retry_scheduled')`,
+      args: [projectId],
+    }),
+    client.execute({
+      sql: `SELECT COUNT(*) as c
+            FROM interrupts i
+            JOIN run_sessions r ON r.id = i.run_id
+            WHERE r.project_id = ? AND i.status = 'pending'`,
+      args: [projectId],
+    }),
+    client.execute({
+      sql: `SELECT COUNT(*) as c
+            FROM approvals a
+            JOIN run_sessions r ON r.id = a.run_id
+            WHERE r.project_id = ? AND a.status = 'pending'`,
+      args: [projectId],
+    }),
+  ]);
+
+  let consecutiveHealthyRuns = 0;
+  for (const row of recentRunsResult.rows) {
+    const status = s(row.status);
+    const providerFailureKind = s(row.provider_failure_kind);
+    if (status !== 'completed' || (providerFailureKind && providerFailureKind !== 'none')) break;
+    consecutiveHealthyRuns += 1;
+  }
+
+  const recentCompletedRuns = n(completedResult.rows[0]?.c);
+  const recentProviderFailures = n(providerFailuresResult.rows[0]?.c);
+  const activeRuns = n(activeRunsResult.rows[0]?.c);
+  const pendingInterrupts = n(pendingInterruptsResult.rows[0]?.c);
+  const pendingApprovals = n(pendingApprovalsResult.rows[0]?.c);
+
+  const blockers: string[] = [];
+  if (consecutiveHealthyRuns < requiredConsecutiveRuns) {
+    blockers.push(`Needs ${requiredConsecutiveRuns - consecutiveHealthyRuns} more consecutive healthy runs`);
+  }
+  if (recentProviderFailures > 0) {
+    blockers.push('Recent provider failures still present in the last 50 runs');
+  }
+  if (pendingInterrupts > 0) {
+    blockers.push('Pending interrupts need resolution');
+  }
+  if (pendingApprovals > 0) {
+    blockers.push('Pending approvals still exist');
+  }
+
+  return {
+    projectId,
+    autonomyMode,
+    requiredConsecutiveRuns,
+    consecutiveHealthyRuns,
+    recentCompletedRuns,
+    recentProviderFailures,
+    activeRuns,
+    pendingInterrupts,
+    pendingApprovals,
+    rolloutReady: blockers.length === 0,
+    blockers,
+    coreAgents,
+  };
 }
 
 function formatGoal(row: Row) {
@@ -249,6 +395,11 @@ export async function getRuntimeSnapshot(projectId?: string) {
     stepsByRun.set(step.runId, list);
   }
 
+  const compareTargets = readCompareTargets();
+  const autonomy = projectId
+    ? [await getProjectAutonomyHealthSnapshot(client, projectId)]
+    : await Promise.all(compareTargets.map((target) => getProjectAutonomyHealthSnapshot(client, target.projectId)));
+
   return {
     goals: goalsRows.map(formatGoal),
     runs: runs.map((run) => ({
@@ -258,8 +409,8 @@ export async function getRuntimeSnapshot(projectId?: string) {
     interrupts: interruptsRows.map(formatInterrupt),
     approvals: approvalsRows.map(formatApproval),
     recentEvents: eventsRows.map(formatEvent).reverse(),
-    compareTargets: readCompareTargets(),
-    autonomy: projectId ? [getProjectAutonomyHealth(projectId)] : readCompareTargets().map((target) => getProjectAutonomyHealth(target.projectId)),
+    compareTargets,
+    autonomy,
     daemon: readDaemonStatus(),
   };
 }
