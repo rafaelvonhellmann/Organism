@@ -11,17 +11,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-
-// Load .secrets.json into process.env (keys not already set)
-const secretsPath = path.resolve(import.meta.dirname, '..', '.secrets.json');
-if (fs.existsSync(secretsPath)) {
-  try {
-    const secrets = JSON.parse(fs.readFileSync(secretsPath, 'utf8')) as Record<string, string>;
-    for (const [k, v] of Object.entries(secrets)) {
-      if (!process.env[k]) process.env[k] = v;
-    }
-  } catch { /* ignore parse errors */ }
-}
+import { bootstrapRuntimeEnv } from '../packages/shared/src/runtime-env.js';
+bootstrapRuntimeEnv(path.resolve(import.meta.dirname, '..'));
 import {
   ensureDB,
   ensureStixDB,

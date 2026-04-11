@@ -11,6 +11,10 @@ import { listProjectPolicies } from '../packages/core/src/project-policy.js';
 import { getProjectLaunchReadiness } from '../packages/core/src/project-readiness.js';
 import { getDb } from '../packages/core/src/task-queue.js';
 import { STATE_DIR } from '../packages/shared/src/state-dir.js';
+import { bootstrapRuntimeEnv } from '../packages/shared/src/runtime-env.js';
+import { getSecretOrNull } from '../packages/shared/src/secrets.js';
+
+bootstrapRuntimeEnv();
 
 async function healthCheck() {
   let allOk = true;
@@ -74,11 +78,11 @@ async function healthCheck() {
 
   // 6. Anthropic API key (optional unless anthropic-api backend selected)
   process.stdout.write('Anthropic API key: ');
-  console.log(process.env.ANTHROPIC_API_KEY ? 'Present' : 'Missing — Claude CLI backend required');
+  console.log(getSecretOrNull('ANTHROPIC_API_KEY') ? 'Present' : 'Missing — Claude CLI backend required');
 
   // 7. OpenAI key (optional but needed for Codex Review)
   process.stdout.write('OpenAI API key (optional): ');
-  const openaiKey = process.env.OPENAI_API_KEY;
+  const openaiKey = getSecretOrNull('OPENAI_API_KEY');
   console.log(openaiKey ? 'Present' : 'Missing — Codex Review will not function');
 
   // 8. Code executor availability

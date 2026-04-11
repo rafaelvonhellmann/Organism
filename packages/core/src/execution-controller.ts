@@ -5,6 +5,7 @@ import { execFileSync, execSync } from 'child_process';
 import { getProjectAutonomyHealth } from './autonomy-governor.js';
 import { appendCommandLog, updateRunProgress } from './run-memory.js';
 import { loadProjectPolicy, getV2DeployTargets, isActionAllowed, isActionBlocked, requiresApproval } from './project-policy.js';
+import { createGitHubPullRequest, getPrAuthStatus } from './runtime-auth.js';
 import { createApprovalRecord, createArtifact, createInterrupt, getLatestRunForGoal } from './run-state.js';
 import { recordRuntimeEvent } from './runtime-events.js';
 import { Task, CommandProposal, ApprovalRequest, ProjectAction, ProjectPolicy } from '../../shared/src/types.js';
@@ -186,12 +187,20 @@ function commandForAction(policy: ProjectPolicy, action: ProjectAction, branchNa
     case 'push':
       return `git push -u origin ${branchName}`;
     case 'open_pr':
-      return `gh pr create --title "[agent] ${branchName}" --body "Autonomous change from Organism v2 controller"`;
+      return `open GitHub pull request for ${branchName}`;
     case 'deploy':
       return policy.commands.deploy ?? null;
     default:
       return null;
   }
+}
+
+function pullRequestTitle(branchName: string): string {
+  return `[agent] ${branchName}`;
+}
+
+function pullRequestBody(): string {
+  return 'Autonomous change from Organism v2 controller';
 }
 
 export function prepareEngineeringWorkspace(task: Task): EngineeringWorkspace {
@@ -278,7 +287,55 @@ export function prepareEngineeringWorkspace(task: Task): EngineeringWorkspace {
   };
 }
 
-export function runPolicyCommand(task: Task, workspace: EngineeringWorkspace, action: ProjectAction, command: string): ControllerCommandResult {
+async function runOpenPrAction(task: Task, workspace: EngineeringWorkspace, command: string): Promise<ControllerCommandResult> {
+  const auth = getPrAuthStatus(workspace.repoRootPath);
+  if (!auth.ready) {
+    return {
+      action: 'open_pr',
+      command,
+      ok: false,
+      output: auth.reason ?? 'PR creation is not ready.',
+    };
+  }
+
+  recordToolEvent(task, 'tool.started', { action: 'open_pr', mode: auth.mode, cwd: workspace.projectPath });
+  try {
+    const result = await createGitHubPullRequest({
+      repoPath: workspace.repoRootPath,
+      branchName: workspace.branchName,
+      baseBranch: workspace.defaultBranch,
+      title: pullRequestTitle(workspace.branchName),
+      body: pullRequestBody(),
+    });
+    const output = `${result.created ? 'Created' : 'Reused'} PR #${result.number} (${result.mode}) ${result.url}`;
+    recordToolEvent(task, 'tool.finished', { action: 'open_pr', ok: true, url: result.url, number: result.number, mode: result.mode });
+    if (task.goalId) {
+      appendCommandLog(task.goalId, { action: 'open_pr', command, ok: true, output });
+    }
+    recordControllerArtifact(task, 'command_log', 'PR output', output);
+    return {
+      action: 'open_pr',
+      command,
+      ok: true,
+      output,
+    };
+  } catch (err) {
+    const output = err instanceof Error ? err.message : String(err);
+    recordToolEvent(task, 'tool.finished', { action: 'open_pr', ok: false, error: output });
+    if (task.goalId) {
+      appendCommandLog(task.goalId, { action: 'open_pr', command, ok: false, output });
+    }
+    recordControllerArtifact(task, 'verification', 'PR creation failed', output);
+    return {
+      action: 'open_pr',
+      command,
+      ok: false,
+      output,
+    };
+  }
+}
+
+export async function runPolicyCommand(task: Task, workspace: EngineeringWorkspace, action: ProjectAction, command: string): Promise<ControllerCommandResult> {
   if (!isActionAllowed(workspace.policy, action)) {
     return {
       action,
@@ -286,6 +343,10 @@ export function runPolicyCommand(task: Task, workspace: EngineeringWorkspace, ac
       ok: false,
       output: `Action "${action}" is not allowed by policy for ${workspace.projectId}`,
     };
+  }
+
+  if (action === 'open_pr') {
+    return runOpenPrAction(task, workspace, command);
   }
 
   recordToolEvent(task, 'tool.started', { action, command, cwd: workspace.projectPath });
@@ -416,13 +477,13 @@ export function getDeployGate(projectId: string, policy: ProjectPolicy): { locke
   };
 }
 
-function executeOrQueueAction(params: {
+async function executeOrQueueAction(params: {
   task: Task;
   workspace: EngineeringWorkspace;
   action: ProjectAction;
   reason: string;
   autoExecute: boolean;
-}): { actionResult: ControllerCommandResult | null; proposal: CommandProposal | null; approval: ApprovalRequest | null } {
+}): Promise<{ actionResult: ControllerCommandResult | null; proposal: CommandProposal | null; approval: ApprovalRequest | null }> {
   const proposalResult = proposedAction(params.task, params.workspace, params.action, params.reason);
   if (!proposalResult.proposal) {
     return { actionResult: null, proposal: null, approval: null };
@@ -453,7 +514,7 @@ function executeOrQueueAction(params: {
     return { actionResult: null, proposal: proposalResult.proposal, approval: proposalResult.approval };
   }
 
-  const actionResult = runPolicyCommand(params.task, params.workspace, params.action, proposalResult.proposal.command);
+  const actionResult = await runPolicyCommand(params.task, params.workspace, params.action, proposalResult.proposal.command);
   if (actionResult.ok) {
     return { actionResult, proposal: null, approval: null };
   }
@@ -474,19 +535,19 @@ function executeOrQueueAction(params: {
   };
 }
 
-export function finalizeEngineeringExecution(task: Task, workspace: EngineeringWorkspace): EngineeringExecutionSummary {
+export async function finalizeEngineeringExecution(task: Task, workspace: EngineeringWorkspace): Promise<EngineeringExecutionSummary> {
   const changedFiles = collectChangedFiles(workspace);
   const verification: ControllerCommandResult[] = [];
   const controllerActions: ControllerCommandResult[] = [];
 
   if (workspace.policy.commands.lint) {
-    verification.push(runPolicyCommand(task, workspace, 'build', workspace.policy.commands.lint));
+    verification.push(await runPolicyCommand(task, workspace, 'build', workspace.policy.commands.lint));
   }
   if (workspace.policy.commands.test) {
-    verification.push(runPolicyCommand(task, workspace, 'run_tests', workspace.policy.commands.test));
+    verification.push(await runPolicyCommand(task, workspace, 'run_tests', workspace.policy.commands.test));
   }
   if (workspace.policy.commands.build) {
-    verification.push(runPolicyCommand(task, workspace, 'build', workspace.policy.commands.build));
+    verification.push(await runPolicyCommand(task, workspace, 'build', workspace.policy.commands.build));
   }
 
   const commitResult = commitIfSafe(task, workspace, changedFiles);
@@ -496,7 +557,7 @@ export function finalizeEngineeringExecution(task: Task, workspace: EngineeringW
   const canAutoAdvance = changedFiles.length > 0 && commitResult.committed && verificationPassed;
 
   if (changedFiles.length > 0) {
-    const pushResult = executeOrQueueAction({
+    const pushResult = await executeOrQueueAction({
       task,
       workspace,
       action: 'push',
@@ -507,7 +568,7 @@ export function finalizeEngineeringExecution(task: Task, workspace: EngineeringW
     if (pushResult.proposal) commandProposals.push(pushResult.proposal);
     if (pushResult.approval) approvalRequests.push(pushResult.approval);
 
-    const prResult = executeOrQueueAction({
+    const prResult = await executeOrQueueAction({
       task,
       workspace,
       action: 'open_pr',
@@ -520,7 +581,7 @@ export function finalizeEngineeringExecution(task: Task, workspace: EngineeringW
 
     const deployTargets = getV2DeployTargets(workspace.policy);
     if (deployTargets.length > 0) {
-      const deployResult = executeOrQueueAction({
+      const deployResult = await executeOrQueueAction({
         task,
         workspace,
         action: 'deploy',

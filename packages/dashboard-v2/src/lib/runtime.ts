@@ -311,6 +311,10 @@ function readDaemonStatus() {
         cleanWorktree?: boolean;
         workspaceMode?: string;
         deployUnlocked?: boolean;
+        prAuthReady?: boolean;
+        prAuthMode?: string;
+        vercelAuthReady?: boolean;
+        vercelAuthMode?: string;
         blockers?: string[];
         warnings?: string[];
         minimax?: { enabled?: boolean; ready?: boolean; allowedCommands?: string[] };
@@ -335,6 +339,10 @@ function readDaemonStatus() {
           cleanWorktree: item.cleanWorktree ?? false,
           workspaceMode: item.workspaceMode ?? 'direct',
           deployUnlocked: item.deployUnlocked ?? false,
+          prAuthReady: item.prAuthReady ?? false,
+          prAuthMode: item.prAuthMode ?? 'none',
+          vercelAuthReady: item.vercelAuthReady ?? false,
+          vercelAuthMode: item.vercelAuthMode ?? 'none',
           blockers: Array.isArray(item.blockers) ? item.blockers : [],
           warnings: Array.isArray(item.warnings) ? item.warnings : [],
           minimax: {

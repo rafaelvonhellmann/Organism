@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { getSecretOrNull } from '../../shared/src/secrets.js';
 import { MiniMaxCommand, ProjectPolicy } from '../../shared/src/types.js';
 
@@ -27,6 +27,45 @@ function commandExists(command: string): boolean {
   return result.status === 0;
 }
 
+function resolveCommandBinary(command: string): string {
+  if (process.platform !== 'win32' || /\.[a-z0-9]+$/i.test(command)) {
+    return command;
+  }
+  const shim = `${command}.cmd`;
+  const result = spawnSync('where.exe', [shim], { stdio: 'ignore', windowsHide: true });
+  return result.status === 0 ? shim : command;
+}
+
+function quoteCmdArg(value: string): string {
+  return /[\s"&|<>^]/.test(value)
+    ? `"${value.replace(/"/g, '""')}"`
+    : value;
+}
+
+function runMiniMax(args: string[], region: 'global' | 'cn', apiKey?: string | null): { status: number | null; stdout: string; stderr: string } {
+  const binary = resolveCommandBinary('mmx');
+  const result = process.platform === 'win32' && binary.endsWith('.cmd')
+    ? spawnSync('cmd.exe', ['/d', '/s', '/c', `${binary} ${args.map(quoteCmdArg).join(' ')}`.trim()], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: mmxEnv(region, apiKey),
+      timeout: 60_000,
+    })
+    : spawnSync(binary, args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: mmxEnv(region, apiKey),
+      timeout: 60_000,
+    });
+  return {
+    status: result.status,
+    stdout: (result.stdout || '').trim(),
+    stderr: (result.stderr || '').trim(),
+  };
+}
+
 function mmxEnv(region: 'global' | 'cn', apiKey?: string | null): NodeJS.ProcessEnv {
   const env = { ...process.env };
   if (apiKey) env.MINIMAX_API_KEY = apiKey;
@@ -36,13 +75,7 @@ function mmxEnv(region: 'global' | 'cn', apiKey?: string | null): NodeJS.Process
 
 function authStatus(region: 'global' | 'cn', apiKey?: string | null): boolean {
   try {
-    const result = spawnSync('mmx', ['auth', 'status'], {
-      encoding: 'utf8',
-      stdio: 'ignore',
-      windowsHide: true,
-      env: mmxEnv(region, apiKey),
-    });
-    return result.status === 0;
+    return runMiniMax(['auth', 'status'], region, apiKey).status === 0;
   } catch {
     return false;
   }
@@ -50,14 +83,7 @@ function authStatus(region: 'global' | 'cn', apiKey?: string | null): boolean {
 
 function ensureApiKeyAuth(region: 'global' | 'cn', apiKey: string): boolean {
   try {
-    execFileSync('mmx', ['auth', 'login', '--api-key', apiKey], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      env: mmxEnv(region, apiKey),
-      timeout: 30_000,
-    });
-    return true;
+    return runMiniMax(['auth', 'login', '--api-key', apiKey], region, apiKey).status === 0;
   } catch {
     return false;
   }
@@ -168,13 +194,11 @@ export function runMiniMaxSearch(policy: ProjectPolicy, query: string): MiniMaxS
   ensureCommandAllowed(status, 'search');
 
   const apiKey = getSecretOrNull('MINIMAX_API_KEY');
-  const raw = execFileSync('mmx', ['search', 'query', '--q', query, '--output', 'json'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-    env: mmxEnv(status.region, apiKey),
-    timeout: 60_000,
-  }).trim();
+  const result = runMiniMax(['search', 'query', '--q', query, '--output', 'json'], status.region, apiKey);
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || 'MiniMax search failed.');
+  }
+  const raw = result.stdout;
 
   let structured: unknown = raw;
   try {

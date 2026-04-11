@@ -64,7 +64,7 @@ describe('execution-controller', () => {
     workspaceDir = mkdtempSync(join(tmpdir(), 'organism-controller-test-'));
   });
 
-  it('blocks privileged actions that are disallowed by policy', () => {
+  it('blocks privileged actions that are disallowed by policy', async () => {
     const workspace: EngineeringWorkspace = {
       projectId: 'organism',
       repoRootPath: workspaceDir,
@@ -80,14 +80,14 @@ describe('execution-controller', () => {
       isolatedWorktree: false,
     };
 
-    const result = runPolicyCommand(buildTask(), workspace, 'push', 'git push -u origin test');
+    const result = await runPolicyCommand(buildTask(), workspace, 'push', 'git push -u origin test');
     rmSync(workspaceDir, { recursive: true, force: true });
 
     assert.equal(result.ok, false);
     assert.match(result.output, /not allowed by policy/i);
   });
 
-  it('executes allowed verification commands through the controller', () => {
+  it('executes allowed verification commands through the controller', async () => {
     const workspace: EngineeringWorkspace = {
       projectId: 'organism',
       repoRootPath: workspaceDir,
@@ -102,7 +102,7 @@ describe('execution-controller', () => {
       isolatedWorktree: false,
     };
 
-    const result = runPolicyCommand(buildTask(), workspace, 'build', 'echo controller-ok');
+    const result = await runPolicyCommand(buildTask(), workspace, 'build', 'echo controller-ok');
     rmSync(workspaceDir, { recursive: true, force: true });
 
     assert.equal(result.ok, true);

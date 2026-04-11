@@ -22,7 +22,7 @@ const CAPABILITY_CARDS = [
   },
   {
     title: 'Controller-Owned Safety',
-    body: 'Agents reason and propose. The controller owns privileged actions, policy checks, approvals, interrupts, and runtime events so execution is auditable and harder to derail with prompt drift.',
+    body: 'Agents reason and propose. The controller owns privileged actions, policy checks, approvals, interrupts, PR creation, deploy auth checks, and runtime events so execution is auditable and harder to derail with prompt drift.',
   },
   {
     title: 'Crash Recovery',
@@ -46,7 +46,7 @@ const CAPABILITY_CARDS = [
   },
   {
     title: 'Bounded Tool Providers',
-    body: 'Optional sidecar tools such as MiniMax are project-scoped and allowlisted. They are not the main brain of Organism and are only used for narrow capabilities such as external search when policy enables them.',
+    body: 'Optional sidecar tools such as MiniMax are project-scoped and allowlisted. They are not the main brain of Organism and are only used for narrow capabilities such as external search when policy enables them and local auth is ready.',
   },
 ];
 
@@ -79,6 +79,7 @@ const LIMITS = [
   'The safest first live pilot is Tokens for Good. Synapse should start with review or validation work only because it is medical and currently has a very dirty worktree.',
   'The website is an operator cockpit, not the full brain. The daemon must be running locally for the dashboard to reflect real work.',
   'The Command page now requires an explicit project selection before it will launch work. This is intentional safety behavior.',
+  'PR creation can now use GitHub CLI auth, environment tokens, or stored Git credentials. Deploy readiness can use either Vercel tokens or an existing local Vercel session.',
 ];
 
 const HARNESS_APPLIED = [

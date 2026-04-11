@@ -202,7 +202,7 @@ After making changes, output:
         maxTurns: 15,
       });
 
-      const controllerSummary = finalizeEngineeringExecution(task, workspace);
+      const controllerSummary = await finalizeEngineeringExecution(task, workspace);
 
       return {
         output: {

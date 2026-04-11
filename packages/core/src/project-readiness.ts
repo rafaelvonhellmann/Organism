@@ -4,6 +4,7 @@ import { spawnSync } from 'child_process';
 import { getProjectAutonomyHealth } from './autonomy-governor.js';
 import { getMiniMaxStatus } from './minimax.js';
 import { loadProjectPolicy } from './project-policy.js';
+import { getPrAuthStatus, getVercelAuthStatus } from './runtime-auth.js';
 
 export interface ProjectLaunchReadiness {
   projectId: string;
@@ -20,19 +21,17 @@ export interface ProjectLaunchReadiness {
   gitRemoteReachable: boolean;
   ghCliAvailable: boolean;
   ghAuthReady: boolean;
+  prAuthReady: boolean;
+  prAuthMode: 'token' | 'git-credentials' | 'gh' | 'none';
   vercelTokenPresent: boolean;
+  vercelAuthReady: boolean;
+  vercelAuthMode: 'token' | 'session' | 'none';
   tasklistPresent: boolean;
   configPresent: boolean;
   rootAgentsPresent: boolean;
   minimax: ReturnType<typeof getMiniMaxStatus>;
   blockers: string[];
   warnings: string[];
-}
-
-function commandExists(command: string): boolean {
-  const locator = process.platform === 'win32' ? 'where.exe' : 'which';
-  const result = spawnSync(locator, [command], { stdio: 'ignore' });
-  return result.status === 0;
 }
 
 function tryRun(command: string, args: string[], cwd?: string): string {
@@ -76,17 +75,6 @@ function githubHostTrusted(): boolean {
   }
 }
 
-function ghAuthReady(): boolean {
-  if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) return true;
-  if (!commandExists('gh')) return false;
-  const result = spawnSync('gh', ['auth', 'status'], {
-    encoding: 'utf8',
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  return result.status === 0;
-}
-
 function gitRemoteReachable(repoPath: string | null): boolean {
   if (!repoPath) return false;
   const output = tryRun('git', ['ls-remote', '--heads', 'origin'], repoPath);
@@ -119,6 +107,8 @@ export function getProjectLaunchReadiness(projectId: string): ProjectLaunchReadi
   const hostTrusted = gitRemoteProtocol !== 'ssh' || githubHostTrusted();
   const remoteReachable = gitRemoteReachable(repoPath);
   const minimax = getMiniMaxStatus(policy);
+  const prAuth = getPrAuthStatus(repoPath, gitRemoteUrl);
+  const vercelAuth = getVercelAuthStatus();
 
   const blockers: string[] = [];
   const warnings: string[] = [];
@@ -140,11 +130,11 @@ export function getProjectLaunchReadiness(projectId: string): ProjectLaunchReadi
   if (policy.allowedActions.includes('push') && !remoteReachable) {
     blockers.push('Git remote is not reachable non-interactively for push actions.');
   }
-  if (policy.allowedActions.includes('open_pr') && !ghAuthReady()) {
-    warnings.push('gh auth is not ready; PR creation may pause even if git push works.');
+  if (policy.allowedActions.includes('open_pr') && !prAuth.ready) {
+    warnings.push(prAuth.reason ?? 'PR creation is not ready and may pause.');
   }
-  if (policy.allowedActions.includes('deploy') && !process.env.VERCEL_TOKEN) {
-    warnings.push('VERCEL_TOKEN is not present; deploy actions may pause.');
+  if (policy.allowedActions.includes('deploy') && !vercelAuth.ready) {
+    warnings.push(vercelAuth.reason ?? 'Deploy actions may pause because Vercel auth is not ready.');
   }
   if (gitRemoteProtocol === 'ssh' && !hostTrusted) {
     blockers.push('GitHub SSH host trust is not established for this machine.');
@@ -175,9 +165,13 @@ export function getProjectLaunchReadiness(projectId: string): ProjectLaunchReadi
     gitRemoteProtocol,
     githubHostTrusted: hostTrusted,
     gitRemoteReachable: remoteReachable,
-    ghCliAvailable: commandExists('gh'),
-    ghAuthReady: ghAuthReady(),
-    vercelTokenPresent: Boolean(process.env.VERCEL_TOKEN),
+    ghCliAvailable: prAuth.ghCliAvailable,
+    ghAuthReady: prAuth.ghAuthReady,
+    prAuthReady: prAuth.ready,
+    prAuthMode: prAuth.mode,
+    vercelTokenPresent: vercelAuth.tokenPresent,
+    vercelAuthReady: vercelAuth.ready,
+    vercelAuthMode: vercelAuth.mode,
     tasklistPresent: tasklistPath ? fs.existsSync(tasklistPath) : false,
     configPresent: fs.existsSync(configPath),
     rootAgentsPresent: fs.existsSync(rootAgentsPath),

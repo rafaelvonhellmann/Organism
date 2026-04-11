@@ -28,8 +28,11 @@ import { listProjectAutonomyHealth } from '../packages/core/src/autonomy-governo
 import { recoverInterruptedWork } from '../packages/core/src/run-recovery.js';
 import { isRateLimited, getRateLimitStatus, resolveModelBackend } from '../agents/_base/mcp-client.js';
 import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
+import { bootstrapRuntimeEnv } from '../packages/shared/src/runtime-env.js';
+import { getSecretOrNull } from '../packages/shared/src/secrets.js';
 // Dashboard import is conditional — skip if port is already in use (started by ensure-services)
 let dashboardServer: unknown = null;
+bootstrapRuntimeEnv();
 const VERSION = '0.2.0';
 const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? '7391');
 const DAEMON_POLL_MS = 10_000;   // 10 seconds — agent runner polling interval
@@ -83,12 +86,16 @@ interface DaemonStatus {
   }>;
   readiness: Array<{
     projectId: string;
-    cleanWorktree: boolean;
-    workspaceMode: string;
-    deployUnlocked: boolean;
-    blockers: string[];
-    warnings: string[];
-    minimax: {
+      cleanWorktree: boolean;
+      workspaceMode: string;
+      deployUnlocked: boolean;
+      prAuthReady: boolean;
+      prAuthMode: string;
+      vercelAuthReady: boolean;
+      vercelAuthMode: string;
+      blockers: string[];
+      warnings: string[];
+      minimax: {
       enabled: boolean;
       ready: boolean;
       allowedCommands: string[];
@@ -159,6 +166,10 @@ function buildStatus(): DaemonStatus {
       cleanWorktree: project.cleanWorktree,
       workspaceMode: project.workspaceMode,
       deployUnlocked: project.deployUnlocked,
+      prAuthReady: project.prAuthReady,
+      prAuthMode: project.prAuthMode,
+      vercelAuthReady: project.vercelAuthReady,
+      vercelAuthMode: project.vercelAuthMode,
       blockers: project.blockers,
       warnings: project.warnings,
       minimax: {
@@ -482,7 +493,7 @@ function runHealthCheck(): void {
   }
 
   process.stdout.write('Anthropic API key: ');
-  if (process.env.ANTHROPIC_API_KEY) {
+  if (getSecretOrNull('ANTHROPIC_API_KEY')) {
     console.log('Present');
   } else {
     console.log('Missing — Claude CLI backend required');
@@ -537,7 +548,7 @@ function runHealthCheck(): void {
 
   // OpenAI (optional)
   process.stdout.write('OpenAI API key (optional): ');
-  console.log(process.env.OPENAI_API_KEY ? 'Present' : 'Missing — Codex Review will not function');
+  console.log(getSecretOrNull('OPENAI_API_KEY') ? 'Present' : 'Missing — Codex Review will not function');
 
   console.log('');
 

@@ -121,6 +121,10 @@ interface RuntimeSnapshot {
       cleanWorktree: boolean;
       workspaceMode: string;
       deployUnlocked: boolean;
+      prAuthReady: boolean;
+      prAuthMode: string;
+      vercelAuthReady: boolean;
+      vercelAuthMode: string;
       blockers: string[];
       warnings: string[];
       minimax: {
@@ -261,10 +265,12 @@ export default function RuntimePage() {
               <div className="text-zinc-200">
                 Launch readiness for <span className="font-semibold">{selectedReadiness.projectId}</span>
               </div>
-              <div className="mt-2 grid grid-cols-2 lg:grid-cols-4 gap-3 text-zinc-300">
+              <div className="mt-2 grid grid-cols-2 lg:grid-cols-6 gap-3 text-zinc-300">
                 <div>Worktree: {selectedReadiness.cleanWorktree ? 'clean' : 'dirty'}</div>
                 <div>Workspace mode: {selectedReadiness.workspaceMode}</div>
                 <div>Deploy gate: {selectedReadiness.deployUnlocked ? 'open' : 'PR-only'}</div>
+                <div>PR auth: {selectedReadiness.prAuthReady ? selectedReadiness.prAuthMode : 'not ready'}</div>
+                <div>Deploy auth: {selectedReadiness.vercelAuthReady ? selectedReadiness.vercelAuthMode : 'not ready'}</div>
                 <div>MiniMax: {selectedReadiness.minimax.enabled ? (selectedReadiness.minimax.ready ? 'ready' : 'not ready') : 'off'}</div>
               </div>
               {selectedReadiness.blockers.length > 0 && (
