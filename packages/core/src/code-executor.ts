@@ -25,6 +25,11 @@ export interface CodeExecutionResult {
   rawOutput: string;
 }
 
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error ?? '');
+}
+
 function commandExists(command: string): boolean {
   const locator = process.platform === 'win32' ? 'where.exe' : 'which';
   const result = spawnSync(locator, [command], { stdio: 'ignore' });
@@ -195,8 +200,41 @@ function runCodexExec(params: CodeExecutionParams): Promise<CodeExecutionResult>
   });
 }
 
+export function shouldFallbackFromClaudeExecutor(error: unknown): boolean {
+  const message = errorMessage(error);
+  return /credit balance is too low|rate limit|429|529|overloaded|RATE_LIMITED/i.test(message);
+}
+
+export function shouldFallbackFromCodexExecutor(error: unknown): boolean {
+  const message = errorMessage(error);
+  return /rate limit|429|403|401|unauthorized|login|quota|billing|credit|usage limit|insufficient/i.test(message);
+}
+
 export async function runCodeExecutor(params: CodeExecutionParams): Promise<CodeExecutionResult> {
-  const selected = resolveCodeExecutor(params.preference).selected;
-  if (selected === 'codex') return runCodexExec(params);
-  return runClaudeExec(params);
+  const executor = resolveCodeExecutor(params.preference);
+  if (executor.preferred !== 'auto') {
+    return executor.selected === 'codex' ? runCodexExec(params) : runClaudeExec(params);
+  }
+
+  if (executor.selected === 'claude') {
+    try {
+      return await runClaudeExec(params);
+    } catch (error) {
+      if (executor.available.codex && shouldFallbackFromClaudeExecutor(error)) {
+        console.warn(`[CodeExecutor] Claude failed (${errorMessage(error)}). Falling back to Codex.`);
+        return runCodexExec(params);
+      }
+      throw error;
+    }
+  }
+
+  try {
+    return await runCodexExec(params);
+  } catch (error) {
+    if (executor.available.claude && shouldFallbackFromCodexExecutor(error)) {
+      console.warn(`[CodeExecutor] Codex failed (${errorMessage(error)}). Falling back to Claude.`);
+      return runClaudeExec(params);
+    }
+    throw error;
+  }
 }

@@ -26,7 +26,7 @@ async function healthCheck() {
   try {
     const backend = resolveModelBackend();
     console.log(
-      `${backend.selected} (preferred=${backend.preferred}, claudeCli=${backend.available.claudeCli}, anthropicApi=${backend.available.anthropicApi}, webSearch=${backend.capabilities.webSearch})`,
+      `${backend.selected} (preferred=${backend.preferred}, claudeCli=${backend.available.claudeCli}, anthropicApi=${backend.available.anthropicApi}, codexCli=${backend.available.codexCli}, openaiApi=${backend.available.openaiApi}, webSearch=${backend.capabilities.webSearch})`,
     );
   } catch (err) {
     console.log(`FAIL — ${err}`);
