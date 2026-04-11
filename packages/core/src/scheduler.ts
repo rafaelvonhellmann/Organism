@@ -368,7 +368,10 @@ async function schedulerTick(): Promise<void> {
   // Auto-execute on approved findings — create follow-up tasks
   try {
     const { processApprovedFindings } = await import('./auto-executor.js');
-    await processApprovedFindings();
+    const followupsCreated = await processApprovedFindings();
+    if (followupsCreated > 0) {
+      await dispatchPendingTasks();
+    }
   } catch { /* non-critical */ }
 
   // Auto-dispatch any new tasks created by the agents (child tasks, quality reviews, etc.)

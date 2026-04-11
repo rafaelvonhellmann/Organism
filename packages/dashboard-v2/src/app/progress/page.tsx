@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { Header } from '@/components/header';
 import { StatusBadge } from '@/components/status-badge';
+import { getInitialSelectedProject } from '@/lib/selected-project';
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -113,7 +114,7 @@ const COLUMNS: KanbanColumn[] = [
 // ── Component ──────────────────────────────────────────────────
 
 export default function ProgressPage() {
-  const [project, setProject] = useState('');
+  const [project, setProject] = useState(() => getInitialSelectedProject());
   const [data, setData] = useState<ProgressData | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);

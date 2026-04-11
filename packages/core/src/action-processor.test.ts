@@ -1,7 +1,11 @@
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { claimDashboardAction, processDashboardActions } from './action-processor.js';
-import { getDb } from './task-queue.js';
+import { configureTestState } from './test-state.js';
+
+configureTestState(import.meta.url);
+
+const { claimDashboardAction, processDashboardActions } = await import('./action-processor.js');
+const { getDb } = await import('./task-queue.js');
 
 function resetDashboardActions() {
   getDb().exec(`DELETE FROM dashboard_actions;`);

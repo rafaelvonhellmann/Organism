@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Header } from '@/components/header';
 import { cleanForDisplay, renderMarkdown } from '@/lib/markdown';
+import { getInitialSelectedProject } from '@/lib/selected-project';
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -58,34 +59,45 @@ const SEVERITY_ORDER: Record<string, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 // ── Component ──────────────────────────────────────────────────
 
 export default function InsightsPage() {
-  const [project, setProject] = useState('');
+  const [project, setProject] = useState(() => getInitialSelectedProject());
   const [runs, setRuns] = useState<ReviewRun[]>([]);
   const [cycles, setCycles] = useState<ReviewCycle[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const requestSeq = useRef(0);
 
   const fetchData = useCallback(async () => {
+    const seq = ++requestSeq.current;
     try {
       const pf = project ? `?project=${project}` : '';
       const [assessRes, cyclesRes] = await Promise.all([
         fetch(`/api/assessments${pf}`, { cache: 'no-store' }),
-        fetch(`/api/cycles${pf || '?project=synapse'}`, { cache: 'no-store' }),
+        fetch(`/api/cycles${pf}`, { cache: 'no-store' }),
       ]);
+      if (seq !== requestSeq.current) return;
       if (assessRes.ok) {
         const data = await assessRes.json();
+        if (seq !== requestSeq.current) return;
         setRuns(data.runs ?? []);
       }
       if (cyclesRes.ok) {
         const data = await cyclesRes.json();
+        if (seq !== requestSeq.current) return;
         setCycles(data.cycles ?? []);
       }
       setLastUpdated(new Date());
     } catch { /* silent */ }
-    finally { setLoading(false); }
+    finally {
+      if (seq === requestSeq.current) {
+        setLoading(false);
+      }
+    }
   }, [project]);
 
   useEffect(() => {
     setLoading(true);
+    setRuns([]);
+    setCycles([]);
     fetchData();
     const id = setInterval(fetchData, 60_000);
     return () => clearInterval(id);

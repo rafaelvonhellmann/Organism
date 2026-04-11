@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Header } from '@/components/header';
+import { getInitialSelectedProject } from '@/lib/selected-project';
 
 interface RuntimeGoal {
   id: string;
@@ -160,7 +161,7 @@ function statusTone(status: string): string {
 }
 
 export default function RuntimePage() {
-  const [project, setProject] = useState('');
+  const [project, setProject] = useState(() => getInitialSelectedProject());
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [connected, setConnected] = useState(false);

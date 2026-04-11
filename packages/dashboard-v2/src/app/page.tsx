@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { Header } from '@/components/header';
 import { StatusBadge } from '@/components/status-badge';
 import { renderMarkdown, cleanForDisplay } from '@/lib/markdown';
+import { getInitialSelectedProject } from '@/lib/selected-project';
 import { usePolling } from '@/hooks/use-polling';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard';
 import Link from 'next/link';
@@ -363,7 +364,7 @@ function ReviewQueueInner() {
   const searchParams = useSearchParams();
   const perspectiveFilter = searchParams.get('perspective');
 
-  const [project, setProject] = useState('');
+  const [project, setProject] = useState(() => getInitialSelectedProject());
   const [queue, setQueue] = useState<QueueTask[]>([]);
   const [reviewedCount, setReviewedCount] = useState(0);
   const [currentIndex, setCurrentIndex] = useState(0);

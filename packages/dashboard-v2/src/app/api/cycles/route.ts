@@ -12,13 +12,15 @@ export async function GET(req: NextRequest) {
 
   await ensureTables();
 
-  const project = req.nextUrl.searchParams.get('project') ?? 'synapse';
+  const project = req.nextUrl.searchParams.get('project');
 
   try {
-    const result = await client.execute({
-      sql: `SELECT * FROM review_cycles WHERE project_id = ? ORDER BY started_at DESC LIMIT 20`,
-      args: [project],
-    });
+    const result = project
+      ? await client.execute({
+          sql: `SELECT * FROM review_cycles WHERE project_id = ? ORDER BY started_at DESC LIMIT 20`,
+          args: [project],
+        })
+      : await client.execute(`SELECT * FROM review_cycles ORDER BY started_at DESC LIMIT 20`);
 
     return Response.json({ cycles: result.rows });
   } catch {

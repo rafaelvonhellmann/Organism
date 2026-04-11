@@ -51,7 +51,8 @@ export async function GET(req: NextRequest) {
 
   // Group tasks by project_id + date + hour to identify review runs.
   // A "review run" = tasks created within the same hour for the same project,
-  // excluding pipeline agents (grill-me, codex-review, quality-agent).
+  // either because there were multiple primary tasks or because the hour contains
+  // explicit review workflow tasks such as a canary repo review.
   try {
     const result = await client.execute({
       sql: `
@@ -60,16 +61,24 @@ export async function GET(req: NextRequest) {
           strftime('%Y-%m-%d', t.created_at / 1000, 'unixepoch') AS run_date,
           CAST(strftime('%H', t.created_at / 1000, 'unixepoch') AS INTEGER) AS run_hour,
           COUNT(DISTINCT t.id) AS task_count,
+          COUNT(DISTINCT CASE
+            WHEN t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent', 'risk-classifier')
+            THEN t.id
+          END) AS primary_task_count,
+          COUNT(DISTINCT CASE
+            WHEN t.workflow_kind = 'review'
+            THEN t.id
+          END) AS review_task_count,
           COUNT(DISTINCT t.agent) AS agent_count,
           GROUP_CONCAT(DISTINCT t.agent) AS agents,
           COALESCE(SUM(t.cost_usd), 0) AS total_cost,
           MIN(t.id) AS earliest_task_id,
           MIN(t.created_at) AS earliest_created
         FROM tasks t
-        WHERE t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent', 'risk-classifier')
+        WHERE 1 = 1
           ${projectFilter}
         GROUP BY t.project_id, run_date, run_hour
-        HAVING task_count >= 2
+        HAVING primary_task_count >= 2 OR review_task_count >= 1
         ORDER BY run_date DESC, run_hour DESC
         LIMIT 100
       `,
@@ -145,7 +154,8 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // Get synthesis agent output if it exists
+      // Get synthesis agent output if it exists, otherwise fall back to the
+      // latest review artifact so canary reviews still show up as insights.
       let synthesisSummary: string | null = null;
       try {
         const synthResult = await client.execute({
@@ -172,6 +182,36 @@ export async function GET(req: NextRequest) {
         // No synthesis data
       }
 
+      if (!synthesisSummary) {
+        try {
+          const reviewResult = await client.execute({
+            sql: `
+              SELECT t.output
+              FROM tasks t
+              WHERE t.project_id = ?
+                AND t.created_at >= ? AND t.created_at < ?
+                AND t.agent IN ('quality-agent', 'codex-review')
+              ORDER BY t.created_at DESC LIMIT 1
+            `,
+            args: [pid, hourStart, hourEnd],
+          });
+
+          if (reviewResult.rows.length > 0 && reviewResult.rows[0].output) {
+            const raw = reviewResult.rows[0].output;
+            if (typeof raw === 'string') {
+              try {
+                const parsed = JSON.parse(raw) as { summary?: string; review?: string; text?: string };
+                synthesisSummary = parsed.summary ?? parsed.review ?? parsed.text ?? JSON.stringify(parsed).slice(0, 500);
+              } catch {
+                synthesisSummary = raw.slice(0, 500);
+              }
+            }
+          }
+        } catch {
+          // No review artifact data.
+        }
+      }
+
       // Get top findings (high-severity tasks in this run)
       const topFindings: { agent: string; description: string; severity: string }[] = [];
       try {
@@ -181,7 +221,7 @@ export async function GET(req: NextRequest) {
             FROM tasks t
             WHERE t.project_id = ?
               AND t.created_at >= ? AND t.created_at < ?
-              AND t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent', 'risk-classifier', 'synthesis')
+              AND t.agent NOT IN ('risk-classifier', 'synthesis')
             ORDER BY
               CASE t.lane WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 WHEN 'LOW' THEN 2 ELSE 3 END,
               t.created_at ASC

@@ -48,6 +48,8 @@ Review principles:
 - Prefer evidence over speculation
 - If evidence is missing, say so clearly
 - Keep the output useful for a founder deciding whether to proceed
+- Mark only LOW or MEDIUM findings as "actionable": true when they are safe for autonomous follow-up inside stabilization mode
+- Mark HIGH findings as "actionable": false unless the follow-up is purely read-only validation
 
 Return ONLY valid JSON with this exact shape:
 {
@@ -120,8 +122,16 @@ function normalizeCanaryReviewResponse(
             summary: finding.summary,
             evidence: typeof finding.evidence === 'string' ? finding.evidence : undefined,
             remediation: typeof finding.remediation === 'string' ? finding.remediation : undefined,
-            actionable: false,
-            targetCapability: typeof finding.targetCapability === 'string' ? finding.targetCapability : undefined,
+            actionable: (finding.severity === 'MEDIUM' || finding.severity === 'LOW')
+              && typeof finding.remediation === 'string'
+              && finding.remediation.trim().length > 0
+              ? (typeof finding.actionable === 'boolean' ? finding.actionable : true)
+              : false,
+            targetCapability: typeof finding.targetCapability === 'string'
+              ? (finding.followupKind === 'implement' && finding.targetCapability === 'quality.review'
+                ? 'engineering.code'
+                : finding.targetCapability)
+              : undefined,
             followupKind: finding.followupKind,
           }))
         : [],
@@ -349,6 +359,8 @@ Cover:
     const nextStepsMarkdown = parsed.nextSteps.length > 0
       ? `\n\n### Next Steps\n${parsed.nextSteps.map((step) => `- ${step}`).join('\n')}`
       : '';
+    const canSeedValidationFollowup = parsed.decision === 'APPROVED'
+      && policy.launchGuards.initialAllowedWorkflows.includes('validate');
 
     return {
       output: {
@@ -359,10 +371,19 @@ Cover:
         score: parsed.score,
         mode: 'project_review',
         projectId,
-        findings: parsed.findings.map((finding) => ({
-          ...finding,
-          actionable: false,
-        })),
+        findings: parsed.findings,
+        handoffRequests: canSeedValidationFollowup
+          ? [
+              {
+                id: `canary-validate-${projectId}`,
+                targetAgent: 'engineering',
+                workflowKind: 'validate',
+                reason: 'Approved canary review should turn into concrete repo validation automatically.',
+                summary: `Run bounded canary validation for ${projectId} and capture the next safe implementation blockers.`,
+                execution: true,
+              },
+            ]
+          : [],
         artifacts: [
           {
             kind: 'report' as const,

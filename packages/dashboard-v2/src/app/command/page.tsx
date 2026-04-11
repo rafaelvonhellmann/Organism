@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from '@/components/header';
 import { cleanForDisplay } from '@/lib/markdown';
+import { getInitialSelectedProject } from '@/lib/selected-project';
 
 interface Action {
   id: number;
@@ -48,7 +49,7 @@ interface RuntimeSnapshot {
 }
 
 export default function CommandPage() {
-  const [project, setProject] = useState('');
+  const [project, setProject] = useState(() => getInitialSelectedProject());
   const [command, setCommand] = useState('');
   const [actions, setActions] = useState<Action[]>([]);
   const [sending, setSending] = useState(false);

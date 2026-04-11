@@ -7,8 +7,14 @@
 import * as path from 'path';
 
 const HOME = process.env.USERPROFILE ?? process.env.HOME ?? '.';
+const TEST_STATE_ROOT = path.join(process.cwd(), '.tmp', 'organism-test-state');
+
+function isTestRuntime(): boolean {
+  return process.argv.includes('--test') || process.env.NODE_ENV === 'test';
+}
 
 export const STATE_DIR = process.env.ORGANISM_STATE_DIR
+  ?? (isTestRuntime() ? path.join(TEST_STATE_ROOT, String(process.pid)) : undefined)
   ?? path.resolve(HOME, '.organism', 'state');
 
 export const DB_PATH = path.join(STATE_DIR, 'tasks.db');

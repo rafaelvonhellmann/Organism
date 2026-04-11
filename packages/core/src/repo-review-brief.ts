@@ -75,9 +75,9 @@ function collectChangedFiles(repoPath: string): string[] {
   if (!status) return [];
   return status
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map((line) => line.replace(/\r$/, ''))
     .filter(Boolean)
-    .map((line) => line.slice(3).trim())
+    .map((line) => line.slice(3).trimStart())
     .slice(0, 20);
 }
 

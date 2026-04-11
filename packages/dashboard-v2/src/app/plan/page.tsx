@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Header } from '@/components/header';
 import { usePolling } from '@/hooks/use-polling';
+import { getInitialSelectedProject } from '@/lib/selected-project';
 import Link from 'next/link';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -255,7 +256,7 @@ function statusDot(status: string): string {
 // ── Component ──────────────────────────────────────────────────
 
 export default function PlanPage() {
-  const [project, setProject] = useState('');
+  const [project, setProject] = useState(() => getInitialSelectedProject());
   const [activePeriod, setActivePeriod] = useState<PeriodKey>('thisWeek');
   const taskUrl = project ? `/api/tasks?limit=200&project=${project}` : '/api/tasks?limit=200';
   const { data: tasksData, lastUpdated } = usePolling<{ tasks: TaskRow[] }>(taskUrl);

@@ -1,8 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-
-const SELECTED_PROJECT_KEY = 'organism.selectedProject';
+import { getInitialSelectedProject, persistSelectedProject } from '@/lib/selected-project';
 
 const PROJECT_DISPLAY_NAMES: Record<string, string> = {
   'synapse': 'Synapse',
@@ -14,30 +13,10 @@ function displayName(id: string): string {
   return PROJECT_DISPLAY_NAMES[id] ?? id;
 }
 
-function readSavedProject(): string {
-  try {
-    return window.localStorage.getItem(SELECTED_PROJECT_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-function persistProject(projectId: string): void {
-  try {
-    if (projectId) {
-      window.localStorage.setItem(SELECTED_PROJECT_KEY, projectId);
-    } else {
-      window.localStorage.removeItem(SELECTED_PROJECT_KEY);
-    }
-  } catch {
-    // Storage is best-effort only.
-  }
-}
-
 /** Pick the best default: keep prior selection when possible, otherwise prefer All Projects. */
 function pickDefault(projects: string[], allowAllProjects: boolean, currentProject: string): string {
   if (currentProject && projects.includes(currentProject)) return currentProject;
-  const savedProject = readSavedProject();
+  const savedProject = getInitialSelectedProject();
   if (savedProject && projects.includes(savedProject)) return savedProject;
   if (allowAllProjects) return '';
   const nonInternal = projects.find(p => p !== 'organism');
@@ -84,7 +63,7 @@ export function Header({
 
   useEffect(() => {
     if (!initialized) return;
-    persistProject(project);
+    persistSelectedProject(project);
   }, [initialized, project]);
 
   // Update "ago" every second
@@ -117,7 +96,7 @@ export function Header({
           value={project}
           onChange={e => {
             const nextProject = e.target.value;
-            persistProject(nextProject);
+            persistSelectedProject(nextProject);
             onProjectChange(nextProject);
           }}
           className="bg-zinc-800 border border-edge rounded-md px-2.5 py-1.5 text-sm text-zinc-300 focus:outline-none focus:border-emerald-500 cursor-pointer"

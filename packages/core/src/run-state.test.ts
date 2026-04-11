@@ -1,8 +1,12 @@
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { getDb } from './task-queue.js';
-import { ensureGoal, createRunSession, updateRunStatus, getGoal, mapProviderFailure } from './run-state.js';
-import { listRuntimeEvents, clearRuntimeEventsForTests } from './runtime-events.js';
+import { configureTestState } from './test-state.js';
+
+configureTestState(import.meta.url);
+
+const { getDb } = await import('./task-queue.js');
+const { ensureGoal, createRunSession, updateRunStatus, getGoal, mapProviderFailure } = await import('./run-state.js');
+const { listRuntimeEvents, clearRuntimeEventsForTests } = await import('./runtime-events.js');
 
 function resetRuntimeState() {
   const db = getDb();

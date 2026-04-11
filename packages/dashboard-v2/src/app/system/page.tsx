@@ -5,6 +5,7 @@ import { Header } from '@/components/header';
 import { SpendBar } from '@/components/spend-bar';
 import { SparkChart } from '@/components/spark-chart';
 import { TimeRangeSelector, RANGES } from '@/components/time-range';
+import { getInitialSelectedProject } from '@/lib/selected-project';
 import { usePolling } from '@/hooks/use-polling';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -222,7 +223,7 @@ const TABS: { key: Tab; label: string }[] = [
 // ── Component ──────────────────────────────────────────────────
 
 export default function SystemPage() {
-  const [project, setProject] = useState('');
+  const [project, setProject] = useState(() => getInitialSelectedProject());
   const [tab, setTab] = useState<Tab>('budget');
   const [rangeMs, setRangeMs] = useState(RANGES[2].ms); // default 14d
 

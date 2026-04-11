@@ -8,18 +8,28 @@ import * as path from 'path';
 import { Task, TaskStatus, RiskLane } from '../../shared/src/types.js';
 import { OrganismError } from '../../shared/src/error-taxonomy.js';
 
+function isTestRuntime(): boolean {
+  return process.argv.includes('--test') || process.env.NODE_ENV === 'test';
+}
+
+function resolveDbPath(): string {
+  if (process.env.ORGANISM_DB_PATH) return process.env.ORGANISM_DB_PATH;
+  if (isTestRuntime()) {
+    return path.resolve(process.cwd(), '.tmp', 'organism-test-state', String(process.pid), 'tasks.db');
+  }
+  return path.resolve(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.organism/state/tasks.db');
+}
+
 // DB lives OUTSIDE OneDrive to prevent cloud-sync corruption.
 // OneDrive + SQLite WAL = known corruption risk.
-const DB_PATH = process.env.ORGANISM_DB_PATH
-  ?? path.resolve(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.organism/state/tasks.db');
-
 let _db: DatabaseSync | null = null;
 
 export function getDb(): DatabaseSync {
   if (_db) return _db;
-  const dir = path.dirname(DB_PATH);
+  const dbPath = resolveDbPath();
+  const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  _db = new DatabaseSync(DB_PATH);
+  _db = new DatabaseSync(dbPath);
   runMigrations(_db);
   return _db;
 }
