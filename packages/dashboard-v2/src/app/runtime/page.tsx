@@ -114,6 +114,10 @@ interface AutonomyHealth {
   projectId: string;
   autonomyMode: string;
   requiredConsecutiveRuns: number;
+  rolloutStage: string;
+  nextRolloutStage: string | null;
+  nextRolloutThreshold: number | null;
+  nextRolloutLabel: string | null;
   consecutiveHealthyRuns: number;
   recentCompletedRuns: number;
   recentProviderFailures: number;
@@ -133,6 +137,23 @@ interface RuntimeSnapshot {
   approvals: RuntimeApproval[];
   artifacts: RuntimeArtifact[];
   recentOutputs: RuntimeTaskOutput[];
+  usefulOutputs: Array<{
+    id: string;
+    source: 'artifact' | 'task';
+    kind: string;
+    title: string;
+    summary: string | null;
+    createdAt: number;
+    meta: string;
+  }>;
+  blockers: Array<{
+    kind: 'review_paused' | 'review_retry' | 'awaiting_review' | 'execution_paused';
+    severity: 'warning' | 'critical';
+    title: string;
+    detail: string;
+    count: number;
+    taskIds: string[];
+  }>;
   recentEvents: RuntimeEvent[];
   compareTargets: CompareTarget[];
   autonomy: AutonomyHealth[];
@@ -209,6 +230,21 @@ function formatDuration(ms: number | null): string {
   return `${seconds}s`;
 }
 
+function formatEta(run: RuntimeRun): string {
+  if (run.status === 'completed') return 'done';
+  if (Date.now() - run.updatedAt > 120_000) return 'stalled';
+  if (run.estimatedDurationMs == null) return 'estimating';
+  if ((run.etaMs ?? 0) <= 0) return 'overdue';
+  return formatDuration(run.etaMs);
+}
+
+function rolloutTone(stage: string): string {
+  if (stage === 'graduated') return 'text-emerald-400';
+  if (stage === 'deploy_ready') return 'text-sky-400';
+  if (stage === 'bounded') return 'text-amber-300';
+  return 'text-amber-400';
+}
+
 export default function RuntimePage() {
   const [project, setProject] = useState(() => getInitialSelectedProject());
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot | null>(null);
@@ -226,6 +262,13 @@ export default function RuntimePage() {
 
   useEffect(() => {
     fetchSnapshot().catch(() => {});
+  }, [fetchSnapshot]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      fetchSnapshot().catch(() => {});
+    }, 10_000);
+    return () => clearInterval(id);
   }, [fetchSnapshot]);
 
   useEffect(() => {
@@ -275,6 +318,8 @@ export default function RuntimePage() {
   }, [project, snapshot]);
   const daemonAgeMs = snapshot?.daemon?.observedAt ? Math.max(0, Date.now() - snapshot.daemon.observedAt) : null;
   const daemonLooksStale = daemonAgeMs != null && daemonAgeMs > 90_000;
+  const blockerCount = snapshot?.blockers?.length ?? 0;
+  const daemonStateLabel = daemonLooksStale ? 'stale' : activeRuns.length > 0 ? 'active' : blockerCount > 0 ? 'blocked' : 'idle';
 
   return (
     <>
@@ -310,6 +355,9 @@ export default function RuntimePage() {
             <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">
               Rate limit: {snapshot?.daemon?.rateLimitStatus.limited ? `yes (${snapshot.daemon.rateLimitStatus.usagePct.toFixed(0)}%)` : 'clear'}
             </div>
+            <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">
+              Daemon state: {daemonStateLabel}
+            </div>
           </div>
           {snapshot?.daemon && (
             <div className="mt-3 text-xs text-zinc-500">
@@ -324,6 +372,23 @@ export default function RuntimePage() {
               The website may still show old in-progress cards until the next successful sync.
             </div>
           )}
+          {snapshot?.blockers?.length ? (
+            <div className="mt-4 space-y-2">
+              {snapshot.blockers.map((blocker) => (
+                <div
+                  key={`${blocker.kind}-${blocker.taskIds.join('-')}`}
+                  className={`rounded-lg border p-3 text-xs ${
+                    blocker.severity === 'critical'
+                      ? 'border-red-500/30 bg-red-500/10 text-red-200'
+                      : 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+                  }`}
+                >
+                  <div className="font-semibold">{blocker.title}</div>
+                  <div className="mt-1 opacity-90">{blocker.detail}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {snapshot?.daemon?.rateLimitStatus.limited && snapshot.daemon.rateLimitStatus.resetsAt && (
             <div className="mt-3 text-xs text-amber-400">
               Provider rate limit active until {snapshot.daemon.rateLimitStatus.resetsAt}
@@ -366,6 +431,38 @@ export default function RuntimePage() {
           )}
         </section>
 
+        <section className="bg-surface rounded-xl border border-edge p-5">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-zinc-100">Useful Output</h3>
+              <p className="text-xs text-zinc-500 mt-1">The latest patch, verification, report, or task output that actually moves the selected project forward.</p>
+            </div>
+            <span className="text-xs text-zinc-500">{snapshot?.usefulOutputs.length ?? 0} surfaced</span>
+          </div>
+          <div className="mt-4 grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {snapshot?.usefulOutputs.length ? snapshot.usefulOutputs.map((item) => (
+              <div key={item.id} className="rounded-lg border border-edge/60 bg-surface-alt/20 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm text-zinc-100">{item.title}</div>
+                    <div className="text-xs text-zinc-500 mt-1">{item.meta}</div>
+                  </div>
+                  <span className="text-[11px] text-zinc-500">{formatTime(item.createdAt)}</span>
+                </div>
+                {item.summary && (
+                  <pre className="mt-3 whitespace-pre-wrap text-xs text-zinc-400 font-mono">
+                    {item.summary}
+                  </pre>
+                )}
+              </div>
+            )) : (
+              <div className="rounded-lg border border-edge bg-surface-alt/20 p-4 text-sm text-zinc-500">
+                No useful output has been captured for this project yet.
+              </div>
+            )}
+          </div>
+        </section>
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <section className="bg-surface rounded-xl border border-edge p-5 lg:col-span-2">
             <div className="flex items-center justify-between mb-4">
@@ -381,7 +478,9 @@ export default function RuntimePage() {
             <div className="space-y-3">
               {activeRuns.length === 0 && (
                 <div className="rounded-lg border border-edge bg-surface-alt/30 p-4 text-sm text-zinc-500">
-                  No active runs right now.
+                  {snapshot?.blockers?.length
+                    ? 'No active runs right now. Organism is blocked on the items surfaced above.'
+                    : 'No active runs right now.'}
                 </div>
               )}
 
@@ -406,7 +505,7 @@ export default function RuntimePage() {
                       </span>
                       <span>
                         elapsed {formatDuration(run.elapsedMs)}
-                        {run.etaMs != null ? ` · ETA ${formatDuration(run.etaMs)}` : ''}
+                        {run.estimatedDurationMs != null ? ` · ETA ${formatEta(run)}` : ''}
                       </span>
                     </div>
                     <div className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-900/80">
@@ -433,6 +532,11 @@ export default function RuntimePage() {
                     <div className="mt-3 text-xs text-amber-400">
                       {run.retryClass} · {run.providerFailureKind}
                       {run.retryAt ? ` · resumes ${formatTime(run.retryAt)}` : ''}
+                    </div>
+                  )}
+                  {Date.now() - run.updatedAt > 120_000 && run.status === 'running' && (
+                    <div className="mt-3 text-xs text-amber-400">
+                      No heartbeat for {formatDuration(Date.now() - run.updatedAt)}. The executor may be stalled or waiting on a provider/tool response.
                     </div>
                   )}
                 </article>
@@ -538,21 +642,33 @@ export default function RuntimePage() {
             {snapshot?.autonomy.length ? snapshot.autonomy.map((projectHealth) => (
               <div key={projectHealth.projectId} className="rounded-lg border border-edge/60 px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm text-zinc-100">{projectHealth.projectId}</div>
-                    <div className="text-xs text-zinc-500 mt-1">
-                      {projectHealth.autonomyMode} · {projectHealth.consecutiveHealthyRuns}/{projectHealth.requiredConsecutiveRuns} healthy runs
+                    <div>
+                      <div className="text-sm text-zinc-100">{projectHealth.projectId}</div>
+                      <div className="text-xs text-zinc-500 mt-1">
+                        {projectHealth.autonomyMode} · {projectHealth.nextRolloutThreshold ?? projectHealth.requiredConsecutiveRuns} run milestone
+                      </div>
                     </div>
-                  </div>
-                  <span className={`text-[11px] uppercase tracking-wider ${projectHealth.rolloutReady ? 'text-emerald-400' : 'text-amber-400'}`}>
-                    {projectHealth.rolloutReady ? 'ready' : 'stabilizing'}
+                  <span className={`text-[11px] uppercase tracking-wider ${projectHealth.rolloutReady ? 'text-emerald-400' : rolloutTone(projectHealth.rolloutStage)}`}>
+                    {projectHealth.rolloutReady ? 'ready' : projectHealth.rolloutStage.replace('_', ' ')}
                   </span>
                 </div>
                 <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">
+                    Healthy runs: {projectHealth.consecutiveHealthyRuns}/{projectHealth.nextRolloutThreshold ?? projectHealth.requiredConsecutiveRuns}
+                  </div>
                   <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">Completed runs: {projectHealth.recentCompletedRuns}</div>
                   <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">Provider failures: {projectHealth.recentProviderFailures}</div>
                   <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">Active runs: {projectHealth.activeRuns}</div>
+                </div>
+                {projectHealth.nextRolloutLabel && (
+                  <div className="mt-3 text-xs text-zinc-500">
+                    Next milestone: {projectHealth.nextRolloutLabel}
+                  </div>
+                )}
+                <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
                   <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">Pending approvals: {projectHealth.pendingApprovals}</div>
+                  <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">Pending interrupts: {projectHealth.pendingInterrupts}</div>
+                  <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">Core agents: {projectHealth.coreAgents.length}</div>
                 </div>
                 {projectHealth.blockers.length > 0 && (
                   <div className="mt-3 space-y-1">

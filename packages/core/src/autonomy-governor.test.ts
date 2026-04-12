@@ -1,5 +1,9 @@
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { configureTestState } from './test-state.js';
+
+configureTestState(import.meta.url);
+
 import { createInterrupt, createRunSession, ensureGoal, updateRunStatus } from './run-state.js';
 import { getDb } from './task-queue.js';
 import { getProjectAutonomyHealth } from './autonomy-governor.js';
@@ -43,7 +47,10 @@ describe('autonomy-governor', () => {
     const health = getProjectAutonomyHealth('organism');
     assert.equal(health.consecutiveHealthyRuns, 3);
     assert.equal(health.rolloutReady, false);
-    assert.ok(health.blockers.some((blocker) => blocker.includes('healthy runs')));
+    assert.equal(health.rolloutStage, 'bounded');
+    assert.equal(health.nextRolloutStage, 'deploy_ready');
+    assert.equal(health.nextRolloutThreshold, 5);
+    assert.ok(health.blockers.some((blocker) => blocker.includes('low-risk deploys')));
   });
 
   it('surfaces pending interrupts as rollout blockers', () => {

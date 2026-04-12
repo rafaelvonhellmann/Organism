@@ -11,6 +11,16 @@ function s(value: unknown): string {
   return value == null ? '' : String(value);
 }
 
+function formatTime(value: number): string {
+  return new Date(value).toLocaleString('en-AU', {
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
 function tryParse(value: unknown): unknown {
   if (typeof value !== 'string' || value.length === 0) return value ?? null;
   try {
@@ -29,6 +39,15 @@ function workspacePath(...segments: string[]): string {
 const HOME = process.env.USERPROFILE ?? process.env.HOME ?? '.';
 const STATE_DIR = process.env.ORGANISM_STATE_DIR ?? resolve(HOME, '.organism', 'state');
 const DEFAULT_CORE_AGENTS = ['ceo', 'product-manager', 'engineering', 'devops', 'quality-agent', 'security-audit', 'legal', 'quality-guardian', 'codex-review'];
+const ACTIVE_RUN_STALE_MS = 20 * 60 * 1000;
+const FINAL_GRADUATION_RUNS = 20;
+const ROLLOUT_STAGES = [
+  { stage: 'bounded', label: 'bounded autonomy', threshold: 3 },
+  { stage: 'deploy_ready', label: 'low-risk deploys', threshold: 5 },
+  { stage: 'graduated', label: 'full graduation', threshold: FINAL_GRADUATION_RUNS },
+] as const;
+const USEFUL_ARTIFACT_KINDS = new Set(['patch', 'verification', 'report', 'deployment']);
+const NON_TERMINAL_STATUSES = new Set(['pending', 'running', 'paused', 'retry_scheduled']);
 
 function readProjectConfig(projectId: string): {
   autonomyMode: string;
@@ -57,13 +76,17 @@ function readProjectConfig(projectId: string): {
 
 async function getProjectAutonomyHealthSnapshot(client: Client | null, projectId: string) {
   const { autonomyMode, coreAgents } = readProjectConfig(projectId);
-  const requiredConsecutiveRuns = 20;
+  const requiredConsecutiveRuns = FINAL_GRADUATION_RUNS;
 
   if (!client) {
     return {
       projectId,
       autonomyMode,
       requiredConsecutiveRuns,
+      rolloutStage: 'stabilizing',
+      nextRolloutStage: 'bounded',
+      nextRolloutThreshold: 3,
+      nextRolloutLabel: 'bounded autonomy',
       consecutiveHealthyRuns: 0,
       recentCompletedRuns: 0,
       recentProviderFailures: 0,
@@ -88,9 +111,11 @@ async function getProjectAutonomyHealthSnapshot(client: Client | null, projectId
       sql: `SELECT status, provider_failure_kind
             FROM run_sessions
             WHERE project_id = ?
+              AND NOT (goal_id LIKE 'goal-%' AND status IN ('pending', 'running', 'paused', 'retry_scheduled'))
+              AND NOT (status IN ('pending', 'running', 'paused', 'retry_scheduled') AND updated_at < ?)
             ORDER BY updated_at DESC
             LIMIT 50`,
-      args: [projectId],
+      args: [projectId, Date.now() - ACTIVE_RUN_STALE_MS],
     }),
     client.execute({
       sql: `SELECT COUNT(*) as c
@@ -104,28 +129,37 @@ async function getProjectAutonomyHealthSnapshot(client: Client | null, projectId
             WHERE project_id = ?
               AND provider_failure_kind IS NOT NULL
               AND provider_failure_kind != ''
-              AND provider_failure_kind != 'none'`,
+              AND provider_failure_kind != 'none'
+              AND goal_id NOT LIKE 'goal-%'`,
       args: [projectId],
     }),
     client.execute({
       sql: `SELECT COUNT(*) as c
             FROM run_sessions
             WHERE project_id = ?
-              AND status IN ('pending', 'running', 'paused', 'retry_scheduled')`,
-      args: [projectId],
+              AND status IN ('pending', 'running', 'paused', 'retry_scheduled')
+              AND updated_at >= ?
+              AND goal_id NOT LIKE 'goal-%'`,
+      args: [projectId, Date.now() - ACTIVE_RUN_STALE_MS],
     }),
     client.execute({
       sql: `SELECT COUNT(*) as c
             FROM interrupts i
             JOIN run_sessions r ON r.id = i.run_id
-            WHERE r.project_id = ? AND i.status = 'pending'`,
+            WHERE r.project_id = ?
+              AND i.status = 'pending'
+              AND r.status != 'completed'
+              AND NOT (i.type = 'approval' AND i.summary LIKE 'Deploy is still gated%')`,
       args: [projectId],
     }),
     client.execute({
       sql: `SELECT COUNT(*) as c
             FROM approvals a
             JOIN run_sessions r ON r.id = a.run_id
-            WHERE r.project_id = ? AND a.status = 'pending'`,
+            WHERE r.project_id = ?
+              AND a.status = 'pending'
+              AND r.status != 'completed'
+              AND a.action != 'deploy'`,
       args: [projectId],
     }),
   ]);
@@ -143,10 +177,15 @@ async function getProjectAutonomyHealthSnapshot(client: Client | null, projectId
   const activeRuns = n(activeRunsResult.rows[0]?.c);
   const pendingInterrupts = n(pendingInterruptsResult.rows[0]?.c);
   const pendingApprovals = n(pendingApprovalsResult.rows[0]?.c);
+  const rolloutStage = ROLLOUT_STAGES.reduce<'stabilizing' | 'bounded' | 'deploy_ready' | 'graduated'>(
+    (stage, milestone) => (consecutiveHealthyRuns >= milestone.threshold ? milestone.stage : stage),
+    'stabilizing',
+  );
+  const nextRollout = ROLLOUT_STAGES.find((milestone) => consecutiveHealthyRuns < milestone.threshold) ?? null;
 
   const blockers: string[] = [];
-  if (consecutiveHealthyRuns < requiredConsecutiveRuns) {
-    blockers.push(`Needs ${requiredConsecutiveRuns - consecutiveHealthyRuns} more consecutive healthy runs`);
+  if (nextRollout) {
+    blockers.push(`Needs ${nextRollout.threshold - consecutiveHealthyRuns} more consecutive healthy runs for ${nextRollout.label}`);
   }
   if (recentProviderFailures > 0) {
     blockers.push('Recent provider failures still present in the last 50 runs');
@@ -162,6 +201,10 @@ async function getProjectAutonomyHealthSnapshot(client: Client | null, projectId
     projectId,
     autonomyMode,
     requiredConsecutiveRuns,
+    rolloutStage,
+    nextRolloutStage: nextRollout?.stage ?? null,
+    nextRolloutThreshold: nextRollout?.threshold ?? null,
+    nextRolloutLabel: nextRollout?.label ?? null,
     consecutiveHealthyRuns,
     recentCompletedRuns,
     recentProviderFailures,
@@ -189,6 +232,8 @@ function formatGoal(row: Row) {
   };
 }
 
+type RuntimeGoal = ReturnType<typeof formatGoal>;
+
 function formatRun(row: Row) {
   return {
     id: s(row.id),
@@ -208,6 +253,96 @@ function formatRun(row: Row) {
 
 type RuntimeRun = ReturnType<typeof formatRun>;
 type RuntimeStep = ReturnType<typeof formatStep>;
+
+function isSyntheticGoalId(goalId: string): boolean {
+  return /^goal-\d+$/i.test(goalId);
+}
+
+function isRunNonTerminal(run: RuntimeRun): boolean {
+  return NON_TERMINAL_STATUSES.has(run.status);
+}
+
+function isRunStale(run: RuntimeRun, now = Date.now()): boolean {
+  return isRunNonTerminal(run) && (now - run.updatedAt) > ACTIVE_RUN_STALE_MS;
+}
+
+function runGroupKey(run: RuntimeRun): string {
+  return `${run.projectId}::${run.goalId}::${run.agent}::${run.workflowKind}`;
+}
+
+function buildVisibleRuns(
+  runs: RuntimeRun[],
+  goals: Array<ReturnType<typeof formatGoal>>,
+): RuntimeRun[] {
+  const now = Date.now();
+  const goalIds = new Set(goals.map((goal) => goal.id));
+  const latestTerminalByGroup = new Map<string, number>();
+  const latestNonTerminalByGroup = new Map<string, RuntimeRun>();
+
+  for (const run of runs) {
+    const key = runGroupKey(run);
+    if (!isRunNonTerminal(run)) {
+      const previous = latestTerminalByGroup.get(key) ?? 0;
+      if (run.updatedAt > previous) {
+        latestTerminalByGroup.set(key, run.updatedAt);
+      }
+      continue;
+    }
+
+    const existing = latestNonTerminalByGroup.get(key);
+    if (!existing || run.updatedAt > existing.updatedAt) {
+      latestNonTerminalByGroup.set(key, run);
+    }
+  }
+
+  return runs.filter((run) => {
+    if (!isRunNonTerminal(run)) {
+      return true;
+    }
+
+    const stale = isRunStale(run, now);
+    const newestActiveRun = latestNonTerminalByGroup.get(runGroupKey(run));
+    if (newestActiveRun && newestActiveRun.id !== run.id) return false;
+
+    const superseded = (latestTerminalByGroup.get(runGroupKey(run)) ?? 0) > run.updatedAt;
+    const syntheticGoal = isSyntheticGoalId(run.goalId);
+
+    if (stale) return false;
+    if (syntheticGoal && superseded) return false;
+    if (superseded) return false;
+    return true;
+  });
+}
+
+function goalGroupKey(goal: RuntimeGoal): string {
+  return `${goal.projectId}::${goal.workflowKind}::${goal.title}`;
+}
+
+function buildVisibleGoals(goals: RuntimeGoal[], runs: RuntimeRun[]): RuntimeGoal[] {
+  const now = Date.now();
+  const activeGoalIds = new Set(
+    runs
+      .filter((run) => isRunNonTerminal(run) && !isRunStale(run, now))
+      .map((run) => run.goalId),
+  );
+  const latestByGroup = new Map<string, RuntimeGoal>();
+
+  for (const goal of goals) {
+    const key = goalGroupKey(goal);
+    const existing = latestByGroup.get(key);
+    if (!existing || goal.updatedAt > existing.updatedAt) {
+      latestByGroup.set(key, goal);
+    }
+  }
+
+  return goals.filter((goal) => {
+    const terminal = !NON_TERMINAL_STATUSES.has(goal.status);
+    if (terminal) return true;
+    if (activeGoalIds.has(goal.id)) return true;
+    if (now - goal.updatedAt > ACTIVE_RUN_STALE_MS) return false;
+    return latestByGroup.get(goalGroupKey(goal))?.id === goal.id;
+  });
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -350,6 +485,157 @@ function formatRecentOutput(row: Row) {
     completedAt: row.completed_at != null ? n(row.completed_at) : null,
     createdAt: n(row.created_at),
   };
+}
+
+function buildUsefulOutputs(
+  recentOutputs: Array<ReturnType<typeof formatRecentOutput>>,
+  artifacts: Array<ReturnType<typeof formatArtifact>>,
+) {
+  const items = [
+    ...artifacts
+      .filter((artifact) => USEFUL_ARTIFACT_KINDS.has(artifact.kind))
+      .map((artifact) => ({
+        id: artifact.id,
+        source: 'artifact' as const,
+        kind: artifact.kind,
+        title: artifact.title,
+        summary: trimUsefulSummary(artifact.content),
+        createdAt: artifact.createdAt,
+        meta: artifact.path ? `${artifact.kind} · ${artifact.path}` : artifact.kind,
+      })),
+    ...recentOutputs
+      .filter((output) => output.status === 'completed' || output.status === 'awaiting_review')
+      .map((output) => ({
+        id: output.id,
+        source: 'task' as const,
+        kind: 'task_output',
+        title: output.description,
+        summary: trimUsefulSummary(output.summary),
+        createdAt: output.completedAt ?? output.createdAt,
+        meta: `${output.agent} · ${output.status}`,
+      })),
+  ].sort((left, right) => right.createdAt - left.createdAt);
+
+  const seen = new Set<string>();
+  const unique = [];
+  for (const item of items) {
+    const key = `${item.source}::${item.kind}::${item.title.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+    if (unique.length >= 4) break;
+  }
+
+  return unique;
+}
+
+function trimUsefulSummary(value: string | null): string | null {
+  if (!value) return null;
+  const compact = value.replace(/\s+/g, ' ').trim();
+  return compact.length > 320 ? `${compact.slice(0, 317).trimEnd()}...` : compact;
+}
+
+interface RuntimeBlockerRow {
+  id: string;
+  goal_id: string | null;
+  agent: string;
+  status: string;
+  workflow_kind: string | null;
+  description: string;
+  error: string | null;
+  provider_failure_kind: string | null;
+  retry_at: number | null;
+  created_at: number;
+  completed_at: number | null;
+}
+
+function isReviewLaneBlocker(row: RuntimeBlockerRow): boolean {
+  return row.workflow_kind === 'review'
+    || row.workflow_kind === 'validate'
+    || ['quality-agent', 'quality-guardian', 'codex-review', 'grill-me', 'legal', 'security-audit'].includes(row.agent);
+}
+
+function buildCurrentBlockers(rows: RuntimeBlockerRow[], runs: RuntimeRun[]) {
+  const activeRuns = runs.filter((run) => run.status !== 'completed' && run.status !== 'failed' && run.status !== 'cancelled');
+  const latestExecutionByGoal = new Map<string, number>();
+
+  for (const row of rows) {
+    if (!row.goal_id) continue;
+    if (row.workflow_kind !== 'implement' && row.workflow_kind !== 'recover' && row.workflow_kind !== 'ship') continue;
+    const latestExecution = latestExecutionByGoal.get(row.goal_id) ?? 0;
+    if (row.created_at > latestExecution) {
+      latestExecutionByGoal.set(row.goal_id, row.created_at);
+    }
+  }
+
+  const isSupersededReviewDebt = (row: RuntimeBlockerRow): boolean => {
+    if (!row.goal_id || !isReviewLaneBlocker(row)) return false;
+    const latestExecution = latestExecutionByGoal.get(row.goal_id) ?? 0;
+    return latestExecution > row.created_at;
+  };
+
+  const pausedReview = rows.filter((row) => row.status === 'paused' && isReviewLaneBlocker(row) && !isSupersededReviewDebt(row));
+  const retryingReview = rows.filter((row) => row.status === 'retry_scheduled' && isReviewLaneBlocker(row) && !isSupersededReviewDebt(row));
+  const awaitingReview = rows.filter((row) => row.status === 'awaiting_review');
+  const pausedExecution = rows.filter((row) => row.status === 'paused' && !isReviewLaneBlocker(row));
+  const blockers: Array<{
+    kind: 'review_paused' | 'review_retry' | 'awaiting_review' | 'execution_paused';
+    severity: 'warning' | 'critical';
+    title: string;
+    detail: string;
+    count: number;
+    taskIds: string[];
+  }> = [];
+
+  if (pausedReview.length > 0) {
+    const latest = pausedReview[0]!;
+    const agents = [...new Set(pausedReview.map((row) => row.agent))].join(', ');
+    blockers.push({
+      kind: 'review_paused',
+      severity: activeRuns.length === 0 ? 'critical' : 'warning',
+      title: `${pausedReview.length} paused review task${pausedReview.length === 1 ? '' : 's'} blocking progress`,
+      detail: `The current blocker is validation/review work, not the earlier engineering timeout. Affected agents: ${agents}. Latest error: ${latest.error ?? latest.provider_failure_kind ?? 'unknown'}.`,
+      count: pausedReview.length,
+      taskIds: pausedReview.map((row) => row.id),
+    });
+  }
+
+  if (retryingReview.length > 0) {
+    const latest = retryingReview[0]!;
+    blockers.push({
+      kind: 'review_retry',
+      severity: activeRuns.length === 0 ? 'warning' : 'warning',
+      title: `${retryingReview.length} review task${retryingReview.length === 1 ? '' : 's'} scheduled to retry`,
+      detail: `Review auto-heal has already rescheduled these tasks. Next retry: ${latest.retry_at ? formatTime(latest.retry_at) : 'soon'}.`,
+      count: retryingReview.length,
+      taskIds: retryingReview.map((row) => row.id),
+    });
+  }
+
+  if (awaitingReview.length > 0) {
+    blockers.push({
+      kind: 'awaiting_review',
+      severity: 'warning',
+      title: `${awaitingReview.length} task${awaitingReview.length === 1 ? '' : 's'} awaiting review`,
+      detail: `These tasks have finished execution but are waiting in the review lane. They are not active runs right now.`,
+      count: awaitingReview.length,
+      taskIds: awaitingReview.map((row) => row.id),
+    });
+  }
+
+  if (pausedExecution.length > 0) {
+    const latest = pausedExecution[0]!;
+    blockers.push({
+      kind: 'execution_paused',
+      severity: 'warning',
+      title: `${pausedExecution.length} paused execution task${pausedExecution.length === 1 ? '' : 's'}`,
+      detail: `Execution work is paused separately from the review lane. Latest issue: ${latest.error ?? latest.provider_failure_kind ?? latest.description}.`,
+      count: pausedExecution.length,
+      taskIds: pausedExecution.map((row) => row.id),
+    });
+  }
+
+  return blockers;
 }
 
 async function execute(client: Client | null, sql: string, args: Array<string | number> = []) {
@@ -496,8 +782,11 @@ export async function getRuntimeSnapshot(projectId?: string) {
   const projectFilter = projectId ? 'WHERE project_id = ?' : '';
   const projectArgs = projectId ? [projectId] : [];
   const taskOutputFilter = projectId ? 'WHERE project_id = ? AND output IS NOT NULL' : 'WHERE output IS NOT NULL';
+  const blockerFilter = projectId
+    ? `WHERE project_id = ? AND status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')`
+    : `WHERE status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')`;
 
-  const [goalsRows, runsRows, interruptsRows, approvalsRows, eventsRows, artifactsRows, outputRows] = await Promise.all([
+  const [goalsRows, runsRows, interruptsRows, approvalsRows, eventsRows, artifactsRows, outputRows, blockerRows] = await Promise.all([
     execute(
       client,
       `SELECT * FROM goals ${projectFilter} ORDER BY updated_at DESC LIMIT 20`,
@@ -510,7 +799,7 @@ export async function getRuntimeSnapshot(projectId?: string) {
     ),
     execute(
       client,
-      `SELECT i.*
+      `SELECT i.*, r.status as run_status
        FROM interrupts i
        JOIN run_sessions r ON r.id = i.run_id
        ${projectId ? 'WHERE r.project_id = ?' : ''}
@@ -519,7 +808,7 @@ export async function getRuntimeSnapshot(projectId?: string) {
     ),
     execute(
       client,
-      `SELECT a.*
+      `SELECT a.*, r.status as run_status
        FROM approvals a
        JOIN run_sessions r ON r.id = a.run_id
        ${projectId ? 'WHERE r.project_id = ?' : ''}
@@ -548,14 +837,25 @@ export async function getRuntimeSnapshot(projectId?: string) {
       client,
       `SELECT id, agent, status, lane, description, output, completed_at, created_at
        FROM tasks
-       ${taskOutputFilter}
+      ${taskOutputFilter}
        ORDER BY COALESCE(completed_at, created_at) DESC
        LIMIT 12`,
       projectArgs,
     ),
+    execute(
+      client,
+      `SELECT id, goal_id, agent, status, workflow_kind, description, error, provider_failure_kind, retry_at, created_at, completed_at
+       FROM tasks
+       ${blockerFilter}
+       ORDER BY COALESCE(completed_at, created_at) DESC
+       LIMIT 24`,
+      projectArgs,
+    ),
   ]);
 
-  const runs = runsRows.map(formatRun);
+  const rawGoals = goalsRows.map(formatGoal);
+  const runs = buildVisibleRuns(runsRows.map(formatRun), rawGoals);
+  const formattedGoals = buildVisibleGoals(rawGoals, runs);
   const runIds = runs.map((run) => run.id);
 
   let stepsRows: Row[] = [];
@@ -620,19 +920,35 @@ export async function getRuntimeSnapshot(projectId?: string) {
     ? [await getProjectAutonomyHealthSnapshot(client, projectId)]
     : await Promise.all(compareTargets.map((target) => getProjectAutonomyHealthSnapshot(client, target.projectId)));
   const daemon = readDaemonStatusFromFile() ?? await readDaemonStatusFromDb(client);
+  const visibleInterrupts = interruptsRows.filter((row) => {
+    const pending = s(row.status) === 'pending';
+    const deployGate = s(row.type) === 'approval' && s(row.summary).startsWith('Deploy is still gated');
+    const runCompleted = s(row.run_status) === 'completed';
+    return !(pending && deployGate && runCompleted);
+  });
+  const visibleApprovals = approvalsRows.filter((row) => {
+    const pending = s(row.status) === 'pending';
+    const deployGate = s(row.action) === 'deploy';
+    const runCompleted = s(row.run_status) === 'completed';
+    return !(pending && deployGate && runCompleted);
+  });
+  const formattedArtifacts = artifactsRows.map(formatArtifact);
+  const formattedRecentOutputs = outputRows.map(formatRecentOutput);
 
   return {
     generatedAt: Date.now(),
-    goals: goalsRows.map(formatGoal),
+    goals: formattedGoals,
     runs: runs.map((run) => ({
       ...run,
       steps: stepsByRun.get(run.id) ?? [],
       ...estimateRunProgress(run, stepsByRun.get(run.id) ?? [], exactDurations, fallbackDurations),
     })),
-    interrupts: interruptsRows.map(formatInterrupt),
-    approvals: approvalsRows.map(formatApproval),
-    artifacts: artifactsRows.map(formatArtifact),
-    recentOutputs: outputRows.map(formatRecentOutput),
+    interrupts: visibleInterrupts.map(formatInterrupt),
+    approvals: visibleApprovals.map(formatApproval),
+    artifacts: formattedArtifacts,
+    recentOutputs: formattedRecentOutputs,
+    usefulOutputs: buildUsefulOutputs(formattedRecentOutputs, formattedArtifacts),
+    blockers: buildCurrentBlockers(blockerRows as unknown as RuntimeBlockerRow[], runs),
     recentEvents: eventsRows.map(formatEvent).reverse(),
     compareTargets,
     autonomy,

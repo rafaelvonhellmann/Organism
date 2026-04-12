@@ -7,8 +7,8 @@
  * Lifecycle cycles:
  *   - Agent runner: polls every DAEMON_POLL_MS (10s) for pending tasks
  *   - Scheduler: ticks every SCHEDULER_TICK_MS (60s) for frequency-tier dispatch
- *   - Execute cycle: every 3h — checks for approved action items, executes ready tasks
- *   - Sync cycle: every 6h — pushes local state to Turso
+ *   - Execute cycle: every 60s — turns review outputs into follow-up work and dispatches ready tasks
+ *   - Sync cycle: every 30s — pushes local state to Turso and keeps the hosted dashboard fresh
  *   - Review cycle: daily at configured hour — runs full project review if scheduled
  *
  * Daemon status is persisted to state/daemon-status.json for dashboard consumption.
@@ -16,7 +16,6 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { getDb } from '../packages/core/src/task-queue.js';
 import { loadRegistry } from '../packages/core/src/registry.js';
@@ -25,9 +24,10 @@ import { getProjectLaunchReadiness } from '../packages/core/src/project-readines
 import { startScheduler } from '../packages/core/src/scheduler.js';
 import { startDaemon, dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
 import { listProjectAutonomyHealth } from '../packages/core/src/autonomy-governor.js';
-import { recoverInterruptedWork } from '../packages/core/src/run-recovery.js';
+import { autoHealPausedReviewTasks, recoverInterruptedWork, recoverStaleWork } from '../packages/core/src/run-recovery.js';
 import { syncToTurso } from '../packages/core/src/turso-sync.js';
 import { processDashboardActions } from '../packages/core/src/action-processor.js';
+import { processApprovedFindings } from '../packages/core/src/auto-executor.js';
 import { isRateLimited, getRateLimitStatus, resolveModelBackend } from '../agents/_base/mcp-client.js';
 import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
 import { bootstrapRuntimeEnv } from '../packages/shared/src/runtime-env.js';
@@ -38,16 +38,16 @@ bootstrapRuntimeEnv();
 const VERSION = '0.2.0';
 const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? '7391');
 const DAEMON_POLL_MS = 10_000;   // 10 seconds — agent runner polling interval
-const SCHEDULER_TICK_MS = 300_000; // 5 minutes — scheduler tick interval
-const DASHBOARD_ACTION_POLL_MS = 15_000; // 15 seconds — responsive website action pickup
+const SCHEDULER_TICK_MS = 60_000; // 60 seconds — scheduler tick interval
+const DASHBOARD_ACTION_POLL_MS = 10_000; // 10 seconds — responsive website action pickup
 
 // ── Daemon config ─────────────────────────────────────────────────────────
 
 const DAEMON_CONFIG = {
   /** How often to check for approved action items and execute ready tasks */
-  executeIntervalMs: 3 * 60 * 60 * 1000,   // 3 hours
+  executeIntervalMs: 60 * 1000,   // 60 seconds
   /** How often to sync local state to Turso */
-  syncIntervalMs: 6 * 60 * 60 * 1000,       // 6 hours
+  syncIntervalMs: 30 * 1000,       // 30 seconds
   /** Hour (0-23) to run the daily review cycle (local time) */
   reviewHour: 3,                             // 3 AM daily
   /** Cron-style reference (not parsed — for documentation only) */
@@ -115,6 +115,7 @@ interface DaemonStatus {
 
 import { STATE_DIR } from '../packages/shared/src/state-dir.js';
 const STATUS_FILE = path.join(STATE_DIR, 'daemon-status.json');
+const LOCK_FILE = path.join(STATE_DIR, 'daemon.lock.json');
 
 const daemonState = {
   startedAt: new Date().toISOString(),
@@ -127,10 +128,11 @@ const daemonState = {
   reviewsRun: 0,
 };
 
+let syncCycleInFlight: Promise<void> | null = null;
+
 function computeNextCycle(lastMs: number, intervalMs: number): string | null {
   if (lastMs === 0) {
-    // First cycle runs after one interval from daemon start
-    return new Date(Date.parse(daemonState.startedAt) + intervalMs).toISOString();
+    return new Date().toISOString();
   }
   return new Date(lastMs + intervalMs).toISOString();
 }
@@ -228,6 +230,54 @@ function persistStatus(): void {
   }
 }
 
+function processExists(pid: number | null | undefined): boolean {
+  if (!pid || !Number.isFinite(pid)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseDaemonLock(): void {
+  try {
+    if (!fs.existsSync(LOCK_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8')) as { pid?: number };
+    if (raw.pid && raw.pid !== process.pid) return;
+    fs.unlinkSync(LOCK_FILE);
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+function acquireDaemonLock(): void {
+  if (fs.existsSync(LOCK_FILE)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8')) as { pid?: number; startedAt?: string };
+      if (processExists(raw.pid ?? null)) {
+        throw new Error(`Another Organism daemon is already running (PID ${raw.pid}, started ${raw.startedAt ?? 'unknown'}).`);
+      }
+      fs.unlinkSync(LOCK_FILE);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('already running')) {
+        throw err;
+      }
+      try {
+        fs.unlinkSync(LOCK_FILE);
+      } catch {
+        // Ignore stale lock cleanup failures here; create below will surface any real issue.
+      }
+    }
+  }
+
+  fs.writeFileSync(LOCK_FILE, JSON.stringify({
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    cwd: process.cwd(),
+  }, null, 2), { flag: 'wx' });
+}
+
 export function recoverWorkOnStartup(logger: (line: string) => void = console.log): ReturnType<typeof recoverInterruptedWork> {
   const recovered = recoverInterruptedWork();
   if (recovered.recoveredRuns > 0 || recovered.retriedTasks > 0 || recovered.pausedTasks > 0) {
@@ -236,6 +286,12 @@ export function recoverWorkOnStartup(logger: (line: string) => void = console.lo
     );
   } else {
     logger('[Daemon] No interrupted runs to recover');
+  }
+  const healed = autoHealPausedReviewTasks();
+  if (healed.rescheduledTasks > 0 || healed.resumedRuns > 0 || healed.retiredTasks > 0 || healed.reroutedTasks > 0) {
+    logger(
+      `[Daemon] Auto-healed paused review work: ${healed.rescheduledTasks} task(s) rescheduled, ${healed.resumedRuns} run(s) resumed, ${healed.retiredTasks} superseded task(s) retired, ${healed.reroutedTasks} bounded fallback task(s) created`,
+    );
   }
   return recovered;
 }
@@ -250,8 +306,9 @@ async function runExecuteCycle(): Promise<void> {
   }
 
   const now = Date.now();
-  const elapsed = now - (daemonState.lastExecuteCycleMs || Date.parse(daemonState.startedAt));
-  if (elapsed < DAEMON_CONFIG.executeIntervalMs) return;
+  const isFirstCycle = daemonState.lastExecuteCycleMs === 0;
+  const elapsed = isFirstCycle ? Infinity : now - daemonState.lastExecuteCycleMs;
+  if (!isFirstCycle && elapsed < DAEMON_CONFIG.executeIntervalMs) return;
 
   console.log(`[Lifecycle] Execute cycle starting at ${new Date().toISOString()}`);
 
@@ -259,7 +316,11 @@ async function runExecuteCycle(): Promise<void> {
   //    The action_items table lives on Turso (dashboard-owned), so we look at the local
   //    tasks table for tasks that are ready to execute.
   try {
+    const followupsCreated = await processApprovedFindings();
     const dispatched = await dispatchPendingTasks();
+    if (followupsCreated > 0) {
+      console.log(`[Lifecycle] Execute cycle created ${followupsCreated} follow-up task(s) from completed reviews`);
+    }
     daemonState.itemsExecuted += dispatched;
     console.log(`[Lifecycle] Execute cycle complete — dispatched ${dispatched} task(s)`);
   } catch (err) {
@@ -295,12 +356,19 @@ function loadTursoEnv(): { url: string; token: string } | null {
   return null;
 }
 
-async function runSyncCycle(): Promise<void> {
+async function runSyncCycle(force = false): Promise<void> {
+  if (syncCycleInFlight) {
+    await syncCycleInFlight;
+    return;
+  }
+
+  syncCycleInFlight = (async () => {
   if (!DAEMON_CONFIG.enabled) return;
 
   const now = Date.now();
-  const elapsed = now - (daemonState.lastSyncCycleMs || Date.parse(daemonState.startedAt));
-  if (elapsed < DAEMON_CONFIG.syncIntervalMs) return;
+  const isFirstCycle = daemonState.lastSyncCycleMs === 0;
+  const elapsed = isFirstCycle ? Infinity : now - daemonState.lastSyncCycleMs;
+  if (!force && !isFirstCycle && elapsed < DAEMON_CONFIG.syncIntervalMs) return;
 
   console.log(`[Lifecycle] Sync cycle starting at ${new Date().toISOString()}`);
 
@@ -321,116 +389,22 @@ async function runSyncCycle(): Promise<void> {
   }
 
   try {
-    const { createClient } = await import('@libsql/client');
-    const local = new DatabaseSync(LOCAL_DB_PATH, { open: true });
-    local.exec('PRAGMA journal_mode=WAL');
-
-    let url = tursoEnv.url;
-    if (url.startsWith('libsql://')) {
-      url = 'https://' + url.slice('libsql://'.length);
-    }
-    const remote = createClient({ url, authToken: tursoEnv.token });
-
-    // Sync tasks table (the most important one for dashboard)
-    const TASK_COLS = [
-      'id', 'agent', 'status', 'lane', 'description', 'input', 'input_hash',
-      'output', 'tokens_used', 'cost_usd', 'started_at', 'completed_at',
-      'error', 'parent_task_id', 'project_id', 'created_at',
-    ];
-
-    const rows = local.prepare(`SELECT ${TASK_COLS.join(',')} FROM tasks`).all() as Record<string, unknown>[];
-
-    if (rows.length > 0) {
-      await remote.execute('DELETE FROM tasks');
-
-      const chunkSize = 50;
-      for (let i = 0; i < rows.length; i += chunkSize) {
-        const chunk = rows.slice(i, i + chunkSize);
-        const placeholders = TASK_COLS.map(() => '?').join(',');
-        const valuesSql = chunk.map(() => `(${placeholders})`).join(',');
-        const args = chunk.flatMap(row => TASK_COLS.map(col => {
-          const val = row[col];
-          if (val === undefined || val === null) return null;
-          if (typeof val === 'bigint') return Number(val);
-          return val;
-        }));
-
-        await remote.execute({
-          sql: `INSERT INTO tasks (${TASK_COLS.join(',')}) VALUES ${valuesSql}`,
-          args: args as Array<string | number | null>,
-        });
-      }
-    }
-
-    // Sync agent_spend
-    const spendCols = ['agent', 'date', 'project_id', 'tokens_in', 'tokens_out', 'cost_usd'];
-    const spends = local.prepare(`SELECT ${spendCols.join(',')} FROM agent_spend`).all() as Record<string, unknown>[];
-    if (spends.length > 0) {
-      await remote.execute('DELETE FROM agent_spend');
-      const stmts = spends.map(s => ({
-        sql: `INSERT OR REPLACE INTO agent_spend (${spendCols.join(',')}) VALUES (?, ?, ?, ?, ?, ?)`,
-        args: spendCols.map(col => {
-          const val = s[col];
-          if (val === undefined || val === null) return null;
-          if (typeof val === 'bigint') return Number(val);
-          return val;
-        }) as Array<string | number | null>,
-      }));
-      await remote.batch(stmts, 'write');
-    }
-
-    // Sync audit_log
-    const auditCols = ['id', 'ts', 'agent', 'task_id', 'action', 'payload', 'outcome', 'error_code'];
-    const audits = local.prepare(`SELECT ${auditCols.join(',')} FROM audit_log`).all() as Record<string, unknown>[];
-    if (audits.length > 0) {
-      await remote.execute('DELETE FROM audit_log');
-      const chunkSize = 50;
-      for (let i = 0; i < audits.length; i += chunkSize) {
-        const chunk = audits.slice(i, i + chunkSize);
-        const stmts = chunk.map(a => ({
-          sql: `INSERT INTO audit_log (${auditCols.join(',')}) VALUES (${auditCols.map(() => '?').join(',')})`,
-          args: auditCols.map(col => {
-            const val = a[col];
-            if (val === undefined || val === null) return null;
-            if (typeof val === 'bigint') return Number(val);
-            return val;
-          }) as Array<string | number | null>,
-        }));
-        await remote.batch(stmts, 'write');
-      }
-    }
-
-    // Sync gates
-    const gateCols = ['id', 'task_id', 'gate', 'decision', 'decided_by', 'reason', 'decided_at', 'patch_path', 'created_at'];
-    const gates = local.prepare(`SELECT ${gateCols.join(',')} FROM gates`).all() as Record<string, unknown>[];
-    if (gates.length > 0) {
-      await remote.execute('DELETE FROM gates');
-      const chunkSize = 50;
-      for (let i = 0; i < gates.length; i += chunkSize) {
-        const chunk = gates.slice(i, i + chunkSize);
-        const stmts = chunk.map(g => ({
-          sql: `INSERT OR REPLACE INTO gates (${gateCols.join(',')}) VALUES (${gateCols.map(() => '?').join(',')})`,
-          args: gateCols.map(col => {
-            const val = g[col];
-            if (val === undefined || val === null) return null;
-            if (typeof val === 'bigint') return Number(val);
-            return val;
-          }) as Array<string | number | null>,
-        }));
-        await remote.batch(stmts, 'write');
-      }
-    }
-
-    daemonState.itemsSynced += rows.length;
-    remote.close();
-    local.close();
-    console.log(`[Lifecycle] Sync cycle complete — ${rows.length} tasks, ${spends.length} spend entries, ${audits.length} audit entries, ${gates.length} gates`);
+    await syncToTurso();
+    daemonState.itemsSynced += 1;
+    console.log('[Lifecycle] Sync cycle complete — Turso sync finished');
   } catch (err) {
     console.error('[Lifecycle] Sync cycle error:', err);
   }
 
   daemonState.lastSyncCycleMs = Date.now();
   persistStatus();
+  })();
+
+  try {
+    await syncCycleInFlight;
+  } finally {
+    syncCycleInFlight = null;
+  }
 }
 
 // ── Review cycle: daily full project review ───────────────────────────────
@@ -470,6 +444,19 @@ async function runReviewCycle(): Promise<void> {
 
 async function lifecycleTick(): Promise<void> {
   try {
+    const stale = recoverStaleWork();
+    if (stale.recoveredRuns > 0 || stale.retriedTasks > 0 || stale.pausedTasks > 0) {
+      console.log(
+        `[Lifecycle] Recovered stale work: ${stale.recoveredRuns} run(s), ${stale.retriedTasks} retry task(s), ${stale.pausedTasks} paused task(s)`,
+      );
+    }
+    const healed = autoHealPausedReviewTasks();
+    if (healed.rescheduledTasks > 0 || healed.resumedRuns > 0 || healed.retiredTasks > 0 || healed.reroutedTasks > 0) {
+      console.log(
+        `[Lifecycle] Auto-healed paused review work: ${healed.rescheduledTasks} task(s) rescheduled, ${healed.resumedRuns} run(s) resumed, ${healed.retiredTasks} superseded task(s) retired, ${healed.reroutedTasks} bounded fallback task(s) created`,
+      );
+    }
+    persistStatus();
     await runExecuteCycle();
     await runSyncCycle();
     await runReviewCycle();
@@ -480,10 +467,11 @@ async function lifecycleTick(): Promise<void> {
 
 async function dashboardActionTick(): Promise<void> {
   try {
-    await syncToTurso();
+    persistStatus();
     await processDashboardActions();
     await dispatchPendingTasks();
-    await syncToTurso();
+    persistStatus();
+    await runSyncCycle(true);
     persistStatus();
   } catch (err) {
     console.error('[Dashboard Actions] Tick error:', err);
@@ -617,8 +605,8 @@ function printBanner(): void {
   console.log(`  Shadow agents (${uniqueShadow.length}): ${uniqueShadow.join(', ') || 'none'}`);
   console.log('');
   console.log('  Lifecycle cycles:');
-  console.log(`    Execute:  every ${DAEMON_CONFIG.executeIntervalMs / (60 * 60 * 1000)}h`);
-  console.log(`    Sync:     every ${DAEMON_CONFIG.syncIntervalMs / (60 * 60 * 1000)}h`);
+  console.log(`    Execute:  every ${DAEMON_CONFIG.executeIntervalMs / 1000}s`);
+  console.log(`    Sync:     every ${DAEMON_CONFIG.syncIntervalMs / 1000}s`);
   console.log(`    Review:   daily at ${DAEMON_CONFIG.reviewHour}:00 (${DAEMON_CONFIG.reviewSchedule})`);
   console.log(`    Enabled:  ${DAEMON_CONFIG.enabled}`);
   console.log('');
@@ -629,6 +617,7 @@ function printBanner(): void {
 async function main(): Promise<void> {
   // 1. Health check — exits if critical secrets missing
   runHealthCheck();
+  acquireDaemonLock();
 
   // 2. Startup banner
   printBanner();
@@ -666,11 +655,12 @@ async function main(): Promise<void> {
   const daemonHandle = startDaemon(DAEMON_POLL_MS);
   console.log(`[Daemon] Agent runner started (poll: ${DAEMON_POLL_MS / 1000}s)`);
 
-  // 7. Start lifecycle ticker (checks every 60s if any cycle is due)
+  // 7. Start lifecycle ticker (checks every 15s if any cycle is due)
   const lifecycleHandle = setInterval(() => {
     lifecycleTick().catch(console.error);
-  }, 60_000);
-  console.log('[Daemon] Lifecycle manager started (execute: 3h, sync: 6h, review: daily)');
+  }, 15_000);
+  lifecycleTick().catch(console.error);
+  console.log(`[Daemon] Lifecycle manager started (execute: ${DAEMON_CONFIG.executeIntervalMs / 1000}s, sync: ${DAEMON_CONFIG.syncIntervalMs / 1000}s, review: daily)`);
 
   // 7b. Pull and execute dashboard-triggered actions on a shorter cadence.
   const dashboardActionHandle = setInterval(() => {
@@ -691,6 +681,7 @@ async function main(): Promise<void> {
     clearInterval(lifecycleHandle);
     clearInterval(dashboardActionHandle);
     persistStatus(); // Write final status before exit
+    releaseDaemonLock();
     if (dashboardServer && typeof (dashboardServer as any).close === 'function') {
       (dashboardServer as any).close(() => {
         console.log('[Daemon] Dashboard closed.');
@@ -702,6 +693,16 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('uncaughtException', (err) => {
+    console.error('[Daemon] Uncaught exception:', err);
+    persistStatus();
+    releaseDaemonLock();
+  });
+  process.on('unhandledRejection', (err) => {
+    console.error('[Daemon] Unhandled rejection:', err);
+    persistStatus();
+    releaseDaemonLock();
+  });
 
   // 10. Ready message
   console.log('\nOrganism is running. Press Ctrl+C to stop.\n');
