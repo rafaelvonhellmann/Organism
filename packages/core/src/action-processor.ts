@@ -45,10 +45,14 @@ export async function processDashboardActions(): Promise<void> {
         case 'review': {
           // Dynamic import to avoid circular deps
           const { submitTask } = await import('./orchestrator.js');
+          const { dispatchPendingTasks } = await import('./agent-runner.js');
+          const { loadProjectPolicy } = await import('./project-policy.js');
           if (typeof payload.project !== 'string' || payload.project.trim().length === 0) {
             throw new Error('Dashboard review action requires an explicit project.');
           }
           const project = payload.project.trim();
+          const policy = loadProjectPolicy(project);
+          const medicalReadOnlyCanary = payload.canaryPreset === true && policy.autonomySurfaces.readOnlyCanary;
           const baseline = captureProjectLaunchBaseline({
             projectId: project,
             action: 'review',
@@ -63,6 +67,15 @@ export async function processDashboardActions(): Promise<void> {
               triggeredBy: 'dashboard',
               reviewScope: 'project',
               canaryPreset: payload.canaryPreset === true,
+              medicalReadOnlyCanary,
+              followupPolicy: medicalReadOnlyCanary
+                ? {
+                    boundedLane: 'medical_read_only',
+                    allowedWorkflows: policy.autonomySurfaces.readOnlyWorkflows,
+                    maxFollowups: 2,
+                    recursionDisabled: true,
+                  }
+                : undefined,
               launchBaselineId: baseline.snapshot.id,
               launchBaselinePath: baseline.filePath,
             },
@@ -75,9 +88,10 @@ export async function processDashboardActions(): Promise<void> {
             workflowKind: 'review',
             sourceKind: 'dashboard',
           });
+          await dispatchPendingTasks();
           result = payload.canaryPreset === true
-            ? `Canary repo review submitted for ${project}\nBaseline snapshot: ${baseline.filePath}`
-            : `Review submitted for ${project}\nBaseline snapshot: ${baseline.filePath}`;
+            ? `Canary repo review submitted and dispatched for ${project}\nBaseline snapshot: ${baseline.filePath}`
+            : `Review submitted and dispatched for ${project}\nBaseline snapshot: ${baseline.filePath}`;
           break;
         }
         case 'execute': {
@@ -99,24 +113,37 @@ export async function processDashboardActions(): Promise<void> {
             throw new Error('Dashboard command action requires an explicit project.');
           }
           const project = payload.project.trim();
+          const { loadProjectPolicy } = await import('./project-policy.js');
+          const policy = loadProjectPolicy(project);
           const inferredReview = /^\s*(canary\s+)?review\b/i.test(cmd);
           const workflowKind = typeof payload.workflowKind === 'string'
             ? payload.workflowKind
             : inferredReview
               ? 'review'
               : undefined;
+          const medicalReadOnlyCanary = payload.canaryPreset === true && workflowKind === 'review' && policy.autonomySurfaces.readOnlyCanary;
           const baseline = captureProjectLaunchBaseline({
             projectId: project,
             action: 'command',
             command: cmd,
           });
           const { submitTask } = await import('./orchestrator.js');
+          const { dispatchPendingTasks } = await import('./agent-runner.js');
           await submitTask({
             description: cmd,
             input: {
               projectId: project,
               triggeredBy: 'dashboard-command',
               canaryPreset: payload.canaryPreset === true,
+              medicalReadOnlyCanary,
+              followupPolicy: medicalReadOnlyCanary
+                ? {
+                    boundedLane: 'medical_read_only',
+                    allowedWorkflows: policy.autonomySurfaces.readOnlyWorkflows,
+                    maxFollowups: 2,
+                    recursionDisabled: true,
+                  }
+                : undefined,
               reviewScope: workflowKind === 'review' ? 'project' : undefined,
               launchBaselineId: baseline.snapshot.id,
               launchBaselinePath: baseline.filePath,
@@ -132,7 +159,8 @@ export async function processDashboardActions(): Promise<void> {
                 sourceKind: 'dashboard',
               }
             : undefined);
-          result = `Command submitted: ${cmd}\nBaseline snapshot: ${baseline.filePath}`;
+          await dispatchPendingTasks();
+          result = `Command submitted and dispatched: ${cmd}\nBaseline snapshot: ${baseline.filePath}`;
           break;
         }
         default:

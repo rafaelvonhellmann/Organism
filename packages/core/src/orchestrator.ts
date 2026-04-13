@@ -12,7 +12,7 @@ import {
   recordBetSpend, resolveSpecialistTriggers,
 } from './shapeup.js';
 import { ensureGoal, getGoal, mapProviderFailure } from './run-state.js';
-import { loadProjectPolicy, isActionBlocked } from './project-policy.js';
+import { loadProjectPolicy, isActionBlocked, resolveTaskSafetyEnvelope } from './project-policy.js';
 
 // Orchestrator is the single main loop. Agents submit tasks here.
 // Paperclip is the ONLY orchestrator — PraisonAI is a tool provider only.
@@ -270,6 +270,34 @@ export async function submitTask(
 
   // 1. Classify risk
   const classification = await classifyRisk(description, { loc: options.loc });
+  const safetyEnvelope = resolveTaskSafetyEnvelope(policy, description, workflowKind);
+
+  if (safetyEnvelope.blockedReason) {
+    writeAudit({
+      agent: options.agent ?? 'orchestrator',
+      taskId: 'blocked',
+      action: 'gate_eval',
+      payload: {
+        type: 'project_safety_block',
+        projectId,
+        description,
+        workflowKind,
+        reason: safetyEnvelope.blockedReason,
+      },
+      outcome: 'blocked',
+      errorCode: OrganismError.GATE_BLOCKED,
+    });
+    throw new Error(safetyEnvelope.blockedReason);
+  }
+
+  const effectiveClassification = safetyEnvelope.forcedLane && safetyEnvelope.forcedLane !== classification.lane
+    ? {
+        ...classification,
+        lane: safetyEnvelope.forcedLane,
+        reason: `${classification.reason} | Project safety policy forced ${safetyEnvelope.forcedLane}`,
+        factors: [...classification.factors, 'project safety policy override'],
+      }
+    : classification;
 
   // 2. Resolve owning agent (project-scoped when projectId is set)
   loadRegistry(); // warm cache
@@ -298,7 +326,7 @@ export async function submitTask(
       });
 
   // 3. Shape Up gate: MEDIUM/HIGH tasks must reference an approved bet or be rerouted
-  const shapingAction = resolveShapingRequirement(classification.lane, projectId, options, workflowKind);
+  const shapingAction = resolveShapingRequirement(effectiveClassification.lane, projectId, options, workflowKind);
 
   if (shapingAction.type === 'rejected') {
     writeAudit({
@@ -317,13 +345,15 @@ export async function submitTask(
     const agent = 'product-manager';
     const task = createTask({
       agent,
-      lane: classification.lane,
+      lane: effectiveClassification.lane,
       description: description.startsWith('[SHAPING]') ? description : `[SHAPING] ${description}`,
       input: {
         type: 'pitch_request',
         originalDescription: description,
         originalInput: submission.input,
         intendedAgent,
+        requestedLane: classification.lane,
+        effectiveLane: effectiveClassification.lane,
         reason: 'No approved bet found for MEDIUM/HIGH task — needs shaping first',
       },
       parentTaskId: options.parentTaskId,
@@ -387,7 +417,7 @@ export async function submitTask(
   // 6. Create task record
   const task = createTask({
     agent,
-    lane: classification.lane,
+    lane: effectiveClassification.lane,
     description,
     input: taskInput,
     parentTaskId: options.parentTaskId,
@@ -402,12 +432,22 @@ export async function submitTask(
     agent,
     taskId: task.id,
     action: 'task_created',
-    payload: { classification, description, betId: resolvedBetId, goalId: goal.id, workflowKind, sourceKind },
+    payload: {
+      classification,
+      effectiveClassification,
+      description,
+      betId: resolvedBetId,
+      goalId: goal.id,
+      workflowKind,
+      sourceKind,
+      safeSurfaceMatch: safetyEnvelope.safeSurfaceMatch,
+      protectedSurfaceMatch: safetyEnvelope.protectedSurfaceMatch,
+    },
     outcome: 'success',
   });
 
   // 7. Route to pipeline (async — the pipeline runs the actual agent session)
-  routeToPipeline(task.id, agent, classification.lane, resolvedBetId).catch((err) => {
+  routeToPipeline(task.id, agent, effectiveClassification.lane, resolvedBetId).catch((err) => {
     const errorMessage = err instanceof Error ? err.message : String(err);
     const providerFailure = mapProviderFailure(errorMessage);
     const nextStatus = providerFailure.pauseUntilMs ? 'retry_scheduled' : 'paused';

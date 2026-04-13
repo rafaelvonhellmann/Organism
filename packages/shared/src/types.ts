@@ -19,6 +19,7 @@ export type GateDecision = 'approved' | 'rejected' | 'pending';
 
 export type ProjectPhase = 'BUILD' | 'OPERATE' | 'GROW';
 export type AutonomyMode = 'stabilization' | 'operational' | 'full_autonomy';
+export type SelfAuditCadence = 'daily' | 'weekly';
 export type GoalSourceKind = 'user' | 'scheduler' | 'git_watcher' | 'agent_followup' | 'dashboard' | 'system' | 'monitor';
 export type WorkflowKind = 'review' | 'plan' | 'implement' | 'validate' | 'ship' | 'monitor' | 'recover' | 'shaping';
 export type RetryClass =
@@ -95,6 +96,7 @@ export interface ProjectConfig {
   riskOverrides: {
     keywords?: string[];        // keywords that force HIGH lane regardless of classifier
     defaultLane?: RiskLane;     // override default LOW classification for all tasks
+    note?: string;
   };
   agents: {
     generalist: string[];       // agent IDs that work on all projects
@@ -121,6 +123,23 @@ export interface ProjectConfig {
     minimumHealthyRunsForDeploy?: number;
     initialWorkflowLimit?: number;
     initialAllowedWorkflows?: WorkflowKind[];
+  };
+  autonomySurfaces?: {
+    readOnlyCanary?: boolean;
+    safeTaskKeywords?: string[];
+    protectedTaskKeywords?: string[];
+    readOnlyWorkflows?: WorkflowKind[];
+    safeImplementationWorkflows?: WorkflowKind[];
+    note?: string;
+  };
+  selfAudit?: {
+    enabled?: boolean;
+    cadence?: SelfAuditCadence;
+    dayOfWeek?: number;
+    hour?: number;
+    workflows?: WorkflowKind[];
+    maxFollowups?: number;
+    description?: string;
   };
   toolProviders?: {
     minimax?: {
@@ -316,6 +335,12 @@ export interface ProjectPolicy {
   projectId: string;
   repoPath: string | null;
   defaultBranch: string;
+  qualityStandards: string[];
+  riskOverrides: {
+    keywords: string[];
+    defaultLane: RiskLane | null;
+    note: string | null;
+  };
   commands: Partial<Record<'install' | 'lint' | 'test' | 'build' | 'deploy', string>>;
   deployTargets: Array<{
     name: string;
@@ -334,6 +359,23 @@ export interface ProjectPolicy {
     minimumHealthyRunsForDeploy: number;
     initialWorkflowLimit: number;
     initialAllowedWorkflows: WorkflowKind[];
+  };
+  autonomySurfaces: {
+    readOnlyCanary: boolean;
+    safeTaskKeywords: string[];
+    protectedTaskKeywords: string[];
+    readOnlyWorkflows: WorkflowKind[];
+    safeImplementationWorkflows: WorkflowKind[];
+    note: string | null;
+  };
+  selfAudit: {
+    enabled: boolean;
+    cadence: SelfAuditCadence;
+    dayOfWeek: number | null;
+    hour: number;
+    workflows: WorkflowKind[];
+    maxFollowups: number;
+    description: string;
   };
   toolProviders: {
     minimax: {

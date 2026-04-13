@@ -13,6 +13,12 @@ function buildPolicy(overrides: Partial<ProjectPolicy> = {}): ProjectPolicy {
     projectId: 'organism',
     repoPath: null,
     defaultBranch: 'main',
+    qualityStandards: [],
+    riskOverrides: {
+      keywords: [],
+      defaultLane: null,
+      note: null,
+    },
     commands: {},
     deployTargets: [],
     allowedActions: ['edit_code', 'run_tests', 'build', 'commit', 'push', 'open_pr', 'deploy'],
@@ -24,6 +30,23 @@ function buildPolicy(overrides: Partial<ProjectPolicy> = {}): ProjectPolicy {
       minimumHealthyRunsForDeploy: 5,
       initialWorkflowLimit: 0,
       initialAllowedWorkflows: [],
+    },
+    autonomySurfaces: {
+      readOnlyCanary: false,
+      safeTaskKeywords: [],
+      protectedTaskKeywords: [],
+      readOnlyWorkflows: ['review', 'plan', 'validate'],
+      safeImplementationWorkflows: ['review', 'plan', 'validate', 'recover', 'implement'],
+      note: null,
+    },
+    selfAudit: {
+      enabled: false,
+      cadence: 'daily',
+      dayOfWeek: null,
+      hour: 8,
+      workflows: ['review', 'validate', 'recover', 'implement'],
+      maxFollowups: 0,
+      description: 'Disabled in unit tests',
     },
     toolProviders: {
       minimax: {
@@ -82,6 +105,7 @@ describe('execution-controller', () => {
       baselineDirty: false,
       baselineStatus: [],
       isolatedWorktree: false,
+      recoveredWorktree: false,
     };
 
     const result = await runPolicyCommand(buildTask(), workspace, 'push', 'git push -u origin test');
@@ -104,6 +128,7 @@ describe('execution-controller', () => {
       baselineDirty: false,
       baselineStatus: [],
       isolatedWorktree: false,
+      recoveredWorktree: false,
     };
 
     const result = await runPolicyCommand(buildTask(), workspace, 'build', 'echo controller-ok');

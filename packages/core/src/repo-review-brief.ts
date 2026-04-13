@@ -19,6 +19,7 @@ export interface RepoReviewBrief {
   recentCommits: string[];
   fileExcerpts: RepoReviewFileExcerpt[];
   tasklist: string | null;
+  projectGuidance: string | null;
 }
 
 const IGNORED_TOP_LEVEL = new Set([
@@ -59,6 +60,11 @@ function readTasklist(tasklistPath: string | undefined, maxChars: number): strin
   return safeRead(tasklistPath, maxChars);
 }
 
+function readProjectGuidance(projectId: string, maxChars: number): string | null {
+  const guidancePath = path.resolve(process.cwd(), 'knowledge', 'projects', projectId, 'AUTONOMY_BRIEF.md');
+  return safeRead(guidancePath, maxChars);
+}
+
 function collectTopLevelEntries(repoPath: string): string[] {
   try {
     return fs.readdirSync(repoPath, { withFileTypes: true })
@@ -77,7 +83,10 @@ function collectChangedFiles(repoPath: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.replace(/\r$/, ''))
     .filter(Boolean)
-    .map((line) => line.slice(3).trimStart())
+    .map((line) => {
+      const normalized = line.length >= 3 && line[2] !== ' ' ? ` ${line}` : line;
+      return normalized.slice(3).trimStart();
+    })
     .slice(0, 20);
 }
 
@@ -136,6 +145,7 @@ export function buildRepoReviewBrief(projectId: string, maxCharsPerFile = 3000):
       recentCommits: [],
       fileExcerpts: [],
       tasklist: null,
+      projectGuidance: readProjectGuidance(projectId, maxCharsPerFile),
     };
   }
 
@@ -161,5 +171,6 @@ export function buildRepoReviewBrief(projectId: string, maxCharsPerFile = 3000):
     recentCommits: collectRecentCommits(repoPath),
     fileExcerpts: collectFileExcerpts(repoPath, maxCharsPerFile, tasklistPath),
     tasklist: readTasklist(tasklistPath, maxCharsPerFile),
+    projectGuidance: readProjectGuidance(projectId, maxCharsPerFile),
   };
 }

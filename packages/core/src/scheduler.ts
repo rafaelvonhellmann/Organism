@@ -9,11 +9,17 @@
 import { dispatchPendingTasks } from './agent-runner.js';
 import { runWatchdog } from './orchestrator.js';
 import { loadRegistry } from './registry.js';
-import { createTask, getDb, getPendingTasks } from './task-queue.js';
+import { getDb, getPendingTasks } from './task-queue.js';
 import { enforceDormancy } from './perspectives.js';
 import { syncToTurso } from './turso-sync.js';
 import { processDashboardActions } from './action-processor.js';
-import { AgentCapability } from '../../shared/src/types.js';
+import { listProjectPolicies } from './project-policy.js';
+import { seedIdleAutonomyCycles } from './autonomy-loop.js';
+import { AgentCapability, GoalSourceKind, ProjectPolicy, WorkflowKind } from '../../shared/src/types.js';
+
+function schedulerSyncEnabled(): boolean {
+  return process.env.ORGANISM_DISABLE_SCHEDULER_SYNC !== '1';
+}
 
 // --- Types ---
 
@@ -31,14 +37,127 @@ const lastRunMap = new Map<string, number>();
 let watchdogLastRunAt = 0;
 const WATCHDOG_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-// ── Autonomous project reviews ──────────────────────────────────────────
-// Monday = Synapse review, Tuesday = Tokens for Good review
-const PROJECT_SCHEDULE: Array<{ projectId: string; dayOfWeek: number; hour: number }> = [
-  { projectId: 'synapse', dayOfWeek: 1, hour: 9 },        // Monday 9am
-  { projectId: 'tokens-for-good', dayOfWeek: 2, hour: 9 }, // Tuesday 9am
+type ScheduledProjectCadence = 'daily' | 'weekly';
+
+export interface ScheduledProjectRun {
+  id: string;
+  kind: 'project_review' | 'self_audit';
+  projectId: string;
+  cadence: ScheduledProjectCadence;
+  dayOfWeek: number | null;
+  hour: number;
+  agent?: string;
+  title?: string;
+  description: string;
+  workflowKind: WorkflowKind;
+  sourceKind: GoalSourceKind;
+  input: Record<string, unknown>;
+}
+
+const DEFAULT_PROJECT_SCHEDULE: ScheduledProjectRun[] = [
+  {
+    id: 'weekly-review:synapse',
+    kind: 'project_review',
+    projectId: 'synapse',
+    cadence: 'weekly',
+    dayOfWeek: 1,
+    hour: 9,
+    agent: 'quality-agent',
+    title: 'Scheduled medical-safe review of synapse',
+    description: 'Scheduled medical-safe review of synapse',
+    workflowKind: 'review',
+    sourceKind: 'scheduler',
+    input: {
+      projectId: 'synapse',
+      triggeredBy: 'scheduler',
+      scheduledReview: true,
+      reviewScope: 'project',
+      medicalReadOnlyCanary: true,
+      followupPolicy: {
+        boundedLane: 'medical_read_only',
+        allowedWorkflows: ['review', 'plan', 'validate'],
+        maxFollowups: 2,
+        recursionDisabled: true,
+      },
+    },
+  },
+  {
+    id: 'weekly-review:tokens-for-good',
+    kind: 'project_review',
+    projectId: 'tokens-for-good',
+    cadence: 'weekly',
+    dayOfWeek: 2,
+    hour: 9,
+    agent: 'quality-agent',
+    title: 'Scheduled weekly review of tokens-for-good',
+    description: 'Scheduled weekly review of tokens-for-good',
+    workflowKind: 'review',
+    sourceKind: 'scheduler',
+    input: {
+      projectId: 'tokens-for-good',
+      triggeredBy: 'scheduler',
+      scheduledReview: true,
+      reviewScope: 'project',
+    },
+  },
 ];
 
-const projectReviewLastRun = new Map<string, string>(); // projectId → 'YYYY-MM-DD'
+const scheduledProjectRunLastPeriod = new Map<string, string>();
+
+export function buildScheduledProjectRuns(policies: ProjectPolicy[] = listProjectPolicies()): ScheduledProjectRun[] {
+  const scheduled = [...DEFAULT_PROJECT_SCHEDULE];
+
+  for (const policy of policies) {
+    if (!policy.selfAudit.enabled) continue;
+    scheduled.push({
+      id: `self-audit:${policy.projectId}`,
+      kind: 'self_audit',
+      projectId: policy.projectId,
+      cadence: policy.selfAudit.cadence,
+      dayOfWeek: policy.selfAudit.dayOfWeek,
+      hour: policy.selfAudit.hour,
+      agent: 'quality-agent',
+      title: `Scheduled self-audit of ${policy.projectId}`,
+      description: policy.selfAudit.description,
+      workflowKind: 'review',
+      sourceKind: 'scheduler',
+      input: {
+        projectId: policy.projectId,
+        triggeredBy: 'scheduler',
+        scheduledReview: true,
+        reviewScope: 'project',
+        selfAudit: true,
+        followupPolicy: {
+          boundedLane: 'self_audit',
+          allowedWorkflows: policy.selfAudit.workflows,
+          maxFollowups: policy.selfAudit.maxFollowups,
+          recursionDisabled: true,
+        },
+      },
+    });
+  }
+
+  return scheduled;
+}
+
+export function getSchedulePeriodKey(schedule: ScheduledProjectRun, now = new Date()): string {
+  return now.toISOString().split('T')[0];
+}
+
+export function isScheduledProjectRunDue(
+  schedule: ScheduledProjectRun,
+  now = new Date(),
+  lastRunPeriod: string | null = null,
+): boolean {
+  if (schedule.cadence === 'weekly') {
+    if (schedule.dayOfWeek === null || now.getDay() !== schedule.dayOfWeek) return false;
+  }
+
+  if (now.getHours() < schedule.hour) return false;
+
+  const periodKey = getSchedulePeriodKey(schedule, now);
+  return lastRunPeriod !== periodKey;
+}
 
 // --- Core logic ---
 
@@ -204,40 +323,45 @@ function tierLabel(tier: AgentCapability['frequencyTier']): string {
  */
 async function schedulerTick(): Promise<void> {
   const capabilities = loadRegistry();
+  let createdTasks = false;
 
   // Pull remote dashboard actions first so website-triggered work is visible
   // during the same scheduler cycle instead of waiting for the next one.
-  try { await syncToTurso(); } catch { /* non-critical */ }
+  if (schedulerSyncEnabled()) {
+    try { await syncToTurso(); } catch { /* non-critical */ }
+  }
 
-  // ── Autonomous project reviews ──────────────────────────────────────────
-  for (const schedule of PROJECT_SCHEDULE) {
-    const now = new Date();
-    const today = now.toISOString().split('T')[0];
-    const currentDay = now.getDay(); // 0=Sun, 1=Mon, etc.
-    const currentHour = now.getHours();
+  // ── Scheduled project reviews and bounded self-audits ───────────────────
+  const now = new Date();
+  const schedules = buildScheduledProjectRuns();
+  for (const schedule of schedules) {
+    const periodKey = getSchedulePeriodKey(schedule, now);
+    const lastRunPeriod = scheduledProjectRunLastPeriod.get(schedule.id) ?? null;
+    if (!isScheduledProjectRunDue(schedule, now, lastRunPeriod)) continue;
 
-    if (currentDay === schedule.dayOfWeek && currentHour >= schedule.hour) {
-      const lastRun = projectReviewLastRun.get(schedule.projectId);
-      if (lastRun !== today) {
-        console.log(`[Scheduler] Triggering weekly review for ${schedule.projectId} (${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][schedule.dayOfWeek]} ${schedule.hour}:00)`);
-        projectReviewLastRun.set(schedule.projectId, today);
-
-        try {
-          // Import submitTask dynamically to avoid circular deps
-          const { submitTask } = await import('./orchestrator.js');
-          await submitTask({
-            description: `Scheduled weekly review of ${schedule.projectId}`,
-            input: {
-              projectId: schedule.projectId,
-              triggeredBy: 'scheduler',
-              scheduledReview: true,
-            },
-            projectId: schedule.projectId,
-          });
-        } catch (err) {
-          console.warn(`[Scheduler] Failed to trigger review for ${schedule.projectId}:`, (err as Error).message);
-        }
-      }
+    scheduledProjectRunLastPeriod.set(schedule.id, periodKey);
+    try {
+      const { submitTask } = await import('./orchestrator.js');
+      await submitTask({
+        title: schedule.title,
+        description: schedule.description,
+        input: {
+          ...schedule.input,
+          projectId: schedule.projectId,
+          dedupeKey: `${schedule.id}:${periodKey}`,
+        },
+        projectId: schedule.projectId,
+        workflowKind: schedule.workflowKind,
+        sourceKind: schedule.sourceKind,
+      }, {
+        agent: schedule.agent,
+        projectId: schedule.projectId,
+        workflowKind: schedule.workflowKind,
+        sourceKind: schedule.sourceKind,
+      });
+      console.log(`[Scheduler] Triggered ${schedule.kind.replace('_', ' ')} for ${schedule.projectId}`);
+    } catch (err) {
+      console.warn(`[Scheduler] Failed to trigger ${schedule.kind} for ${schedule.projectId}:`, (err as Error).message);
     }
   }
 
@@ -277,6 +401,15 @@ async function schedulerTick(): Promise<void> {
     }
   } catch { /* non-critical */ }
 
+  // ── Idle autonomy loop — seed the next safe bounded review when a project goes idle ──
+  try {
+    const autonomyCycles = await seedIdleAutonomyCycles();
+    if (autonomyCycles > 0) {
+      console.log(`[Scheduler] Idle autonomy loop seeded ${autonomyCycles} project review(s)`);
+      createdTasks = true;
+    }
+  } catch { /* non-critical */ }
+
   // Deduplicate by owner — each agent dispatches once per tick at most
   const agentTierMap = new Map<string, { tier: AgentCapability['frequencyTier']; description: string }>();
   for (const cap of capabilities) {
@@ -284,8 +417,6 @@ async function schedulerTick(): Promise<void> {
       agentTierMap.set(cap.owner, { tier: cap.frequencyTier, description: cap.description });
     }
   }
-
-  let createdTasks = false;
 
   // DISABLED: Generic agent-level scheduling creates tasks with no project context.
   // Progress monitor (above) creates specific objective tasks instead.
@@ -390,7 +521,9 @@ async function schedulerTick(): Promise<void> {
   } catch { /* non-critical */ }
 
   // Sync local state to Turso for dashboard
-  try { await syncToTurso(); } catch { /* non-critical */ }
+  if (schedulerSyncEnabled()) {
+    try { await syncToTurso(); } catch { /* non-critical */ }
+  }
 
   // Watchdog every 5 minutes
   if (Date.now() - watchdogLastRunAt >= WATCHDOG_INTERVAL_MS) {

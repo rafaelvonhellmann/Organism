@@ -24,6 +24,72 @@
       "medical-content-reviewer"
     ]
   },
+  "repoPath": "C:/Users/rafae/OneDrive/Desktop/synapse",
+  "defaultBranch": "main",
+  "commands": {
+    "install": "pnpm install",
+    "lint": "pnpm lint",
+    "test": "pnpm test",
+    "build": "pnpm build",
+    "deploy": "npx vercel --prod --yes"
+  },
+  "deployTargets": [
+    {
+      "name": "synapse",
+      "provider": "vercel",
+      "project": "synapse"
+    }
+  ],
+  "allowedActions": [
+    "edit_code",
+    "run_tests",
+    "build",
+    "commit",
+    "push",
+    "open_pr",
+    "deploy"
+  ],
+  "blockedActions": [],
+  "launchGuards": {
+    "minimumHealthyRunsForDeploy": 5,
+    "initialWorkflowLimit": 3,
+    "initialAllowedWorkflows": ["review", "plan", "validate"]
+  },
+  "autonomySurfaces": {
+    "readOnlyCanary": true,
+    "safeTaskKeywords": [
+      "auth audit", "authentication review", "admin ui", "admin dashboard",
+      "docs", "documentation", "observability", "monitoring", "telemetry",
+      "instrumentation", "build", "lint", "typecheck", "test harness",
+      "deploy readiness", "infra", "infrastructure", "ci", "workflow"
+    ],
+    "protectedTaskKeywords": [
+      "grade", "grading", "mark", "marking", "score", "scoring",
+      "feedback", "assessment", "exam", "question bank", "medical", "clinical",
+      "pharmacology", "physiology", "anatomy", "answer key", "benchmark",
+      "rubric", "correct answer", "mcq", "saq", "viva", "model answer"
+    ],
+    "readOnlyWorkflows": ["review", "plan", "validate"],
+    "safeImplementationWorkflows": ["review", "plan", "validate", "recover", "implement"],
+    "note": "Synapse starts in a medical-safe read-only autonomy lane. Protected surfaces remain review/validate only until explicitly promoted."
+  },
+  "approvalThresholds": {
+    "majorActions": [
+      "destructive_migration",
+      "cross_project",
+      "purchase",
+      "contact",
+      "create_account"
+    ]
+  },
+  "envRequirements": ["GH_TOKEN", "VERCEL_TOKEN"],
+  "budgetCaps": {
+    "dailyUsd": 50,
+    "deployUsd": 10,
+    "contactUsd": 0,
+    "purchaseUsd": 0
+  },
+  "autonomyMode": "stabilization",
   "tasklist": "C:/Users/rafae/OneDrive/Desktop/synapse/tasks/master_tasklist.md",
   "dbState": {
     "asOf": "2026-04-03",
