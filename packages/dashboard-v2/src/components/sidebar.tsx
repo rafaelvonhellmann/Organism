@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from './theme-provider';
+import { getInitialSelectedProject, SELECTED_PROJECT_EVENT } from '@/lib/selected-project';
 
 interface NavItem {
   href: string;
@@ -32,18 +33,24 @@ export function Sidebar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [todoCount, setTodoCount] = useState(0);
+  const [selectedProject, setSelectedProject] = useState(() => getInitialSelectedProject());
   const { theme, toggle: toggleTheme } = useTheme();
 
   const fetchCount = useCallback(() => {
-    fetch('/api/review-queue')
+    const projectSuffix = selectedProject ? `?project=${encodeURIComponent(selectedProject)}` : '';
+    const actionItemSuffix = selectedProject
+      ? `?counts=1&project=${encodeURIComponent(selectedProject)}`
+      : '?counts=1';
+
+    fetch(`/api/review-queue${projectSuffix}`)
       .then(r => r.json())
       .then(d => setPendingCount(d.pending ?? d.total ?? 0))
       .catch(() => {});
-    fetch('/api/action-items?counts=1')
+    fetch(`/api/action-items${actionItemSuffix}`)
       .then(r => r.json())
       .then(d => setTodoCount(d.todo ?? 0))
       .catch(() => {});
-  }, []);
+  }, [selectedProject]);
 
   // Fetch pending review count for badge
   useEffect(() => {
@@ -51,6 +58,28 @@ export function Sidebar() {
     const id = setInterval(fetchCount, 60_000);
     return () => clearInterval(id);
   }, [fetchCount]);
+
+  useEffect(() => {
+    function handleProjectChange(event?: Event) {
+      const detailProject = event && 'detail' in event
+        ? (event as CustomEvent<{ projectId?: string }>).detail?.projectId ?? ''
+        : getInitialSelectedProject();
+      setSelectedProject(detailProject);
+    }
+
+    function handleStorage(event: StorageEvent) {
+      if (event.key === null || event.key === 'organism.selectedProject') {
+        setSelectedProject(getInitialSelectedProject());
+      }
+    }
+
+    window.addEventListener(SELECTED_PROJECT_EVENT, handleProjectChange as EventListener);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener(SELECTED_PROJECT_EVENT, handleProjectChange as EventListener);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
 
   // Listen for custom "review-decision" events from the review page
   // so the count updates immediately after a decision

@@ -4,7 +4,7 @@ import * as path from 'path';
 import { execFileSync, execSync } from 'child_process';
 import { getProjectAutonomyHealth } from './autonomy-governor.js';
 import { appendCommandLog, updateRunProgress } from './run-memory.js';
-import { loadProjectPolicy, getV2DeployTargets, isActionAllowed, isActionBlocked, requiresApproval } from './project-policy.js';
+import { loadProjectPolicy, getV2DeployTargets, isActionAllowed, isActionBlocked, normalizePolicyCommand, requiresApproval } from './project-policy.js';
 import { createGitHubPullRequest, getPrAuthStatus } from './runtime-auth.js';
 import { createApprovalRecord, createArtifact, createInterrupt, getLatestRunForGoal } from './run-state.js';
 import { recordRuntimeEvent } from './runtime-events.js';
@@ -26,6 +26,7 @@ export interface EngineeringWorkspace {
   baselineDirty: boolean;
   baselineStatus: GitStatusEntry[];
   isolatedWorktree: boolean;
+  recoveredWorktree: boolean;
 }
 
 export interface ControllerCommandResult {
@@ -93,10 +94,13 @@ function parseStatus(output: string): GitStatusEntry[] {
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter(Boolean)
-    .map((line) => ({
-      code: line.slice(0, 2).trim(),
-      path: line.slice(3).trim(),
-    }));
+    .map((line) => {
+      const normalized = line.length >= 3 && line[2] !== ' ' ? ` ${line}` : line;
+      return {
+        code: normalized.slice(0, 2).trim(),
+        path: normalized.slice(3).trim(),
+      };
+    });
 }
 
 function listStatus(projectPath: string): GitStatusEntry[] {
@@ -108,15 +112,68 @@ function resolveDefaultBranch(projectPath: string, policy: ProjectPolicy): strin
   if (remoteHead.startsWith('refs/remotes/origin/')) {
     return remoteHead.replace('refs/remotes/origin/', '');
   }
-  return policy.defaultBranch || 'main';
+
+  const remoteShow = tryRunGit(['remote', 'show', 'origin'], projectPath);
+  const remoteHeadMatch = remoteShow.match(/HEAD branch:\s+([^\s]+)/i);
+  if (remoteHeadMatch?.[1]) {
+    return remoteHeadMatch[1];
+  }
+
+  const preferredBranches = [
+    policy.defaultBranch,
+    tryRunGit(['rev-parse', '--abbrev-ref', 'HEAD'], projectPath),
+    'master',
+    'main',
+  ].filter((value): value is string => Boolean(value && value.trim()));
+
+  for (const branch of preferredBranches) {
+    const localRef = tryRunGit(['rev-parse', '--verify', `refs/heads/${branch}`], projectPath);
+    if (localRef) return branch;
+    const remoteRef = tryRunGit(['rev-parse', '--verify', `refs/remotes/origin/${branch}`], projectPath);
+    if (remoteRef) return branch;
+  }
+
+  return policy.defaultBranch || 'master';
 }
 
 function buildBranchName(task: Task): string {
   return `agent/engineering/${task.id.slice(0, 8)}/${slugify(task.description)}`;
 }
 
+function shortProjectToken(projectId: string): string {
+  const compact = slugify(projectId).replace(/-/g, '').slice(0, 10);
+  if (compact.length >= 4) return compact;
+  return crypto.createHash('sha1').update(projectId).digest('hex').slice(0, 10);
+}
+
+function worktreeRootForProject(projectId: string): string {
+  return path.join(STATE_DIR, 'wt', shortProjectToken(projectId));
+}
+
+function legacyWorktreeRootForProject(projectId: string): string {
+  return path.join(STATE_DIR, 'worktrees', projectId);
+}
+
+function worktreeRootsForProject(projectId: string): string[] {
+  return [
+    worktreeRootForProject(projectId),
+    legacyWorktreeRootForProject(projectId),
+  ].map((root) => path.resolve(root));
+}
+
 function worktreePathForTask(projectId: string, task: Task): string {
-  return path.join(STATE_DIR, 'worktrees', projectId, `${task.id.slice(0, 8)}-${slugify(task.description)}`);
+  const shortSlug = slugify(task.description).slice(0, 12) || 'task';
+  const suffix = crypto
+    .createHash('sha1')
+    .update(`${task.id}:${task.description}`)
+    .digest('hex')
+    .slice(0, 6);
+  return path.join(worktreeRootForProject(projectId), `${task.id.slice(0, 8)}-${shortSlug}-${suffix}`);
+}
+
+function ensureLongPathsEnabled(projectPath: string): void {
+  if (process.platform !== 'win32') return;
+  tryRunGit(['config', 'core.longpaths', 'true'], projectPath);
 }
 
 function previewDirtyFiles(entries: GitStatusEntry[]): string {
@@ -213,13 +270,18 @@ function pullRequestBody(): string {
 export function prepareEngineeringWorkspace(task: Task): EngineeringWorkspace {
   const projectId = task.projectId ?? 'organism';
   const policy = loadProjectPolicy(projectId);
+  const input = (task.input && typeof task.input === 'object') ? task.input as Record<string, unknown> : null;
+  const recoverWorktreePath = typeof input?.recoverWorktreePath === 'string'
+    ? input.recoverWorktreePath
+    : null;
   if (!policy.repoPath) {
     throw new Error(`Project policy for ${projectId} does not define repoPath`);
   }
   ensureRepo(policy.repoPath);
+  ensureLongPathsEnabled(policy.repoPath);
 
   const defaultBranch = resolveDefaultBranch(policy.repoPath, policy);
-  const branchName = buildBranchName(task);
+  let branchName = buildBranchName(task);
   const repoBaselineStatus = listStatus(policy.repoPath);
   if (policy.workspaceMode === 'clean_required' && repoBaselineStatus.length > 0) {
     throw new Error(
@@ -230,25 +292,40 @@ export function prepareEngineeringWorkspace(task: Task): EngineeringWorkspace {
 
   let projectPath = policy.repoPath;
   let isolatedWorktree = false;
+  let recoveredWorktree = false;
   if (policy.workspaceMode === 'isolated_worktree') {
-    const worktreePath = worktreePathForTask(projectId, task);
-    const parentDir = path.dirname(worktreePath);
-    if (!fs.existsSync(parentDir)) {
-      fs.mkdirSync(parentDir, { recursive: true });
-    }
+    const safeRecoveryRoots = worktreeRootsForProject(projectId);
+    const shouldReuseRecoveryWorktree = recoverWorktreePath
+      && safeRecoveryRoots.some((root) => path.resolve(recoverWorktreePath).startsWith(root))
+      && fs.existsSync(path.join(recoverWorktreePath, '.git'));
 
-    if (!fs.existsSync(path.join(worktreePath, '.git'))) {
-      try {
-        runGit(['worktree', 'add', '--force', '-B', branchName, worktreePath, `origin/${defaultBranch}`], policy.repoPath);
-      } catch {
-        runGit(['worktree', 'add', '--force', '-B', branchName, worktreePath, defaultBranch], policy.repoPath);
-      }
+    if (shouldReuseRecoveryWorktree) {
+      projectPath = recoverWorktreePath;
+      branchName = tryRunGit(['rev-parse', '--abbrev-ref', 'HEAD'], projectPath) || branchName;
+      isolatedWorktree = true;
+      recoveredWorktree = true;
+      ensureLongPathsEnabled(projectPath);
     } else {
-      runGit(['checkout', branchName], worktreePath);
-    }
+      const worktreePath = worktreePathForTask(projectId, task);
+      const parentDir = path.dirname(worktreePath);
+      if (!fs.existsSync(parentDir)) {
+        fs.mkdirSync(parentDir, { recursive: true });
+      }
 
-    projectPath = worktreePath;
-    isolatedWorktree = true;
+      if (!fs.existsSync(path.join(worktreePath, '.git'))) {
+        try {
+          runGit(['worktree', 'add', '--force', '-B', branchName, worktreePath, `origin/${defaultBranch}`], policy.repoPath);
+        } catch {
+          runGit(['worktree', 'add', '--force', '-B', branchName, worktreePath, defaultBranch], policy.repoPath);
+        }
+      } else {
+        runGit(['checkout', branchName], worktreePath);
+      }
+
+      projectPath = worktreePath;
+      isolatedWorktree = true;
+      ensureLongPathsEnabled(projectPath);
+    }
   }
 
   const baselineStatus = listStatus(projectPath);
@@ -264,10 +341,14 @@ export function prepareEngineeringWorkspace(task: Task): EngineeringWorkspace {
   }
 
   if (task.goalId) {
-    updateRunProgress(task.goalId, [
+    const progressLines = [
       `- Controller prepared workspace \`${projectPath}\``,
       `- Branch: \`${branchName}\``,
-    ]);
+    ];
+    if (recoveredWorktree) {
+      progressLines.push('- Reused preserved isolated worktree for recovery');
+    }
+    updateRunProgress(task.goalId, progressLines);
   }
 
   recordToolEvent(task, 'tool.started', {
@@ -291,6 +372,7 @@ export function prepareEngineeringWorkspace(task: Task): EngineeringWorkspace {
     baselineDirty: baselineStatus.length > 0,
     baselineStatus,
     isolatedWorktree,
+    recoveredWorktree,
   };
 }
 
@@ -405,23 +487,25 @@ export async function runPolicyCommand(task: Task, workspace: EngineeringWorkspa
 
   recordToolEvent(task, 'tool.started', { action, command, cwd: workspace.projectPath });
   try {
-    const output = execSync(command, {
+    const normalizedCommand = normalizePolicyCommand(command) ?? command;
+    const output = execSync(normalizedCommand, {
       cwd: workspace.projectPath,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10 * 60 * 1000,
     }).trim();
-    recordToolEvent(task, 'tool.finished', { action, command, ok: true });
+    recordToolEvent(task, 'tool.finished', { action, command: normalizedCommand, ok: true });
     if (task.goalId) {
-      appendCommandLog(task.goalId, { action, command, ok: true, output });
+      appendCommandLog(task.goalId, { action, command: normalizedCommand, ok: true, output });
     }
     recordControllerArtifact(task, 'verification', `Verification: ${action}`, output || `${action} completed`);
-    return { action, command, ok: true, output };
+    return { action, command: normalizedCommand, ok: true, output };
   } catch (err) {
     const output = err instanceof Error ? err.message : String(err);
-    recordToolEvent(task, 'tool.finished', { action, command, ok: false, error: output });
+    const normalizedCommand = normalizePolicyCommand(command) ?? command;
+    recordToolEvent(task, 'tool.finished', { action, command: normalizedCommand, ok: false, error: output });
     if (task.goalId) {
-      appendCommandLog(task.goalId, { action, command, ok: false, output });
+      appendCommandLog(task.goalId, { action, command: normalizedCommand, ok: false, output });
     }
     recordControllerArtifact(task, 'verification', `Verification failed: ${action}`, output);
     return { action, command, ok: false, output };
@@ -436,6 +520,54 @@ function collectChangedFiles(workspace: EngineeringWorkspace): string[] {
 function diffSummary(projectPath: string): string {
   const summary = tryRunGit(['diff', '--stat'], projectPath);
   return summary || 'No diff summary available';
+}
+
+function needsWorkspaceInstall(workspace: EngineeringWorkspace): boolean {
+  if (!workspace.policy.commands.install) return false;
+  return !fs.existsSync(path.join(workspace.projectPath, 'node_modules'));
+}
+
+function ensureWorkspaceDependencies(task: Task, workspace: EngineeringWorkspace): { ok: boolean; output: string | null } {
+  if (!needsWorkspaceInstall(workspace)) {
+    return { ok: true, output: null };
+  }
+
+  const installCommand = normalizePolicyCommand(workspace.policy.commands.install) ?? workspace.policy.commands.install!;
+  recordToolEvent(task, 'tool.started', {
+    action: 'install',
+    command: installCommand,
+    cwd: workspace.projectPath,
+  });
+
+  try {
+    const output = execSync(installCommand, {
+      cwd: workspace.projectPath,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      timeout: 15 * 60 * 1000,
+    }).trim();
+    if (task.goalId) {
+      appendCommandLog(task.goalId, { action: 'install', command: installCommand, ok: true, output });
+      updateRunProgress(task.goalId, [
+        `- Controller installed workspace dependencies in \`${workspace.projectPath}\``,
+      ]);
+    }
+    recordControllerArtifact(task, 'command_log', 'Dependency install output', output || 'Dependencies installed');
+    recordToolEvent(task, 'tool.finished', { action: 'install', ok: true, command: installCommand });
+    return { ok: true, output };
+  } catch (err) {
+    const output = err instanceof Error ? err.message : String(err);
+    if (task.goalId) {
+      appendCommandLog(task.goalId, { action: 'install', command: installCommand, ok: false, output });
+      updateRunProgress(task.goalId, [
+        `- Dependency install failed for \`${workspace.projectPath}\``,
+      ]);
+    }
+    recordControllerArtifact(task, 'verification', 'Dependency install failed', output);
+    recordToolEvent(task, 'tool.finished', { action: 'install', ok: false, command: installCommand, error: output });
+    return { ok: false, output };
+  }
 }
 
 function commitIfSafe(task: Task, workspace: EngineeringWorkspace, changedFiles: string[]): { proposals: CommandProposal[]; committed: boolean } {
@@ -455,7 +587,7 @@ function commitIfSafe(task: Task, workspace: EngineeringWorkspace, changedFiles:
     return { proposals, committed: false };
   }
 
-  if (workspace.baselineDirty) {
+  if (workspace.baselineDirty && !workspace.recoveredWorktree) {
     proposals.push({
       id: crypto.randomUUID(),
       action: 'commit',
@@ -593,14 +725,24 @@ export async function finalizeEngineeringExecution(task: Task, workspace: Engine
   const changedFiles = collectChangedFiles(workspace);
   const verification: ControllerCommandResult[] = [];
   const controllerActions: ControllerCommandResult[] = [];
+  const installResult = ensureWorkspaceDependencies(task, workspace);
 
-  if (workspace.policy.commands.lint) {
+  if (!installResult.ok) {
+    verification.push({
+      action: 'build',
+      command: normalizePolicyCommand(workspace.policy.commands.install ?? 'install') ?? 'install',
+      ok: false,
+      output: installResult.output ?? 'Dependency install failed.',
+    });
+  }
+
+  if (installResult.ok && workspace.policy.commands.lint) {
     verification.push(await runPolicyCommand(task, workspace, 'build', workspace.policy.commands.lint));
   }
-  if (workspace.policy.commands.test) {
+  if (installResult.ok && workspace.policy.commands.test) {
     verification.push(await runPolicyCommand(task, workspace, 'run_tests', workspace.policy.commands.test));
   }
-  if (workspace.policy.commands.build) {
+  if (installResult.ok && workspace.policy.commands.build) {
     verification.push(await runPolicyCommand(task, workspace, 'build', workspace.policy.commands.build));
   }
 

@@ -166,6 +166,40 @@ function normalizeSelfAudit(raw: unknown, projectId: string): ProjectPolicy['sel
   };
 }
 
+function normalizeInnovationRadar(raw: unknown, projectId: string): ProjectPolicy['innovationRadar'] {
+  const record = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const cadence = record.cadence === 'daily' ? 'daily' : 'weekly';
+  const rawDayOfWeek = typeof record.dayOfWeek === 'number' ? Math.trunc(record.dayOfWeek) : 3;
+  const dayOfWeek = cadence === 'weekly'
+    ? Math.min(6, Math.max(0, rawDayOfWeek))
+    : null;
+  const rawHour = typeof record.hour === 'number' ? Math.trunc(record.hour) : 9;
+  const hour = Math.min(23, Math.max(0, rawHour));
+  const focusAreas = Array.isArray(record.focusAreas)
+    ? record.focusAreas.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+  const rawMaxOpportunities = typeof record.maxOpportunities === 'number'
+    ? Math.trunc(record.maxOpportunities)
+    : 3;
+  const maxOpportunities = Math.min(3, Math.max(1, rawMaxOpportunities));
+
+  return {
+    enabled: record.enabled === true,
+    cadence,
+    dayOfWeek,
+    hour,
+    agent: typeof record.agent === 'string' && record.agent.trim().length > 0
+      ? record.agent.trim()
+      : 'competitive-intel',
+    shadow: record.shadow !== false,
+    focusAreas,
+    maxOpportunities,
+    description: typeof record.description === 'string' && record.description.trim().length > 0
+      ? record.description.trim()
+      : `Run an innovation radar pass for ${projectId} and surface only the freshest project-relevant opportunities.`,
+  };
+}
+
 function configPath(projectId: string): string {
   return path.join(PROJECTS_DIR, projectId, 'config.json');
 }
@@ -272,6 +306,7 @@ function coerceConfig(projectId: string, raw: Record<string, unknown>): ProjectP
     launchGuards,
     autonomySurfaces,
     selfAudit: normalizeSelfAudit(raw.selfAudit, projectId),
+    innovationRadar: normalizeInnovationRadar(raw.innovationRadar, projectId),
     toolProviders: {
       minimax: normalizeMiniMax(toolProviders.minimax),
     },
@@ -401,6 +436,12 @@ export function mergeProjectConfig(config: ProjectConfig, policy: ProjectPolicy)
     workflows: config.selfAudit?.workflows ?? policy.selfAudit.workflows,
     dayOfWeek: config.selfAudit?.dayOfWeek ?? policy.selfAudit.dayOfWeek ?? undefined,
   };
+  const mergedInnovationRadar = {
+    ...policy.innovationRadar,
+    ...(config.innovationRadar ?? {}),
+    dayOfWeek: config.innovationRadar?.dayOfWeek ?? policy.innovationRadar.dayOfWeek ?? undefined,
+    focusAreas: config.innovationRadar?.focusAreas ?? policy.innovationRadar.focusAreas,
+  };
 
   return {
     ...config,
@@ -439,6 +480,7 @@ export function mergeProjectConfig(config: ProjectConfig, policy: ProjectPolicy)
       note: config.autonomySurfaces?.note ?? policy.autonomySurfaces.note ?? undefined,
     },
     selfAudit: mergedSelfAudit,
+    innovationRadar: mergedInnovationRadar,
     toolProviders: {
       ...policy.toolProviders,
       ...(config.toolProviders ?? {}),

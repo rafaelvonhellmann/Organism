@@ -2,6 +2,7 @@ import { createTask, getDb } from './task-queue.js';
 import { writeAudit } from './audit.js';
 import { extractFindings, extractHandoffs } from './agent-envelope.js';
 import { hasEquivalentFollowup } from './followup-dedupe.js';
+import { canCreatePolicyFollowup, inheritFollowupPolicy, parseFollowupPolicy } from './followup-policy.js';
 import { HandoffRequest, RiskLane, TypedFinding } from '../../shared/src/types.js';
 
 const CASCADE_ELIGIBLE_AGENTS = new Set(['security-audit', 'product-manager', 'cto', 'devops']);
@@ -34,6 +35,7 @@ function createCascadeTask(task: {
   agent: string;
   description: string;
   output: string;
+  input: string | null;
   project_id: string;
   goal_id: string | null;
 }, targetAgent: string, workflowKind: string, description: string, lane: RiskLane, detail: Record<string, unknown>): boolean {
@@ -59,6 +61,7 @@ function createCascadeTask(task: {
         sourceOutput: task.output.slice(0, 3000),
         projectId: task.project_id,
         execution: workflowKind === 'implement',
+        ...inheritFollowupPolicy(task.input ? JSON.parse(task.input) : null),
       },
       parentTaskId: task.id,
       projectId: task.project_id,
@@ -90,16 +93,19 @@ function fallbackFindingCascade(task: {
   agent: string;
   description: string;
   output: string;
+  input: string | null;
   project_id: string;
   goal_id: string | null;
-}, findings: TypedFinding[]): number {
+}, findings: TypedFinding[], followupPolicy: ReturnType<typeof parseFollowupPolicy>, isAgentFollowup: boolean): number {
   let created = 0;
   for (const finding of findings) {
     if (!finding.actionable || !finding.remediation) continue;
+    const workflowKind = finding.followupKind ?? 'implement';
+    if (!canCreatePolicyFollowup(followupPolicy, workflowKind, created, isAgentFollowup)) continue;
     if (createCascadeTask(
       task,
       'engineering',
-      finding.followupKind ?? 'implement',
+      workflowKind,
       finding.remediation,
       laneFromSeverity(finding.severity),
       {
@@ -118,11 +124,13 @@ function handoffCascade(task: {
   agent: string;
   description: string;
   output: string;
+  input: string | null;
   project_id: string;
   goal_id: string | null;
-}, handoffs: HandoffRequest[]): number {
+}, handoffs: HandoffRequest[], followupPolicy: ReturnType<typeof parseFollowupPolicy>, isAgentFollowup: boolean): number {
   let created = 0;
   for (const handoff of handoffs) {
+    if (!canCreatePolicyFollowup(followupPolicy, handoff.workflowKind, created, isAgentFollowup)) continue;
     if (createCascadeTask(
       task,
       handoff.targetAgent,
@@ -146,7 +154,7 @@ function handoffCascade(task: {
  */
 export function processCascades(): number {
   const completed = getDb().prepare(`
-    SELECT id, agent, description, output, project_id, goal_id
+    SELECT id, agent, description, input, output, project_id, goal_id, source_kind
     FROM tasks
     WHERE status = 'completed'
       AND completed_at > ?
@@ -156,9 +164,11 @@ export function processCascades(): number {
     id: string;
     agent: string;
     description: string;
+    input: string | null;
     output: string;
     project_id: string;
     goal_id: string | null;
+    source_kind: string | null;
   }>;
 
   let created = 0;
@@ -167,16 +177,19 @@ export function processCascades(): number {
     if (!CASCADE_ELIGIBLE_AGENTS.has(task.agent)) continue;
 
     try {
+      const taskInput = task.input ? JSON.parse(task.input) : null;
+      const followupPolicy = parseFollowupPolicy(taskInput);
+      const isAgentFollowup = task.source_kind === 'agent_followup';
       const output = JSON.parse(task.output);
       const handoffs = extractHandoffs(output).slice(0, 2);
       const findings = extractFindings(output)
         .filter((finding) => finding.actionable && (finding.severity === 'CRITICAL' || finding.severity === 'HIGH'))
         .slice(0, 2);
 
-      created += handoffCascade(task, handoffs);
+      created += handoffCascade(task, handoffs, followupPolicy, isAgentFollowup);
 
       if (handoffs.length === 0) {
-        created += fallbackFindingCascade(task, findings);
+        created += fallbackFindingCascade(task, findings, followupPolicy, isAgentFollowup);
       }
     } catch {
       // Ignore legacy outputs without structured follow-ups.

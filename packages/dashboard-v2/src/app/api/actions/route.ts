@@ -42,10 +42,15 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: 'Project selection is required for this action' }, { status: 400 });
   }
 
-  await client.execute({
-    sql: 'INSERT INTO dashboard_actions (action, payload, status, created_at) VALUES (?, ?, ?, ?)',
-    args: [action, JSON.stringify(payload ?? {}), 'pending', Date.now()],
-  });
+  try {
+    await client.execute({
+      sql: 'INSERT INTO dashboard_actions (action, payload, status, created_at) VALUES (?, ?, ?, ?)',
+      args: [action, JSON.stringify(payload ?? {}), 'pending', Date.now()],
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 500 });
+  }
 
   return Response.json({ ok: true, action });
 }

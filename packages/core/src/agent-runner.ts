@@ -8,7 +8,7 @@
  * 2. One-shot: dispatchPendingTasks() — dispatch once and return (tests, scripts)
  */
 
-import { getPendingTasks, getRecentCompletedTasks, markQualityReviewed, createTask, releaseRetryScheduledTasks } from './task-queue.js';
+import { getPendingTasks, getRecentCompletedTasks, isTaskShadowMode, markQualityReviewed, createTask, releaseRetryScheduledTasks } from './task-queue.js';
 import { BaseAgent } from '../../../agents/_base/agent.js';
 import { isRateLimited, getRateLimitStatus } from '../../../agents/_base/mcp-client.js';
 
@@ -37,6 +37,7 @@ import SecurityAuditAgent from '../../../agents/security-audit/agent.js';
 import MarketingStrategistAgent from '../../../agents/marketing-strategist/agent.js';
 import PrCommsAgent from '../../../agents/pr-comms/agent.js';
 import CommunityManagerAgent from '../../../agents/community-manager/agent.js';
+import CompetitiveIntelAgent from '../../../agents/competitive-intel/agent.js';
 import SynthesisAgent from '../../../agents/synthesis/agent.js';
 import PalateWikiAgent from '../../../agents/palate-wiki/agent.js';
 
@@ -68,9 +69,13 @@ const AGENT_MAP: Record<string, AgentConstructor> = {
   'marketing-strategist': MarketingStrategistAgent,
   'pr-comms': PrCommsAgent,
   'community-manager': CommunityManagerAgent,
+  'competitive-intel': CompetitiveIntelAgent,
   'synthesis': SynthesisAgent,
   'palate-wiki': PalateWikiAgent,
 };
+
+let dispatchInFlight: Promise<number> | null = null;
+const activeAgentWorkers = new Map<string, number>();
 
 // ── Agent priority levels for parallel dispatch ────────────────────────────
 // Level 0: grill-me (must run first for MEDIUM/HIGH tasks)
@@ -86,16 +91,50 @@ const AGENT_PRIORITY: Record<string, number> = {
 };
 // Everything not listed defaults to priority 1
 
+const AGENT_CONCURRENCY: Record<string, number> = {
+  'quality-agent': 3,
+  'codex-review': 2,
+  'quality-guardian': 2,
+  'engineering': 2,
+};
+
 function getAgentPriority(agentName: string): number {
   return AGENT_PRIORITY[agentName] ?? 1;
 }
 
+function getAgentConcurrency(agentName: string): number {
+  return Math.max(1, AGENT_CONCURRENCY[agentName] ?? 1);
+}
+
+function getActiveAgentWorkers(agentName: string): number {
+  return activeAgentWorkers.get(agentName) ?? 0;
+}
+
+function startAgentWorker(agentName: string, AgentClass: AgentConstructor): void {
+  activeAgentWorkers.set(agentName, getActiveAgentWorkers(agentName) + 1);
+  void (async () => {
+    try {
+      const agent = new AgentClass();
+      await agent.run();
+    } catch (err) {
+      console.error(`[Runner] Agent '${agentName}' failed:`, err);
+    } finally {
+      const next = Math.max(0, getActiveAgentWorkers(agentName) - 1);
+      if (next === 0) {
+        activeAgentWorkers.delete(agentName);
+      } else {
+        activeAgentWorkers.set(agentName, next);
+      }
+    }
+  })();
+}
+
 /**
  * Dispatch all pending tasks to their registered agent implementations.
- * Groups agents by priority level and runs agents within the same level
- * in parallel using Promise.allSettled. Levels execute sequentially.
+ * Groups agents by priority level and launches bounded workers for each agent.
+ * The workers continue asynchronously; the dispatcher only decides what to start now.
  */
-export async function dispatchPendingTasks(): Promise<number> {
+async function dispatchSinglePass(): Promise<number> {
   const retryRelease = releaseRetryScheduledTasks();
   if (retryRelease.released > 0 || retryRelease.paused > 0) {
     console.log(`[Runner] Retry release: ${retryRelease.released} task(s) resumed, ${retryRelease.paused} task(s) paused after exhausting retry attempts`);
@@ -114,7 +153,12 @@ export async function dispatchPendingTasks(): Promise<number> {
 
   // Unique agent names with pending tasks, grouped by priority level
   const agentNames = [...new Set(pending.map((t) => t.agent))];
+  const pendingCountByAgent = new Map<string, number>();
   const levelMap = new Map<number, string[]>();
+
+  for (const task of pending) {
+    pendingCountByAgent.set(task.agent, (pendingCountByAgent.get(task.agent) ?? 0) + 1);
+  }
 
   for (const name of agentNames) {
     const level = getAgentPriority(name);
@@ -139,45 +183,35 @@ export async function dispatchPendingTasks(): Promise<number> {
     }
 
     // Build runnable promises for this level — skip unregistered agents
-    const runnables: Array<{ name: string; promise: () => Promise<void> }> = [];
+    const runnables: Array<{ name: string; agentName: string; AgentClass: AgentConstructor }> = [];
     for (const agentName of agentsAtLevel) {
       const AgentClass = AGENT_MAP[agentName];
       if (!AgentClass) {
         console.warn(`[Runner] No implementation registered for '${agentName}'. Add it to AGENT_MAP in agent-runner.ts.`);
         continue;
       }
-      runnables.push({
-        name: agentName,
-        promise: () => {
-          const agent = new AgentClass();
-          return agent.run();
-        },
-      });
+      const desiredWorkers = Math.min(
+        pendingCountByAgent.get(agentName) ?? 1,
+        Math.max(0, getAgentConcurrency(agentName) - getActiveAgentWorkers(agentName)),
+      );
+      for (let workerIndex = 0; workerIndex < desiredWorkers; workerIndex++) {
+        runnables.push({
+          name: desiredWorkers === 1 ? agentName : `${agentName}#${workerIndex + 1}`,
+          agentName,
+          AgentClass,
+        });
+      }
     }
 
     if (runnables.length === 0) continue;
 
-    if (runnables.length === 1) {
-      // Single agent at this level — run directly (no allSettled overhead)
-      try {
-        await runnables[0].promise();
-        dispatched++;
-      } catch (err) {
-        console.error(`[Runner] Agent '${runnables[0].name}' failed:`, err);
-      }
-    } else {
-      // Multiple agents at this level — run in parallel
-      console.log(`[Runner] Level ${level}: dispatching ${runnables.length} agents in parallel: ${runnables.map(r => r.name).join(', ')}`);
-      const results = await Promise.allSettled(runnables.map(r => r.promise()));
+    if (runnables.length > 1) {
+      console.log(`[Runner] Level ${level}: starting ${runnables.length} worker(s): ${runnables.map(r => r.name).join(', ')}`);
+    }
 
-      for (let i = 0; i < results.length; i++) {
-        const result = results[i];
-        if (result.status === 'fulfilled') {
-          dispatched++;
-        } else {
-          console.error(`[Runner] Agent '${runnables[i].name}' failed:`, result.reason);
-        }
-      }
+    for (const runnable of runnables) {
+      startAgentWorker(runnable.agentName, runnable.AgentClass);
+      dispatched++;
     }
 
     // Re-check rate limit after each level completes
@@ -194,6 +228,36 @@ export async function dispatchPendingTasks(): Promise<number> {
   return dispatched;
 }
 
+export async function dispatchPendingTasks(maxPasses = 4): Promise<number> {
+  if (dispatchInFlight) {
+    return dispatchInFlight;
+  }
+
+  dispatchInFlight = (async () => {
+    let totalDispatched = 0;
+
+    for (let pass = 1; pass <= maxPasses; pass++) {
+      const dispatchedThisPass = await dispatchSinglePass();
+      totalDispatched += dispatchedThisPass;
+
+      const remaining = getPendingTasks().length;
+      if (remaining === 0 || dispatchedThisPass === 0) {
+        break;
+      }
+
+      console.log(`[Runner] Pass ${pass} completed; ${remaining} pending task(s) remain — draining next wave immediately`);
+    }
+
+    return totalDispatched;
+  })();
+
+  try {
+    return await dispatchInFlight;
+  } finally {
+    dispatchInFlight = null;
+  }
+}
+
 /**
  * Collect recently completed tasks that haven't been quality-reviewed,
  * and create ONE batched quality-agent task per group of 5+ instead of one per task.
@@ -203,7 +267,8 @@ async function batchQualityReviews(): Promise<void> {
   const needsQualityReview = completed.filter(t =>
     !t.agent.startsWith('quality') &&
     !t.agent.startsWith('grill-me') &&
-    !t.agent.startsWith('codex-review')
+    !t.agent.startsWith('codex-review') &&
+    !isTaskShadowMode(t)
   );
 
   if (needsQualityReview.length >= 5) {

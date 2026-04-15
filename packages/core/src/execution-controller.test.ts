@@ -48,6 +48,17 @@ function buildPolicy(overrides: Partial<ProjectPolicy> = {}): ProjectPolicy {
       maxFollowups: 0,
       description: 'Disabled in unit tests',
     },
+    innovationRadar: {
+      enabled: false,
+      cadence: 'weekly',
+      dayOfWeek: 3,
+      hour: 9,
+      agent: 'competitive-intel',
+      shadow: true,
+      focusAreas: [],
+      maxOpportunities: 3,
+      description: 'Disabled in unit tests',
+    },
     toolProviders: {
       minimax: {
         enabled: false,

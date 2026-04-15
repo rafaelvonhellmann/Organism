@@ -39,10 +39,12 @@
       "quality-guardian",
       "codex-review"
     ],
-    "specialist": []
+    "specialist": [
+      "competitive-intel"
+    ]
   },
   "repoPath": "C:/Users/rafae/OneDrive/Desktop/Organism",
-  "defaultBranch": "main",
+  "defaultBranch": "master",
   "repository": "https://github.com/rafaelvonhellmann/Organism",
   "commands": {
     "install": "pnpm install",
@@ -82,6 +84,30 @@
   "workspaceMode": "isolated_worktree",
   "launchGuards": {
     "minimumHealthyRunsForDeploy": 5
+  },
+  "selfAudit": {
+    "enabled": true,
+    "cadence": "daily",
+    "hour": 8,
+    "workflows": ["review", "validate", "recover", "implement"],
+    "maxFollowups": 4,
+    "description": "Run a bounded self-audit on Organism, identify the next safe improvements, and keep follow-up work inside the stabilization envelope."
+  },
+  "innovationRadar": {
+    "enabled": true,
+    "cadence": "weekly",
+    "dayOfWeek": 3,
+    "hour": 9,
+    "agent": "competitive-intel",
+    "shadow": true,
+    "focusAreas": [
+      "agent runtime",
+      "shadow-mode architecture",
+      "developer UX",
+      "autonomy loops"
+    ],
+    "maxOpportunities": 3,
+    "description": "Run a shadow innovation radar pass for Organism and surface only fresh external ideas that map to active autonomy, orchestration, or developer-workflow bottlenecks."
   },
   "toolProviders": {
     "minimax": {

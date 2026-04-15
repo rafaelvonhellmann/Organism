@@ -1,8 +1,12 @@
 import { BaseAgent } from '../../_base/agent.js';
+import { callNativeModel } from '../../_base/mcp-client.js';
 import { Task } from '../../../packages/shared/src/types.js';
-import { getSecretOrNull } from '../../../packages/shared/src/secrets.js';
+import { getTask } from '../../../packages/core/src/task-queue.js';
 
-const CODEX_REVIEW_SYSTEM = `You are a senior engineering reviewer powered by GPT-5.4. You review code and agent outputs from a different model's perspective — your job is to catch what Claude missed.
+const CODEX_REVIEW_MODEL = 'gpt4o';
+const CODEX_REVIEW_MAX_COMPLETION_TOKENS = 1600;
+
+const CODEX_REVIEW_SYSTEM = `You are a senior engineering reviewer on Organism's dedicated OpenAI review lane. You review code and agent outputs from a different perspective to catch what the primary implementation pass missed.
 
 For every review, check:
 1. **Logic errors** — off-by-one, wrong conditionals, missing null checks, unreachable code
@@ -34,56 +38,41 @@ Rules:
 - Be specific. "Could be better" is not a finding. Line numbers or function names required.
 - Maximum 400 words.`;
 
-interface OpenAIResponse {
-  choices: Array<{ message: { content: string } }>;
-  usage?: { prompt_tokens: number; completion_tokens: number };
+function remediationWorkflowKind(task: Task | null): 'implement' | 'validate' {
+  if (!task) return 'implement';
+  if (task.workflowKind === 'validate' || task.workflowKind === 'review' || task.workflowKind === 'plan') {
+    return 'implement';
+  }
+  return 'validate';
 }
 
-// Uses OpenAI REST API directly via fetch — no SDK dependency required
-async function callGpt(prompt: string, apiKey: string): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'gpt-5.4',
-      max_completion_tokens: 2048,
-      reasoning_effort: 'high',
-      messages: [
-        { role: 'system', content: CODEX_REVIEW_SYSTEM },
-        { role: 'user', content: prompt },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
+function describeOpenAiLaneError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/unauthorized|401|403|login/i.test(message)) {
+    return `OpenAI lane authentication failed: ${message}`;
   }
-
-  const data = await response.json() as OpenAIResponse;
-  const text = data.choices[0]?.message?.content ?? '';
-  return {
-    text,
-    inputTokens: data.usage?.prompt_tokens ?? 0,
-    outputTokens: data.usage?.completion_tokens ?? 0,
-  };
+  if (/rate limit|429|quota|billing|credit balance is too low|insufficient/i.test(message)) {
+    return `OpenAI lane capacity error: ${message}`;
+  }
+  if (/fetch failed|connection error|network error|timed out|timeout/i.test(message)) {
+    return `OpenAI lane transport error: ${message}`;
+  }
+  return `OpenAI lane error: ${message}`;
 }
 
 export default class CodexReviewAgent extends BaseAgent {
   constructor() {
     super({
       name: 'codex-review',
-      model: 'gpt5.4',
+      model: 'gpt4o',
       capability: {
         id: 'quality.codex_review',
         owner: 'codex-review',
         collaborators: [],
         reviewerLane: 'MEDIUM',
-        description: 'GPT-5.4 code review — cross-model perspective for logic errors, security, edge cases, performance',
+        description: 'OpenAI review lane for logic, security, edge cases, and performance blind-spot coverage',
         status: 'shadow',
-        model: 'gpt5.4',
+        model: 'gpt4o',
         frequencyTier: 'on-demand',
         projectScope: 'all',
       },
@@ -95,22 +84,7 @@ export default class CodexReviewAgent extends BaseAgent {
     const originalOutput = (input?.output as string) ?? '';
     const originalDesc = (input?.originalDescription as string) ?? task.description;
     const originalTaskId = (input?.originalTaskId as string) ?? '';
-
-    const apiKey = getSecretOrNull('OPENAI_API_KEY');
-
-    if (!apiKey) {
-      console.warn('[codex-review] OPENAI_API_KEY not set — Codex Review skipped');
-      return {
-        output: {
-          review: '## Codex Review\n\n**Decision:** APPROVED\n\n**Summary:** Codex Review skipped — OPENAI_API_KEY not set.\n\n### Issues\n\nNo issues found.\n\n### Notes\n- Set OPENAI_API_KEY to enable GPT-5.4 cross-model review.',
-          decision: 'APPROVED',
-          skipped: true,
-          reason: 'OPENAI_API_KEY not set',
-          originalTaskId,
-        },
-        tokensUsed: 0,
-      };
-    }
+    const parentTask = originalTaskId ? getTask(originalTaskId) : null;
 
     const prompt = `Review the following agent output for the task described.
 
@@ -123,10 +97,15 @@ ${originalOutput}
 
 Apply your code and quality review checklist. Produce the structured review.`;
 
-    const result = await callGpt(prompt, apiKey);
+    let result;
+    try {
+      result = await callNativeModel(prompt, CODEX_REVIEW_MODEL, CODEX_REVIEW_SYSTEM, CODEX_REVIEW_MAX_COMPLETION_TOKENS);
+    } catch (error) {
+      throw new Error(describeOpenAiLaneError(error));
+    }
 
-    const approved = result.text.includes('**Decision:** APPROVED') ||
-                     result.text.includes('Decision: APPROVED');
+    const approved = result.text.includes('**Decision:** APPROVED')
+      || result.text.includes('Decision: APPROVED');
 
     return {
       output: {
@@ -134,6 +113,18 @@ Apply your code and quality review checklist. Produce the structured review.`;
         decision: approved ? 'APPROVED' : 'NEEDS_REVISION',
         originalTaskId,
         skipped: false,
+        handoffRequests: !approved && parentTask
+          ? [
+              {
+                id: `codex-revision-${task.id}`,
+                targetAgent: parentTask.agent,
+                workflowKind: remediationWorkflowKind(parentTask),
+                reason: 'Codex review identified issues that need another bounded implementation pass.',
+                summary: `Address codex-review findings for "${parentTask.description.slice(0, 80)}"`,
+                execution: parentTask.agent === 'engineering',
+              },
+            ]
+          : [],
       },
       tokensUsed: result.inputTokens + result.outputTokens,
     };

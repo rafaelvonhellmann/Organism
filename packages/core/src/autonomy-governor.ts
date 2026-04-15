@@ -32,20 +32,87 @@ export interface ProjectAutonomyHealth {
   coreAgents: string[];
 }
 
-function consecutiveHealthyRuns(projectId: string): number {
+interface RecentRunRow {
+  id: string;
+  goal_id: string | null;
+  project_id: string;
+  agent: string;
+  status: string;
+  provider_failure_kind: string | null;
+  updated_at: number;
+}
+
+interface RelatedTaskRow {
+  status: string;
+  retry_class: string | null;
+  provider_failure_kind: string | null;
+  error: string | null;
+}
+
+function canonicalRecentRuns(projectId: string): RecentRunRow[] {
   const rows = getDb().prepare(`
-    SELECT status, provider_failure_kind
+    SELECT id, goal_id, project_id, agent, status, provider_failure_kind, updated_at
     FROM run_sessions
     WHERE project_id = ?
       AND NOT (goal_id LIKE 'goal-%' AND status IN ('pending', 'running', 'paused', 'retry_scheduled'))
       AND NOT (status IN ('pending', 'running', 'paused', 'retry_scheduled') AND updated_at < ?)
     ORDER BY updated_at DESC
-    LIMIT 50
-  `).all(projectId, Date.now() - ACTIVE_RUN_STALE_MS) as Array<{ status: string; provider_failure_kind: string }>;
+    LIMIT 100
+  `).all(projectId, Date.now() - ACTIVE_RUN_STALE_MS) as unknown as RecentRunRow[];
+
+  const seen = new Set<string>();
+  const canonical: RecentRunRow[] = [];
+
+  for (const row of rows) {
+    const key = `${row.goal_id ?? row.id}:${row.agent}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    canonical.push(row);
+  }
+
+  return canonical;
+}
+
+function latestRelatedTask(row: RecentRunRow): RelatedTaskRow | null {
+  if (!row.goal_id) return null;
+  const task = getDb().prepare(`
+    SELECT status, retry_class, provider_failure_kind, error
+    FROM tasks
+    WHERE project_id = ?
+      AND goal_id = ?
+      AND agent = ?
+    ORDER BY COALESCE(completed_at, started_at, created_at) DESC
+    LIMIT 1
+  `).get(row.project_id, row.goal_id, row.agent) as RelatedTaskRow | undefined;
+
+  return task ?? null;
+}
+
+function hasOperationalFailure(error: string | null): boolean {
+  if (!error) return false;
+  return /(fetch failed|transport_error|network error|timed out|timeout|manual pause|retry limit reached|credit balance is too low|rate limit|quota|billing|sql write operations are forbidden|writes are blocked|upgrade your plan|not recognized|corepack|pnpm|worktree|filename too long|path too long|permission denied)/i
+    .test(error);
+}
+
+function isHealthyRun(row: RecentRunRow): boolean {
+  if (row.status !== 'completed') return false;
+  if (row.provider_failure_kind && row.provider_failure_kind !== 'none') return false;
+
+  const relatedTask = latestRelatedTask(row);
+  if (!relatedTask) return true;
+  if (relatedTask.status !== 'completed') return false;
+  if (relatedTask.retry_class && relatedTask.retry_class !== 'none') return false;
+  if (relatedTask.provider_failure_kind && relatedTask.provider_failure_kind !== 'none') return false;
+  if (hasOperationalFailure(relatedTask.error)) return false;
+  return true;
+}
+
+function consecutiveHealthyRuns(projectId: string): number {
+  const rows = canonicalRecentRuns(projectId);
 
   let streak = 0;
   for (const row of rows) {
-    if (row.status !== 'completed' || (row.provider_failure_kind && row.provider_failure_kind !== 'none')) {
+    if (!isHealthyRun(row)) {
       break;
     }
     streak++;
@@ -71,24 +138,16 @@ export function getProjectAutonomyHealth(projectId: string): ProjectAutonomyHeal
   const policy = listProjectPolicies().find((entry) => entry.projectId === projectId);
   const autonomyMode = policy?.autonomyMode ?? 'stabilization';
   const requiredConsecutiveRuns = FINAL_GRADUATION_RUNS;
+  const recentRuns = canonicalRecentRuns(projectId);
 
-  const counts = getDb().prepare(`
-    SELECT
-      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_runs,
-      SUM(CASE WHEN status IN ('pending', 'running', 'paused', 'retry_scheduled') AND updated_at >= ? AND goal_id NOT LIKE 'goal-%' THEN 1 ELSE 0 END) AS active_runs,
-      SUM(CASE WHEN provider_failure_kind IS NOT NULL AND provider_failure_kind != 'none' AND goal_id NOT LIKE 'goal-%' THEN 1 ELSE 0 END) AS provider_failures
-    FROM (
-      SELECT *
-      FROM run_sessions
-      WHERE project_id = ?
-      ORDER BY updated_at DESC
-      LIMIT 50
-    )
-  `).get(Date.now() - ACTIVE_RUN_STALE_MS, projectId) as {
-    completed_runs: number | null;
-    active_runs: number | null;
-    provider_failures: number | null;
-  } | undefined;
+  const activeCounts = getDb().prepare(`
+    SELECT COUNT(*) AS active_runs
+    FROM run_sessions
+    WHERE project_id = ?
+      AND status IN ('pending', 'running', 'paused', 'retry_scheduled')
+      AND updated_at >= ?
+      AND goal_id NOT LIKE 'goal-%'
+  `).get(projectId, Date.now() - ACTIVE_RUN_STALE_MS) as { active_runs: number | null } | undefined;
 
   const coreAgents = getProjectCoreAgents(projectId);
   const registry = loadRegistry();
@@ -118,13 +177,17 @@ export function getProjectAutonomyHealth(projectId: string): ProjectAutonomyHeal
   `).get(projectId) as { count: number } | undefined;
 
   const healthyRuns = consecutiveHealthyRuns(projectId);
+  const recentCompletedRuns = recentRuns.filter((row) => row.status === 'completed').length;
+  const recentProviderFailures = recentRuns.filter((row) =>
+    !!row.provider_failure_kind && row.provider_failure_kind !== 'none',
+  ).length;
   const rolloutStage = resolveRolloutStage(healthyRuns);
   const nextStage = nextRolloutMilestone(healthyRuns);
   const blockers: string[] = [];
   if (nextStage) {
     blockers.push(`Needs ${nextStage.threshold - healthyRuns} more consecutive healthy runs for ${nextStage.label}`);
   }
-  if ((counts?.provider_failures ?? 0) > 0) {
+  if (recentProviderFailures > 0) {
     blockers.push('Recent provider failures still present in the last 50 runs');
   }
   if ((pendingInterrupts?.count ?? 0) > 0) {
@@ -146,9 +209,9 @@ export function getProjectAutonomyHealth(projectId: string): ProjectAutonomyHeal
     nextRolloutThreshold: nextStage?.threshold ?? null,
     nextRolloutLabel: nextStage?.label ?? null,
     consecutiveHealthyRuns: healthyRuns,
-    recentCompletedRuns: counts?.completed_runs ?? 0,
-    recentProviderFailures: counts?.provider_failures ?? 0,
-    activeRuns: counts?.active_runs ?? 0,
+    recentCompletedRuns,
+    recentProviderFailures,
+    activeRuns: activeCounts?.active_runs ?? 0,
     pendingInterrupts: pendingInterrupts?.count ?? 0,
     pendingApprovals: pendingApprovals?.count ?? 0,
     rolloutReady: blockers.length === 0,

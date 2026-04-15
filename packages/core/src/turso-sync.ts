@@ -21,6 +21,16 @@ let schemaCreated = false;
 let lastSyncTs = 0; // epoch ms — only rows newer than this get synced
 let lastDaemonStatusUpdatedAt = 0;
 
+export type TursoSyncResult =
+  | { status: 'ok'; reason?: null }
+  | { status: 'skipped'; reason: 'not_configured' }
+  | { status: 'blocked'; reason: 'write_blocked' };
+
+export function resetTursoSyncState(): void {
+  remoteClient = null;
+  schemaCreated = false;
+}
+
 // ── Env loading ──────────────────────────────────────────────────────────────
 
 function loadTursoEnv(): { url: string; token: string } | null {
@@ -63,6 +73,13 @@ function getRemote(): Client | null {
 
   remoteClient = createClient({ url: env.url, authToken: env.token });
   return remoteClient;
+}
+
+export function isRemoteWriteBlockedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /sql write operations are forbidden/i.test(message)
+    || /writes are blocked/i.test(message)
+    || /do you need to upgrade your plan/i.test(message);
 }
 
 // ── Schema (idempotent) ──────────────────────────────────────────────────────
@@ -125,6 +142,19 @@ const SCHEMA = [
     quality_score REAL,
     ts INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
   )`,
+  `CREATE TABLE IF NOT EXISTS innovation_radar_feedback (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    opportunity_title TEXT,
+    feedback_code TEXT NOT NULL,
+    notes TEXT,
+    trigger TEXT,
+    created_by TEXT NOT NULL DEFAULT 'rafael',
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_innovation_feedback_project ON innovation_radar_feedback(project_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_innovation_feedback_task ON innovation_radar_feedback(task_id)`,
   `CREATE TABLE IF NOT EXISTS perspective_fitness (
     perspective_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
@@ -327,7 +357,21 @@ async function ensureSchema(remote: Client): Promise<void> {
   for (const sql of SCHEMA) {
     await remote.execute(sql);
   }
+  await ensureColumn(remote, 'tasks', 'goal_id', 'TEXT');
+  await ensureColumn(remote, 'tasks', 'workflow_kind', 'TEXT');
+  await ensureColumn(remote, 'tasks', 'source_kind', 'TEXT');
+  await ensureColumn(remote, 'tasks', 'retry_class', 'TEXT');
+  await ensureColumn(remote, 'tasks', 'retry_at', 'INTEGER');
+  await ensureColumn(remote, 'tasks', 'provider_failure_kind', 'TEXT');
+  await ensureColumn(remote, 'tasks', 'attempt_count', 'INTEGER NOT NULL DEFAULT 0');
   schemaCreated = true;
+}
+
+async function ensureColumn(remote: Client, table: string, column: string, definition: string): Promise<void> {
+  const info = await remote.execute(`PRAGMA table_info(${table})`);
+  const exists = info.rows.some((row) => String(row.name) === column);
+  if (exists) return;
+  await remote.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -359,6 +403,20 @@ function readDaemonStatusSnapshot(): { payload: string; updatedAt: number } | nu
   }
 }
 
+async function syncDaemonStatus(remote: Client): Promise<number> {
+  const daemonStatus = readDaemonStatusSnapshot();
+  if (!daemonStatus) return 0;
+  if (daemonStatus.updatedAt < lastDaemonStatusUpdatedAt) return 0;
+
+  await batchUpsert(remote, [{
+    sql: `INSERT OR REPLACE INTO daemon_status (id, payload, updated_at) VALUES (?, ?, ?)`,
+    args: ['primary', daemonStatus.payload, daemonStatus.updatedAt],
+  }]);
+
+  lastDaemonStatusUpdatedAt = daemonStatus.updatedAt + 1;
+  return 1;
+}
+
 async function batchUpsert(remote: Client, stmts: Array<{ sql: string; args: unknown[] }>): Promise<void> {
   if (stmts.length === 0) return;
   const batchSize = 50;
@@ -369,15 +427,35 @@ async function batchUpsert(remote: Client, stmts: Array<{ sql: string; args: unk
 
 // ── Main sync function ───────────────────────────────────────────────────────
 
-export async function syncToTurso(): Promise<void> {
+export async function syncToTurso(): Promise<TursoSyncResult> {
   const remote = getRemote();
-  if (!remote) return; // Turso not configured — silent no-op
+  if (!remote) return { status: 'skipped', reason: 'not_configured' };
 
-  await ensureSchema(remote);
+  try {
+    await ensureSchema(remote);
+  } catch (error) {
+    if (isRemoteWriteBlockedError(error)) {
+      console.warn('[turso-sync] Remote writes are blocked; continuing in local-bridge degraded mode');
+      return { status: 'blocked', reason: 'write_blocked' };
+    }
+    throw error;
+  }
 
-  const local = getDb();
-  const syncStart = Date.now();
-  const isFirstSync = lastSyncTs === 0;
+  let daemonStatusRows = 0;
+  try {
+    daemonStatusRows = await syncDaemonStatus(remote);
+  } catch (err) {
+    if (isRemoteWriteBlockedError(err)) {
+      console.warn('[turso-sync] Remote writes are blocked; continuing in local-bridge degraded mode');
+      return { status: 'blocked', reason: 'write_blocked' };
+    }
+    console.warn('[turso-sync] Failed to sync daemon status early:', err);
+  }
+
+  try {
+    const local = getDb();
+    const syncStart = Date.now();
+    const isFirstSync = lastSyncTs === 0;
 
   // ── Tasks (upsert by id; use created_at for new, but tasks can be updated so just re-upsert all changed) ──
   // Tasks don't have an updated_at column, so we use a full upsert for all tasks.
@@ -387,18 +465,28 @@ export async function syncToTurso(): Promise<void> {
     tasks = queryLocal('SELECT * FROM tasks');
   } else {
     tasks = queryLocal(
-      'SELECT * FROM tasks WHERE created_at > ? OR started_at > ? OR completed_at > ?',
-      lastSyncTs, lastSyncTs, lastSyncTs,
+      `SELECT * FROM tasks
+       WHERE status IN ('pending', 'in_progress', 'awaiting_review', 'paused', 'retry_scheduled')
+          OR created_at > ?
+          OR started_at > ?
+          OR completed_at > ?
+          OR created_at > ?`,
+      lastSyncTs, lastSyncTs, lastSyncTs, Date.now() - 7 * 24 * 60 * 60 * 1000,
     );
   }
 
   if (tasks.length > 0) {
     const stmts = tasks.map(t => ({
-      sql: `INSERT OR REPLACE INTO tasks (id, agent, status, lane, description, input, input_hash, output, tokens_used, cost_usd, started_at, completed_at, error, parent_task_id, project_id, bet_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT OR REPLACE INTO tasks (
+        id, agent, status, lane, description, input, input_hash, output, tokens_used, cost_usd,
+        started_at, completed_at, error, parent_task_id, project_id, bet_id, created_at,
+        goal_id, workflow_kind, source_kind, retry_class, retry_at, provider_failure_kind, attempt_count
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         t.id, t.agent, t.status, t.lane, t.description, t.input, t.input_hash,
         t.output, t.tokens_used, t.cost_usd, t.started_at, t.completed_at,
         t.error, t.parent_task_id, t.project_id, t.bet_id, t.created_at,
+        t.goal_id, t.workflow_kind, t.source_kind, t.retry_class, t.retry_at, t.provider_failure_kind, t.attempt_count ?? 0,
       ],
     }));
     await batchUpsert(remote, stmts);
@@ -442,6 +530,48 @@ export async function syncToTurso(): Promise<void> {
     const stmts = gates.map(g => ({
       sql: `INSERT OR REPLACE INTO gates (id, task_id, gate, decision, decided_by, reason, decided_at, patch_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [g.id, g.task_id, g.gate, g.decision, g.decided_by, g.reason, g.decided_at, g.patch_path, g.created_at],
+    }));
+    await batchUpsert(remote, stmts);
+  }
+
+  // ── Shadow runs (append-only) ──
+  let shadowRuns: Row[];
+  if (isFirstSync) {
+    shadowRuns = queryLocal('SELECT * FROM shadow_runs');
+  } else {
+    shadowRuns = queryLocal('SELECT * FROM shadow_runs WHERE ts > ?', lastSyncTs);
+  }
+
+  if (shadowRuns.length > 0) {
+    const stmts = shadowRuns.map((run) => ({
+      sql: `INSERT OR REPLACE INTO shadow_runs (id, agent, task_id, output, quality_score, ts) VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [run.id, run.agent, run.task_id, run.output, run.quality_score, run.ts],
+    }));
+    await batchUpsert(remote, stmts);
+  }
+
+  // ── Innovation radar feedback (bidirectional) ──
+  let innovationFeedback: Row[];
+  if (isFirstSync) {
+    innovationFeedback = queryLocal('SELECT * FROM innovation_radar_feedback');
+  } else {
+    innovationFeedback = queryLocal('SELECT * FROM innovation_radar_feedback WHERE created_at > ?', lastSyncTs);
+  }
+
+  if (innovationFeedback.length > 0) {
+    const stmts = innovationFeedback.map((row) => ({
+      sql: `INSERT OR REPLACE INTO innovation_radar_feedback (id, task_id, project_id, opportunity_title, feedback_code, notes, trigger, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        row.id,
+        row.task_id,
+        row.project_id,
+        row.opportunity_title,
+        row.feedback_code,
+        row.notes,
+        row.trigger,
+        row.created_by,
+        row.created_at,
+      ],
     }));
     await batchUpsert(remote, stmts);
   }
@@ -750,17 +880,6 @@ export async function syncToTurso(): Promise<void> {
     await batchUpsert(remote, stmts);
   }
 
-  const daemonStatus = readDaemonStatusSnapshot();
-  let daemonStatusRows = 0;
-  if (daemonStatus && daemonStatus.updatedAt >= lastDaemonStatusUpdatedAt) {
-    await batchUpsert(remote, [{
-      sql: `INSERT OR REPLACE INTO daemon_status (id, payload, updated_at) VALUES (?, ?, ?)`,
-      args: ['primary', daemonStatus.payload, daemonStatus.updatedAt],
-    }]);
-    daemonStatusRows = 1;
-    lastDaemonStatusUpdatedAt = daemonStatus.updatedAt + 1;
-  }
-
   // ── Pull dashboard decisions back to local ──
   // When Rafael approves/dismisses on the dashboard, it updates Turso directly.
   // Pull those status changes back so the local daemon knows.
@@ -785,6 +904,40 @@ export async function syncToTurso(): Promise<void> {
       if (pulledDecisions > 0) console.log(`[turso-sync] Pulled ${pulledDecisions} dashboard decisions → local`);
     }
   } catch { /* review_decisions table may not exist yet */ }
+
+  let pulledInnovationFeedback = 0;
+  try {
+    const remoteFeedback = await remote.execute(
+      `SELECT id, task_id, project_id, opportunity_title, feedback_code, notes, trigger, created_by, created_at
+       FROM innovation_radar_feedback
+       WHERE created_at > ?`,
+      [lastSyncTs > 0 ? lastSyncTs : Date.now() - 90 * 24 * 60 * 60 * 1000],
+    );
+
+    if (remoteFeedback.rows.length > 0) {
+      const insert = local.prepare(`
+        INSERT OR REPLACE INTO innovation_radar_feedback
+        (id, task_id, project_id, opportunity_title, feedback_code, notes, trigger, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const row of remoteFeedback.rows) {
+        insert.run(
+          row.id as string,
+          row.task_id as string,
+          row.project_id as string,
+          row.opportunity_title as string | null,
+          row.feedback_code as string,
+          row.notes as string | null,
+          row.trigger as string | null,
+          row.created_by as string,
+          row.created_at as number,
+        );
+      }
+      pulledInnovationFeedback = remoteFeedback.rows.length;
+      console.log(`[turso-sync] Pulled ${pulledInnovationFeedback} innovation feedback row(s) → local`);
+    }
+  } catch { /* innovation_radar_feedback may not exist remotely yet */ }
 
   // ── Dashboard actions (BIDIRECTIONAL) ──
   // 1. Pull pending actions FROM Turso → local
@@ -827,19 +980,27 @@ export async function syncToTurso(): Promise<void> {
   }
 
   // ── Log summary ──
-  const totalRows = tasks.length + audits.length + spends.length + gates.length +
+  const totalRows = tasks.length + audits.length + spends.length + gates.length + shadowRuns.length + innovationFeedback.length +
     fitness.length + pitches.length + bets.length + betScopes.length +
     hillUpdates.length + betDecisions.length + sourceFitness.length + wikiRatings.length +
     goals.length + runSessions.length + runSteps.length + interrupts.length +
     artifacts.length + approvals.length + runtimeEvents.length + daemonStatusRows +
-    pulledActions + pushedActions;
+    pulledActions + pushedActions + pulledInnovationFeedback;
 
   if (totalRows > 0) {
     console.log(
-      `[turso-sync] Synced ${tasks.length} tasks, ${goals.length} goals, ${runSessions.length} runs, ${runtimeEvents.length} runtime events, ${audits.length} audit entries (${Date.now() - syncStart}ms)`,
+      `[turso-sync] Synced ${tasks.length} tasks, ${goals.length} goals, ${runSessions.length} runs, ${runtimeEvents.length} runtime events, ${audits.length} audit entries, ${daemonStatusRows} daemon status row(s) (${Date.now() - syncStart}ms)`,
     );
   }
 
   // Advance watermark
-  lastSyncTs = syncStart;
+    lastSyncTs = syncStart;
+    return { status: 'ok' };
+  } catch (error) {
+    if (isRemoteWriteBlockedError(error)) {
+      console.warn('[turso-sync] Remote writes are blocked; continuing in local-bridge degraded mode');
+      return { status: 'blocked', reason: 'write_blocked' };
+    }
+    throw error;
+  }
 }

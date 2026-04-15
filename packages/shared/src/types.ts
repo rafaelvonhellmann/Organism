@@ -141,6 +141,17 @@ export interface ProjectConfig {
     maxFollowups?: number;
     description?: string;
   };
+  innovationRadar?: {
+    enabled?: boolean;
+    cadence?: SelfAuditCadence;
+    dayOfWeek?: number;
+    hour?: number;
+    agent?: string;
+    shadow?: boolean;
+    focusAreas?: string[];
+    maxOpportunities?: number;
+    description?: string;
+  };
   toolProviders?: {
     minimax?: {
       enabled?: boolean;
@@ -375,6 +386,17 @@ export interface ProjectPolicy {
     hour: number;
     workflows: WorkflowKind[];
     maxFollowups: number;
+    description: string;
+  };
+  innovationRadar: {
+    enabled: boolean;
+    cadence: SelfAuditCadence;
+    dayOfWeek: number | null;
+    hour: number;
+    agent: string;
+    shadow: boolean;
+    focusAreas: string[];
+    maxOpportunities: number;
     description: string;
   };
   toolProviders: {

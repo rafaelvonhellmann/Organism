@@ -7,6 +7,7 @@ import { Header } from '@/components/header';
 import { StatusBadge } from '@/components/status-badge';
 import { usePolling } from '@/hooks/use-polling';
 import { renderMarkdown, cleanForDisplay } from '@/lib/markdown';
+import { INNOVATION_RADAR_REVIEW_OPTIONS, composeInnovationRadarReason, type InnovationRadarFeedbackCode } from '@/lib/innovation-radar-feedback';
 
 interface TaskDetail {
   task: {
@@ -194,8 +195,13 @@ function briefTitle(desc: string, agent: string): string {
     'hr': 'Team Planning',
     'medical-content-reviewer': 'Research Workflow Review',
     'design': 'Design Review',
+    'competitive-intel': 'Innovation Radar',
   };
   return roles[agent] ?? agent.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function isInnovationRadarTask(agent: string | undefined): boolean {
+  return agent === 'competitive-intel';
 }
 
 export default function TaskDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -207,12 +213,14 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
   const [decisionMade, setDecisionMade] = useState<string | null>(null);
   const [showReplyForm, setShowReplyForm] = useState(false);
   const [replyText, setReplyText] = useState('');
+  const [radarNote, setRadarNote] = useState('');
   const replyRef = useRef<HTMLTextAreaElement>(null);
 
   const { data, lastUpdated } = usePolling<TaskDetail>(`/api/tasks/${id}`, 30000);
   const t = data?.task;
   const assessment = t ? extractAssessment(t.output) : null;
   const title = t ? briefTitle(t.description, t.agent) : 'Task Detail';
+  const innovationRadar = isInnovationRadarTask(t?.agent);
 
   const prevId = data?.prevTaskId;
   const nextId = data?.nextTaskId;
@@ -240,6 +248,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
       setDecisionMade(decision);
       setShowReplyForm(false);
       setReplyText('');
+      setRadarNote('');
 
       // Notify sidebar
       if (typeof window !== 'undefined') {
@@ -263,6 +272,14 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
       replyRef.current.focus();
     }
   }, [showReplyForm]);
+
+  useEffect(() => {
+    setRadarNote('');
+  }, [t?.id]);
+
+  function handleRadarFeedback(code: Exclude<InnovationRadarFeedbackCode, 'APPROVED'>) {
+    postDecision('rejected', composeInnovationRadarReason(code, radarNote));
+  }
 
   return (
     <>
@@ -309,6 +326,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
                 <p className="text-sm">
                   {decisionMade === 'approved' && 'Approved. Moving to next...'}
                   {decisionMade === 'reply' && 'Reply sent.'}
+                  {decisionMade === 'rejected' && 'Feedback recorded. Moving to next...'}
                   {decisionMade === 'dismissed' && 'Dismissed. Moving to next...'}
                   {decisionMade === 'changes_requested' && 'Changes requested. Moving to next...'}
                 </p>
@@ -378,6 +396,37 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
                       >
                         {showRaw ? 'Hide raw' : 'Raw'}
                       </button>
+                    </div>
+                  </div>
+                )}
+
+                {innovationRadar && !decisionMade && !showReplyForm && (
+                  <div className="border-t border-edge px-5 py-4">
+                    <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+                      <p className="text-sm font-semibold text-amber-300">Innovation Radar Feedback</p>
+                      <p className="mt-1 text-xs text-zinc-400">
+                        Structured feedback trains future radar passes for this project.
+                      </p>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                        {INNOVATION_RADAR_REVIEW_OPTIONS.map((option) => (
+                          <button
+                            key={option.code}
+                            onClick={() => handleRadarFeedback(option.code)}
+                            disabled={deciding}
+                            className="rounded-lg border border-amber-500/20 bg-zinc-900/70 px-3 py-2 text-left hover:border-amber-400/40 hover:bg-zinc-900 transition-colors disabled:opacity-50"
+                          >
+                            <div className="text-sm font-medium text-amber-300">{option.label}</div>
+                            <div className="mt-1 text-[11px] leading-4 text-zinc-500">{option.hint}</div>
+                          </button>
+                        ))}
+                      </div>
+                      <textarea
+                        value={radarNote}
+                        onChange={e => setRadarNote(e.target.value)}
+                        placeholder="Optional note or trigger condition. Example: Revisit after a real customer asks for voice scoring."
+                        className="mt-3 w-full resize-none rounded-lg border border-edge bg-zinc-900 p-3 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-amber-500"
+                        rows={2}
+                      />
                     </div>
                   </div>
                 )}

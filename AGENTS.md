@@ -13,10 +13,12 @@ All output goes through the risk-based review pipeline:
 
 ## Model Discipline
 
-- Haiku for classification/routing only
-- Sonnet 4.6 for all agent work by default
-- Opus 4.6 for Quality Guardian only
-- GPT-4o for Codex Review only (single API call)
+- OpenAI is the default company runtime. Codex CLI is primary; OpenAI API is fallback.
+- Legacy Claude/Anthropic backends are opt-in only via explicit environment override.
+- Haiku profile maps to GPT-4o for routing/small interrogation work.
+- Sonnet profile maps to GPT-5.4 for standard agent work.
+- Opus profile maps to GPT-5.4 with deeper reasoning for Quality Guardian.
+- Codex Review uses a dedicated OpenAI review profile, with Codex CLI using the CLI-compatible review model by default.
 
 ## New Agents
 

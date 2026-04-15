@@ -62,7 +62,10 @@ export async function GET(req: NextRequest) {
   // They are excluded from Rafael's review queue in two ways:
   // 1. Future tasks: quality-agent writes 'auto_approved' audit entry on approval
   // 2. Historical tasks: LOW-lane + completed status are excluded entirely
-  // Only MEDIUM/HIGH completed tasks and all awaiting_review tasks appear.
+  //
+  // Exception: competitive-intel is a human-curated strategic lane. Even though it
+  // runs at MEDIUM, completed competitive-intel tasks should still surface so Rafael
+  // can provide structured innovation feedback.
 
   // Auto-complete non-HIGH awaiting_review tasks — they don't need Rafael's review
   try {
@@ -84,6 +87,7 @@ export async function GET(req: NextRequest) {
               AND (
                 (t.status = 'awaiting_review' AND t.lane = 'HIGH')
                 OR (t.status = 'completed' AND t.lane = 'HIGH')
+                OR (t.status = 'completed' AND t.agent = 'competitive-intel' AND t.lane = 'MEDIUM')
               )${projectFilter}
               AND NOT EXISTS (
                 SELECT 1 FROM review_decisions rd

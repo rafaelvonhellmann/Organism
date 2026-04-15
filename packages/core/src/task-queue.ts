@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Task, TaskStatus, RiskLane } from '../../shared/src/types.js';
 import { OrganismError } from '../../shared/src/error-taxonomy.js';
+import { STATE_DIR } from '../../shared/src/state-dir.js';
 
 function isTestRuntime(): boolean {
   return process.argv.includes('--test') || process.env.NODE_ENV === 'test';
@@ -106,6 +107,18 @@ function runMigrations(db: DatabaseSync) {
       ts INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
 
+    CREATE TABLE IF NOT EXISTS innovation_radar_feedback (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      opportunity_title TEXT,
+      feedback_code TEXT NOT NULL,
+      notes TEXT,
+      trigger TEXT,
+      created_by TEXT NOT NULL DEFAULT 'rafael',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+
     CREATE TABLE IF NOT EXISTS goals (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL DEFAULT 'organism',
@@ -199,6 +212,8 @@ function runMigrations(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_interrupts_run ON interrupts(run_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_artifacts_goal ON artifacts(goal_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_runtime_events_run ON runtime_events(run_id, id);
+    CREATE INDEX IF NOT EXISTS idx_innovation_feedback_project ON innovation_radar_feedback(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_innovation_feedback_task ON innovation_radar_feedback(task_id);
   `);
 
   // Additive migrations for existing databases — safe to re-run (errors caught and ignored)
@@ -333,6 +348,19 @@ function runMigrations(db: DatabaseSync) {
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_wiki_ratings_page ON wiki_ratings(page)`,
+    `CREATE TABLE IF NOT EXISTS innovation_radar_feedback (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      opportunity_title TEXT,
+      feedback_code TEXT NOT NULL,
+      notes TEXT,
+      trigger TEXT,
+      created_by TEXT NOT NULL DEFAULT 'rafael',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_innovation_feedback_project ON innovation_radar_feedback(project_id, created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_innovation_feedback_task ON innovation_radar_feedback(task_id)`,
     // ── Dashboard actions (bidirectional sync with Turso) ──
     `CREATE TABLE IF NOT EXISTS dashboard_actions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -599,7 +627,9 @@ export function updateTaskRuntimeState(params: {
   );
 }
 
-export function releaseRetryScheduledTasks(now = Date.now(), maxAttempts = 5): { released: number; paused: number } {
+const REVIEW_RETRY_AGENT_SQL = `'quality-agent','quality-guardian','codex-review','grill-me','legal','security-audit'`;
+
+export function releaseRetryScheduledTasks(now = Date.now(), maxAttempts = 5, reviewMaxAttempts = 8): { released: number; paused: number } {
   const db = getDb();
   const paused = db.prepare(`
     UPDATE tasks
@@ -613,8 +643,11 @@ export function releaseRetryScheduledTasks(now = Date.now(), maxAttempts = 5): {
     WHERE status = 'retry_scheduled'
       AND retry_at IS NOT NULL
       AND retry_at <= ?
-      AND COALESCE(attempt_count, 0) >= ?
-  `).run(now, maxAttempts);
+      AND COALESCE(attempt_count, 0) >= CASE
+        WHEN workflow_kind IN ('review', 'validate') OR agent IN (${REVIEW_RETRY_AGENT_SQL}) THEN ?
+        ELSE ?
+      END
+  `).run(now, reviewMaxAttempts, maxAttempts);
 
   const released = db.prepare(`
     UPDATE tasks
@@ -625,8 +658,11 @@ export function releaseRetryScheduledTasks(now = Date.now(), maxAttempts = 5): {
     WHERE status = 'retry_scheduled'
       AND retry_at IS NOT NULL
       AND retry_at <= ?
-      AND COALESCE(attempt_count, 0) < ?
-  `).run(now, maxAttempts);
+      AND COALESCE(attempt_count, 0) < CASE
+        WHEN workflow_kind IN ('review', 'validate') OR agent IN (${REVIEW_RETRY_AGENT_SQL}) THEN ?
+        ELSE ?
+      END
+  `).run(now, reviewMaxAttempts, maxAttempts);
 
   return {
     released: (released as { changes: number }).changes,
@@ -647,6 +683,11 @@ export function getTask(id: string): Task | null {
   const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Record<string, unknown> | undefined;
   if (!row) return null;
   return rowToTask(row);
+}
+
+export function isTaskShadowMode(task: Pick<Task, 'input'> | null | undefined): boolean {
+  if (!task?.input || typeof task.input !== 'object') return false;
+  return (task.input as Record<string, unknown>).shadowMode === true;
 }
 
 export function getPendingTasks(agent?: string, projectId?: string): Task[] {
@@ -738,6 +779,86 @@ export function getCompletedTasksForProject(
     )
     .all(projectId, Date.now() - sinceMs) as Record<string, unknown>[];
   return rows.map(rowToTask);
+}
+
+export interface InnovationRadarFeedbackEntry {
+  id: string;
+  taskId: string;
+  projectId: string;
+  opportunity: string | null;
+  code: string;
+  notes: string | null;
+  trigger: string | null;
+  createdAt: number;
+}
+
+export function recordShadowRun(params: {
+  agent: string;
+  taskId: string;
+  output: unknown;
+  qualityScore?: number | null;
+  projectId?: string;
+  lane?: RiskLane;
+  description?: string;
+}): void {
+  const ts = Date.now();
+  const outputJson = JSON.stringify(params.output);
+
+  getDb().prepare(`
+    INSERT INTO shadow_runs (agent, task_id, output, quality_score, ts)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    params.agent,
+    params.taskId,
+    outputJson,
+    params.qualityScore ?? null,
+    ts,
+  );
+
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.appendFileSync(
+      path.join(STATE_DIR, 'shadow-runs.jsonl'),
+      JSON.stringify({
+        agent: params.agent,
+        taskId: params.taskId,
+        projectId: params.projectId ?? 'organism',
+        lane: params.lane ?? null,
+        description: params.description ?? null,
+        qualityScore: params.qualityScore ?? null,
+        ts,
+        output: params.output,
+      }) + '\n',
+      'utf8',
+    );
+  } catch {
+    // Shadow run persistence to JSONL is best-effort. The SQLite record is canonical.
+  }
+}
+
+export function getInnovationRadarFeedback(
+  projectId: string,
+  limit: number = 12,
+  sinceMs: number = 90 * 24 * 60 * 60 * 1000,
+): InnovationRadarFeedbackEntry[] {
+  const rows = getDb().prepare(`
+    SELECT id, task_id, project_id, opportunity_title, feedback_code, notes, trigger, created_at
+    FROM innovation_radar_feedback
+    WHERE project_id = ? AND created_at > ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(projectId, Date.now() - sinceMs, limit) as Array<Record<string, unknown>>;
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    taskId: String(row.task_id),
+    projectId: String(row.project_id),
+    opportunity: row.opportunity_title ? String(row.opportunity_title) : null,
+    code: String(row.feedback_code),
+    notes: row.notes ? String(row.notes) : null,
+    trigger: row.trigger ? String(row.trigger) : null,
+    createdAt: Number(row.created_at),
+  }));
 }
 
 /** Count how many revision tasks exist for a given original task. */

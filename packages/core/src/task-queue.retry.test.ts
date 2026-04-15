@@ -67,4 +67,32 @@ describe('task-queue retry release', () => {
     assert.equal(updated?.status, 'paused');
     assert.equal(updated?.retryClass, 'manual_pause');
   });
+
+  it('allows review-lane retries a slightly larger budget before pausing', () => {
+    const task = createTask({
+      agent: 'quality-agent',
+      lane: 'LOW',
+      description: 'Batch quality review: 5 tasks',
+      input: { projectId: 'tokens-for-good' },
+      projectId: 'tokens-for-good',
+      workflowKind: 'validate',
+    });
+
+    updateTaskRuntimeState({
+      taskId: task.id,
+      status: 'retry_scheduled',
+      retryClass: 'transient_error',
+      retryAt: Date.now() - 1_000,
+      providerFailureKind: 'transport_error',
+      error: 'Transient transport error',
+    });
+    getDb().prepare('UPDATE tasks SET attempt_count = 5 WHERE id = ?').run(task.id);
+
+    const result = releaseRetryScheduledTasks(Date.now(), 5, 8);
+    const updated = getTask(task.id);
+
+    assert.equal(result.released, 1);
+    assert.equal(result.paused, 0);
+    assert.equal(updated?.status, 'pending');
+  });
 });

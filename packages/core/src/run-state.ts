@@ -258,6 +258,9 @@ export function updateRunStatus(params: {
   summary?: string;
 }): RunSession {
   const ts = now();
+  const resetTransientFailureState = params.status === 'running' || params.status === 'completed';
+  const nextRetryClass = params.retryClass ?? (resetTransientFailureState ? 'none' : null);
+  const nextProviderFailureKind = params.providerFailureKind ?? (resetTransientFailureState ? 'none' : null);
   getDb().prepare(`
     UPDATE run_sessions
     SET status = ?, retry_class = COALESCE(?, retry_class), retry_at = ?, provider_failure_kind = COALESCE(?, provider_failure_kind),
@@ -265,9 +268,9 @@ export function updateRunStatus(params: {
     WHERE id = ?
   `).run(
     params.status,
-    params.retryClass ?? null,
+    nextRetryClass,
     params.retryAt ?? null,
-    params.providerFailureKind ?? null,
+    nextProviderFailureKind,
     ts,
     params.status,
     ts,
@@ -338,16 +341,27 @@ export function updateRunStep(params: {
   stepId: string;
   status: RunStepStatus;
   detail?: string | null;
-}): RunStep {
+}): RunStep | null {
   const ts = now();
-  getDb().prepare(`
+  const db = getDb();
+  db.prepare(`
     UPDATE run_steps
     SET status = ?, detail = COALESCE(?, detail), updated_at = ?, completed_at = CASE WHEN ? IN ('completed', 'failed', 'skipped') THEN ? ELSE completed_at END
     WHERE id = ?
   `).run(params.status, params.detail ?? null, ts, params.status, ts, params.stepId);
 
-  const row = getDb().prepare('SELECT * FROM run_steps WHERE id = ?').get(params.stepId) as Record<string, unknown>;
-  return rowToStep(row);
+  const row = db.prepare('SELECT * FROM run_steps WHERE id = ?').get(params.stepId) as Record<string, unknown> | undefined;
+  if (!row) {
+    console.warn(`[run-state] Tried to update missing run step ${params.stepId}`);
+    return null;
+  }
+  const step = rowToStep(row);
+  db.prepare(`
+    UPDATE run_sessions
+    SET updated_at = ?
+    WHERE id = ?
+  `).run(ts, step.runId);
+  return step;
 }
 
 export function listRunSteps(runId: string): RunStep[] {
@@ -477,6 +491,13 @@ export function mapProviderFailure(error: string): { retryClass: RetryClass; pro
   }
   if (lower.includes('openai_api_key') || lower.includes('anthropic_api_key') || lower.includes('missing required secrets') || lower.includes('secret')) {
     return { retryClass: 'missing_secret', providerFailureKind: 'missing_secret', pauseUntilMs: null };
+  }
+  if (
+    lower.includes('sql write operations are forbidden')
+    || lower.includes('writes are blocked')
+    || lower.includes('upgrade your plan')
+  ) {
+    return { retryClass: 'policy_block', providerFailureKind: 'policy_block', pauseUntilMs: null };
   }
   if (
     lower.includes('unauthorized')

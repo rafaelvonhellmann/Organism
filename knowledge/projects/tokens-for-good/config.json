@@ -46,10 +46,10 @@
   "defaultBranch": "main",
   "repository": "https://github.com/rafaelvonhellenn/tokens-for-good",
   "commands": {
-    "install": "pnpm install",
-    "lint": "pnpm lint",
-    "test": "pnpm test",
-    "build": "pnpm build",
+    "install": "corepack pnpm install",
+    "lint": "corepack pnpm typecheck",
+    "test": "corepack pnpm test",
+    "build": "corepack pnpm build",
     "deploy": "npx vercel --prod --yes"
   },
   "deployTargets": [

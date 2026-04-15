@@ -5,7 +5,7 @@ import { configureTestState } from './test-state.js';
 configureTestState(import.meta.url);
 
 const { getDb } = await import('./task-queue.js');
-const { ensureGoal, createRunSession, updateRunStatus, getGoal, mapProviderFailure } = await import('./run-state.js');
+const { ensureGoal, createRunSession, createRunStep, updateRunStatus, updateRunStep, getGoal, getRunSession, mapProviderFailure } = await import('./run-state.js');
 const { listRuntimeEvents, clearRuntimeEventsForTests } = await import('./runtime-events.js');
 
 function resetRuntimeState() {
@@ -88,6 +88,44 @@ describe('run-state', () => {
     assert.ok(mapped.pauseUntilMs);
   });
 
+  it('clears transient provider failure metadata when a run resumes cleanly', () => {
+    const goal = ensureGoal({
+      projectId: 'organism',
+      title: 'Recover validator transport failure',
+      description: 'Recover validator transport failure',
+      sourceKind: 'system',
+      workflowKind: 'recover',
+    });
+
+    const run = createRunSession({
+      goalId: goal.id,
+      projectId: 'organism',
+      agent: 'codex-review',
+      workflowKind: 'recover',
+    });
+
+    updateRunStatus({
+      runId: run.id,
+      status: 'retry_scheduled',
+      retryClass: 'transient_error',
+      retryAt: Date.now() + 60_000,
+      providerFailureKind: 'transport_error',
+      summary: 'fetch failed',
+    });
+
+    updateRunStatus({
+      runId: run.id,
+      status: 'completed',
+      summary: 'Recovered cleanly',
+    });
+
+    const recovered = getRunSession(run.id);
+    assert.equal(recovered?.status, 'completed');
+    assert.equal(recovered?.retryClass, 'none');
+    assert.equal(recovered?.providerFailureKind, 'none');
+    assert.equal(recovered?.retryAt, null);
+  });
+
   it('supports source-specific dedupe seeds for goals', () => {
     const goalA = ensureGoal({
       projectId: 'organism',
@@ -112,6 +150,40 @@ describe('run-state', () => {
   it('maps auth, policy, and tool failures into non-retryable runtime states', () => {
     assert.equal(mapProviderFailure('Unauthorized: invalid API key').providerFailureKind, 'auth_failure');
     assert.equal(mapProviderFailure('Action "deploy" is not allowed by policy').providerFailureKind, 'policy_block');
+    assert.equal(mapProviderFailure('SQL write operations are forbidden (writes are blocked, do you need to upgrade your plan?)').providerFailureKind, 'policy_block');
     assert.equal(mapProviderFailure('Requested code executor "claude" is not available on PATH').providerFailureKind, 'tool_failure');
+  });
+
+  it('treats missing run steps as a warning instead of crashing the worker', () => {
+    const goal = ensureGoal({
+      projectId: 'organism',
+      title: 'Recover missing step',
+      description: 'Make run-step updates resilient',
+      sourceKind: 'monitor',
+      workflowKind: 'recover',
+    });
+
+    const run = createRunSession({
+      goalId: goal.id,
+      projectId: 'organism',
+      agent: 'quality-agent',
+      workflowKind: 'recover',
+    });
+
+    const step = createRunStep({
+      runId: run.id,
+      name: 'recover-step',
+      detail: 'initial',
+    });
+
+    getDb().prepare('DELETE FROM run_steps WHERE id = ?').run(step.id);
+
+    const updated = updateRunStep({
+      stepId: step.id,
+      status: 'failed',
+      detail: 'missing',
+    });
+
+    assert.equal(updated, null);
   });
 });

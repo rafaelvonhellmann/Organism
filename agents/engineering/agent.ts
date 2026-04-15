@@ -3,8 +3,9 @@ import { callModelUltra } from '../_base/mcp-client.js';
 import { Task } from '../../packages/shared/src/types.js';
 import * as fs from 'fs';
 import { cleanupEngineeringWorkspace, finalizeEngineeringExecution, prepareEngineeringWorkspace } from '../../packages/core/src/execution-controller.js';
-import { runCodeExecutor } from '../../packages/core/src/code-executor.js';
+import { resolveAdaptiveExecutorTimeout, runCodeExecutor } from '../../packages/core/src/code-executor.js';
 import { loadProjectPolicy } from '../../packages/core/src/project-policy.js';
+import { getLatestRunForGoal, listRunSteps, updateRunStep } from '../../packages/core/src/run-state.js';
 
 // HARD BLOCKS — tasks matching these patterns are REFUSED.
 // Stabilization mode blocks contact and purchasing. Routine repo execution is controller-owned.
@@ -23,6 +24,75 @@ function isBlockedAction(description: string): string | null {
     }
   }
   return null;
+}
+
+function classifyExecutionFailure(
+  task: Task,
+  projectId: string,
+  errorMsg: string,
+  workspace: ReturnType<typeof prepareEngineeringWorkspace>,
+): {
+  severity: 'HIGH' | 'MEDIUM';
+  summary: string;
+  remediation: string;
+  evidence: string;
+} {
+  const preservedWorkspace = workspace.isolatedWorktree
+    ? `preserved isolated worktree \`${workspace.projectPath}\``
+    : `workspace \`${workspace.projectPath}\``;
+  const branchContext = `branch \`${workspace.branchName}\` in ${preservedWorkspace}`;
+  const lower = errorMsg.toLowerCase();
+
+  if (lower.includes('timed out')) {
+    return {
+      severity: 'MEDIUM',
+      summary: 'The engineering run timed out before verification finished.',
+      evidence: `${errorMsg.slice(0, 700)}\n\nResume from ${branchContext}.`,
+      remediation: `Resume the timed-out implementation from ${branchContext}. Keep the recovery scoped to the files already touched, then rerun only the affected verification commands.`,
+    };
+  }
+
+  if (
+    lower.includes('sql write operations are forbidden')
+    || lower.includes('writes are blocked')
+    || lower.includes('upgrade your plan')
+  ) {
+    return {
+      severity: 'HIGH',
+      summary: 'The target environment rejected write operations for the current plan or policy.',
+      evidence: `${errorMsg.slice(0, 700)}\n\nWrite access is currently blocked for ${branchContext}.`,
+      remediation: `Do not keep retrying the same write path from ${branchContext}. Surface this as an external policy/plan block, keep the preserved worktree intact, and switch to an allowed environment or write-capable plan before resuming.`,
+    };
+  }
+
+  if (
+    lower.includes('corepack')
+    || lower.includes("'pnpm' is not recognized")
+    || lower.includes('not available on path')
+  ) {
+    return {
+      severity: 'MEDIUM',
+      summary: 'The project command environment failed before verification could run.',
+      evidence: `${errorMsg.slice(0, 700)}\n\nEnvironment repair is needed in ${workspace.projectPath}.`,
+      remediation: `Repair the normalized pnpm/corepack command path for ${projectId} in ${preservedWorkspace}, then rerun install, lint, test, and build only for the affected package or app.`,
+    };
+  }
+
+  if (lower.includes('verification') || lower.includes('typecheck') || lower.includes('test') || lower.includes('build')) {
+    return {
+      severity: 'MEDIUM',
+      summary: 'Verification failed after code changes were prepared.',
+      evidence: `${errorMsg.slice(0, 700)}\n\nContinue from ${branchContext}.`,
+      remediation: `Reuse ${branchContext}, inspect the failing verification output, fix only the failing package or command path, and rerun controller verification.`,
+    };
+  }
+
+  return {
+    severity: 'HIGH',
+    summary: 'Engineering execution failed before verification completed.',
+    evidence: `${errorMsg.slice(0, 700)}\n\nRecovery context: ${branchContext}.`,
+    remediation: `Recover the preserved implementation from ${branchContext}. Do not rescan the whole repository; continue from the current branch and rerun controller verification once the focused fix is ready.`,
+  };
 }
 
 const ENGINEERING_SYSTEM = `You are the Engineering Agent for Organism. You implement features, fix bugs, and write production-quality code.
@@ -173,9 +243,11 @@ Produce a complete implementation plan with full code. Include specific file pat
     const input = task.input as Record<string, unknown>;
     const sourceOutput = input?.sourceOutput as string | undefined;
     const workspace = prepareEngineeringWorkspace(task);
-
-    try {
-      const cliPrompt = `You are implementing a task for the Organism autonomous system.
+    const activeRun = task.goalId ? getLatestRunForGoal(task.goalId) : null;
+    const activeStep = activeRun
+      ? [...listRunSteps(activeRun.id)].reverse().find((step) => step.status === 'running' && step.name === 'agent:engineering:execute') ?? null
+      : null;
+    const cliPrompt = `You are implementing a task for the Organism autonomous system.
 
 TASK: ${task.description}
 
@@ -195,11 +267,29 @@ After making changes, output:
 1. A concise summary of what you changed
 2. The files you touched
 3. What should be verified next by the controller.`;
+    const timeoutMs = resolveAdaptiveExecutorTimeout({
+      workflowKind: task.workflowKind,
+      description: task.description,
+      prompt: cliPrompt,
+      maxTurns: 15,
+    });
 
+    try {
       const result = await runCodeExecutor({
         cwd: workspace.projectPath,
         prompt: cliPrompt,
         maxTurns: 15,
+        description: task.description,
+        workflowKind: task.workflowKind,
+        timeoutMs,
+        onHeartbeat: ({ executor, elapsedMs }) => {
+          if (!activeStep) return;
+          updateRunStep({
+            stepId: activeStep.id,
+            status: 'running',
+            detail: `Executing with ${executor} in ${Math.max(1, Math.round(elapsedMs / 1000))}s of ${Math.round(timeoutMs / 60_000)}m budget · ${workspace.branchName}`,
+          });
+        },
       });
 
       const controllerSummary = await finalizeEngineeringExecution(task, workspace);
@@ -250,20 +340,24 @@ After making changes, output:
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       const cleanup = cleanupEngineeringWorkspace(workspace);
+      const failure = classifyExecutionFailure(task, projectId, errorMsg, workspace);
       return {
         output: {
           summary: `Execution failed for ${projectId}: ${errorMsg.slice(0, 120)}`,
           implementation: `Execution failed: ${errorMsg}`,
           mode: 'failed',
           projectId,
+          branch: workspace.branchName,
+          recoverWorktreePath: cleanup.removed ? null : workspace.projectPath,
+          executionTimeoutMs: timeoutMs,
           workspaceCleanup: cleanup,
           findings: [
             {
               id: `engineering-failure-${task.id}`,
-              severity: 'HIGH',
-              summary: 'Engineering execution failed before verification completed.',
-              evidence: errorMsg.slice(0, 1000),
-              remediation: 'Inspect the workspace and rerun the implementation after resolving the controller failure.',
+              severity: failure.severity,
+              summary: failure.summary,
+              evidence: failure.evidence,
+              remediation: failure.remediation,
               actionable: true,
               targetCapability: 'engineering.code',
               followupKind: 'recover',

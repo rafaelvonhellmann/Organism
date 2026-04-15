@@ -1,6 +1,7 @@
 'use client';
 
 export const SELECTED_PROJECT_KEY = 'organism.selectedProject';
+export const SELECTED_PROJECT_EVENT = 'organism:selected-project';
 
 export function getInitialSelectedProject(): string {
   if (typeof window === 'undefined') return '';
@@ -19,6 +20,7 @@ export function persistSelectedProject(projectId: string): void {
     } else {
       window.localStorage.removeItem(SELECTED_PROJECT_KEY);
     }
+    window.dispatchEvent(new CustomEvent(SELECTED_PROJECT_EVENT, { detail: { projectId } }));
   } catch {
     // Storage is best-effort only.
   }

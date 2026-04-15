@@ -84,7 +84,7 @@ describe('auto-executor', () => {
       followups.map((task) => [task.agent, task.workflow_kind, task.project_id]),
       [
         ['engineering', 'implement', 'tokens-for-good'],
-        ['engineering', 'validate', 'tokens-for-good'],
+        ['quality-agent', 'validate', 'tokens-for-good'],
       ],
     );
   });
@@ -251,6 +251,141 @@ describe('auto-executor', () => {
     );
   });
 
+  it('reroutes disallowed Synapse validator follow-ups to an allowed review agent', async () => {
+    const completed = createTask({
+      agent: 'quality-agent',
+      lane: 'MEDIUM',
+      description: 'Medical-safe canary review for synapse',
+      input: { projectId: 'synapse', readOnlyCanary: true },
+      projectId: 'synapse',
+      goalId: 'goal-synapse-review',
+      workflowKind: 'review',
+      sourceKind: 'dashboard',
+    });
+
+    completeTask(completed.id, {
+      handoffRequests: [
+        {
+          id: 'handoff-synapse-validate',
+          targetAgent: 'codex-review',
+          workflowKind: 'validate',
+          reason: 'Confirm the auth-risk map without changing implementation.',
+          summary: 'Validate the admin dashboard auth flow for Synapse and capture review evidence.',
+          execution: false,
+        },
+      ],
+    }, 0, 0);
+
+    const created = await processApprovedFindings();
+    assert.equal(created, 1);
+
+    const followup = getDb().prepare(`
+      SELECT agent, workflow_kind, description
+      FROM tasks
+      WHERE source_kind = 'agent_followup'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get() as { agent: string; workflow_kind: string; description: string };
+
+    assert.equal(followup.agent, 'quality-agent');
+    assert.equal(followup.workflow_kind, 'validate');
+    assert.match(followup.description, /admin dashboard auth flow/i);
+  });
+
+  it('degrades blocked Synapse implementation follow-ups into read-only validation during the canary lane', async () => {
+    const completed = createTask({
+      agent: 'quality-agent',
+      lane: 'MEDIUM',
+      description: 'Medical-safe canary review for synapse',
+      input: { projectId: 'synapse', readOnlyCanary: true },
+      projectId: 'synapse',
+      goalId: 'goal-synapse-canary',
+      workflowKind: 'review',
+      sourceKind: 'dashboard',
+    });
+
+    completeTask(completed.id, {
+      findings: [
+        {
+          id: 'finding-synapse-safe-surface',
+          severity: 'MEDIUM',
+          summary: 'Tighten admin dashboard auth validation',
+          remediation: 'Tighten the admin dashboard auth validation path and capture the safety evidence.',
+          actionable: true,
+          targetCapability: 'engineering.code',
+          followupKind: 'implement',
+        },
+      ],
+    }, 0, 0);
+
+    const created = await processApprovedFindings();
+    assert.equal(created, 1);
+
+    const followup = getDb().prepare(`
+      SELECT agent, workflow_kind, description
+      FROM tasks
+      WHERE source_kind = 'agent_followup'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get() as { agent: string; workflow_kind: string; description: string };
+
+    assert.equal(followup.agent, 'quality-agent');
+    assert.equal(followup.workflow_kind, 'validate');
+    assert.match(followup.description, /admin dashboard auth validation/i);
+  });
+
+  it('prefers a bounded engineering recovery task before validation when a project review is blocked', async () => {
+    const completed = createTask({
+      agent: 'quality-agent',
+      lane: 'MEDIUM',
+      description: 'Autonomy cycle review for tokens-for-good',
+      input: { projectId: 'tokens-for-good', autonomyCycle: true },
+      projectId: 'tokens-for-good',
+      goalId: 'goal-blocked-cycle',
+      workflowKind: 'review',
+      sourceKind: 'system',
+    });
+
+    completeTask(completed.id, {
+      mode: 'autonomy_cycle_review',
+      findings: [
+        {
+          id: 'finding-recover-engineering',
+          severity: 'MEDIUM',
+          summary: 'Recover hosted validator transport failure',
+          remediation: 'Recover the hosted validator transport path for tokens-for-good in one bounded pass.',
+          actionable: true,
+          targetCapability: 'engineering.code',
+          followupKind: 'recover',
+        },
+        {
+          id: 'finding-validate',
+          severity: 'LOW',
+          summary: 'Validate the hosted validator path',
+          remediation: 'Validate the hosted validator path after recovery and capture the verification output.',
+          actionable: true,
+          targetCapability: 'quality.review',
+          followupKind: 'validate',
+        },
+      ],
+    }, 0, 0);
+
+    const created = await processApprovedFindings();
+    assert.equal(created, 1);
+
+    const followups = getDb().prepare(`
+      SELECT agent, workflow_kind, description
+      FROM tasks
+      WHERE source_kind = 'agent_followup'
+      ORDER BY created_at ASC
+    `).all() as Array<{ agent: string; workflow_kind: string; description: string }>;
+
+    assert.equal(followups.length, 1);
+    assert.equal(followups[0]?.agent, 'engineering');
+    assert.equal(followups[0]?.workflow_kind, 'implement');
+    assert.match(followups[0]?.description ?? '', /hosted validator transport path/i);
+  });
+
   it('creates a bounded revision task from codex-review NEEDS_REVISION output', async () => {
     const original = createTask({
       agent: 'engineering',
@@ -352,7 +487,7 @@ describe('auto-executor', () => {
     };
 
     assert.equal(followup.agent, 'engineering');
-    assert.equal(followup.workflow_kind, 'recover');
+    assert.equal(followup.workflow_kind, 'implement');
     assert.match(followup.description, /Fix build in preserved worktree/i);
     assert.equal(followup.parent_task_id, original.id);
     assert.match(followup.input, /recoverWorktreePath/i);

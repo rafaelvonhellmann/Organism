@@ -1,26 +1,30 @@
 /**
- * MCP Client — shared Anthropic model access for Organism agents.
+ * MCP Client — shared model access for Organism agents.
  *
- * Organism keeps its model discipline (Haiku/Sonnet/Opus), but the runtime
- * backend is configurable so the company can be launched smoothly from either
- * Claude Code or Codex:
+ * Organism keeps its internal model discipline (Haiku/Sonnet/Opus) as abstract
+ * capability tiers, but normal runtime execution is now OpenAI-first:
  *
- * - `claude-cli`: use the local Claude CLI (`claude -p`)
- * - `anthropic-api`: use the Anthropic SDK with `ANTHROPIC_API_KEY`
- * - `auto` (default): prefer Claude CLI for backward compatibility and built-in
- *   web search, otherwise fall back to the Anthropic API
+ * - `codex-cli`: primary backend for CLI-native OpenAI execution
+ * - `openai-api`: secondary backend when direct API access is needed
+ * - `claude-cli` / `anthropic-api`: explicit legacy backends only
  *
- * Legacy compatibility: `USE_API_DIRECT=true` still maps to
- * `ORGANISM_MODEL_BACKEND=anthropic-api`.
+ * In `auto` mode, Organism prefers OpenAI-backed execution and only considers
+ * Anthropic backends when `ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK=true`.
+ *
+ * Legacy compatibility: `USE_API_DIRECT=true` now maps to
+ * `ORGANISM_MODEL_BACKEND=openai-api`.
  */
 
 import { spawn, spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { getSecretOrNull } from '../../packages/shared/src/secrets.js';
 
-const MODEL_ALIASES: Record<string, string> = {
+type LogicalModelProfile = 'haiku' | 'sonnet' | 'opus';
+export type SupportedModelProfile = LogicalModelProfile | 'gpt4o' | 'gpt5.4';
+
+const MODEL_ALIASES: Record<LogicalModelProfile, string> = {
   haiku: 'haiku',
   sonnet: 'sonnet',
   opus: 'opus',
@@ -48,6 +52,54 @@ export interface ModelBackendStatus {
   capabilities: ModelBackendCapabilities;
 }
 
+type BackendFailureClass = 'rate_limit' | 'credit' | 'transport' | 'auth' | 'generic';
+
+const BACKEND_HEALTH_PATH = join(homedir(), '.organism', 'state', 'model-backend-health.json');
+const backendCooldownUntil = new Map<ModelBackendKind, number>();
+
+function allowLegacyAnthropicFallback(): boolean {
+  return /^(1|true|yes)$/i.test(process.env.ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK ?? '');
+}
+
+interface OpenAiModelSpec {
+  cliModel: string;
+  apiModel: string;
+  reasoningEffort: 'low' | 'medium' | 'high';
+}
+
+export function resolveOpenAiModelSpec(model: SupportedModelProfile): OpenAiModelSpec {
+  const routerModel = process.env.ORGANISM_OPENAI_ROUTER_MODEL
+    ?? process.env.ORGANISM_OPENAI_SMALL_MODEL
+    ?? 'gpt-4o';
+  const defaultModel = process.env.ORGANISM_OPENAI_DEFAULT_MODEL
+    ?? process.env.ORGANISM_OPENAI_FALLBACK_MODEL
+    ?? 'gpt-5.4';
+  const deepModel = process.env.ORGANISM_OPENAI_DEEP_MODEL
+    ?? defaultModel
+    ?? 'gpt-5.4';
+  const reviewModel = process.env.ORGANISM_OPENAI_REVIEW_MODEL ?? 'gpt-4o';
+  const reviewCliModel = process.env.ORGANISM_OPENAI_REVIEW_CLI_MODEL
+    ?? process.env.ORGANISM_OPENAI_DEFAULT_MODEL
+    ?? 'gpt-5.4';
+
+  switch (model) {
+    case 'haiku':
+      return { cliModel: routerModel, apiModel: routerModel, reasoningEffort: 'low' };
+    case 'sonnet':
+      return { cliModel: defaultModel, apiModel: defaultModel, reasoningEffort: 'medium' };
+    case 'opus':
+      return { cliModel: deepModel, apiModel: deepModel, reasoningEffort: 'high' };
+    case 'gpt4o':
+      return { cliModel: reviewCliModel, apiModel: reviewModel, reasoningEffort: 'low' };
+    case 'gpt5.4':
+      return { cliModel: 'gpt-5.4', apiModel: 'gpt-5.4', reasoningEffort: 'medium' };
+  }
+}
+
+function supportsReasoningEffort(model: string): boolean {
+  return /^gpt-5/i.test(model);
+}
+
 // ── Rate limit tracking ───────────────────────────────────────────────────
 // Claude CLI can rate limit interactive subscriptions. When that happens we
 // parse the reset time and pause agent work until the limit resets.
@@ -72,6 +124,109 @@ function availableModelBackends(): ModelBackendAvailability {
   };
 }
 
+function loadBackendCooldowns(): void {
+  if (backendCooldownUntil.size > 0) return;
+  if (!existsSync(BACKEND_HEALTH_PATH)) return;
+  try {
+    const raw = JSON.parse(readFileSync(BACKEND_HEALTH_PATH, 'utf8')) as Partial<Record<ModelBackendKind, number>>;
+    for (const backend of ['claude-cli', 'anthropic-api', 'codex-cli', 'openai-api'] as const) {
+      const until = raw[backend];
+      if (typeof until === 'number' && Number.isFinite(until) && until > Date.now()) {
+        backendCooldownUntil.set(backend, until);
+      }
+    }
+  } catch {
+    // Ignore corrupted cooldown files and rebuild them on the next write.
+  }
+}
+
+function persistBackendCooldowns(): void {
+  mkdirSync(join(homedir(), '.organism', 'state'), { recursive: true });
+  const payload: Partial<Record<ModelBackendKind, number>> = {};
+  for (const [backend, until] of backendCooldownUntil.entries()) {
+    if (until > Date.now()) {
+      payload[backend] = until;
+    }
+  }
+  writeFileSync(BACKEND_HEALTH_PATH, JSON.stringify(payload, null, 2));
+}
+
+function backendOnCooldown(backend: ModelBackendKind): boolean {
+  loadBackendCooldowns();
+  const until = backendCooldownUntil.get(backend);
+  if (!until) return false;
+  if (until <= Date.now()) {
+    backendCooldownUntil.delete(backend);
+    persistBackendCooldowns();
+    return false;
+  }
+  return true;
+}
+
+function clearBackendCooldown(backend: ModelBackendKind): void {
+  loadBackendCooldowns();
+  if (!backendCooldownUntil.has(backend)) return;
+  backendCooldownUntil.delete(backend);
+  persistBackendCooldowns();
+}
+
+function classifyBackendFailure(error: unknown): BackendFailureClass {
+  const message = errorMessage(error).toLowerCase();
+  if (message.includes('credit balance is too low') || message.includes('insufficient') || message.includes('quota') || message.includes('billing')) {
+    return 'credit';
+  }
+  if (message.includes('rate limit') || message.includes('rate_limited') || message.includes('429') || message.includes('529')) {
+    return 'rate_limit';
+  }
+  if (
+    message.includes('connection error')
+    || message.includes('fetch failed')
+    || message.includes('network error')
+    || message.includes('socket hang up')
+    || message.includes('econnreset')
+    || message.includes('econnrefused')
+    || message.includes('transport')
+    || message.includes('timed out')
+    || message.includes('timeout')
+  ) {
+    return 'transport';
+  }
+  if (
+    message.includes('unauthorized')
+    || message.includes('forbidden')
+    || message.includes('401')
+    || message.includes('403')
+    || message.includes('invalid api key')
+    || message.includes('login')
+  ) {
+    return 'auth';
+  }
+  return 'generic';
+}
+
+function backendCooldownMs(backend: ModelBackendKind, failure: BackendFailureClass): number {
+  switch (failure) {
+    case 'credit':
+      return backend === 'claude-cli' || backend === 'anthropic-api'
+        ? 6 * 60 * 60 * 1000
+        : 60 * 60 * 1000;
+    case 'rate_limit':
+      return 30 * 60 * 1000;
+    case 'transport':
+      return 15 * 60 * 1000;
+    case 'auth':
+      return 60 * 60 * 1000;
+    default:
+      return 10 * 60 * 1000;
+  }
+}
+
+function markBackendCooldown(backend: ModelBackendKind, error: unknown): void {
+  loadBackendCooldowns();
+  backendCooldownUntil.set(backend, Date.now() + backendCooldownMs(backend, classifyBackendFailure(error)));
+  persistBackendCooldowns();
+}
+
 function resolveBackendPreference(preference?: ModelBackendPreference): ModelBackendPreference {
   if (preference) return preference;
 
@@ -86,7 +241,7 @@ function resolveBackendPreference(preference?: ModelBackendPreference): ModelBac
     return envPreference;
   }
 
-  if (process.env.USE_API_DIRECT === 'true') return 'anthropic-api';
+  if (process.env.USE_API_DIRECT === 'true') return 'openai-api';
   return 'auto';
 }
 
@@ -144,22 +299,42 @@ export function resolveModelBackend(
     };
   }
 
-  if (available.claudeCli) {
+  if (available.codexCli && !backendOnCooldown('codex-cli')) {
     return {
       preferred: 'auto',
-      selected: 'claude-cli',
-      available,
-      capabilities: { webSearch: true, cliRateLimits: true },
-    };
-  }
-
-  if (available.anthropicApi) {
-    return {
-      preferred: 'auto',
-      selected: 'anthropic-api',
+      selected: 'codex-cli',
       available,
       capabilities: { webSearch: false, cliRateLimits: false },
     };
+  }
+
+  if (available.openaiApi && !backendOnCooldown('openai-api')) {
+    return {
+      preferred: 'auto',
+      selected: 'openai-api',
+      available,
+      capabilities: { webSearch: false, cliRateLimits: false },
+    };
+  }
+
+  if (allowLegacyAnthropicFallback()) {
+    if (available.claudeCli && !backendOnCooldown('claude-cli')) {
+      return {
+        preferred: 'auto',
+        selected: 'claude-cli',
+        available,
+        capabilities: { webSearch: true, cliRateLimits: true },
+      };
+    }
+
+    if (available.anthropicApi && !backendOnCooldown('anthropic-api')) {
+      return {
+        preferred: 'auto',
+        selected: 'anthropic-api',
+        available,
+        capabilities: { webSearch: false, cliRateLimits: false },
+      };
+    }
   }
 
   if (available.codexCli) {
@@ -180,8 +355,30 @@ export function resolveModelBackend(
     };
   }
 
+  if (allowLegacyAnthropicFallback()) {
+    if (available.claudeCli) {
+      return {
+        preferred: 'auto',
+        selected: 'claude-cli',
+        available,
+        capabilities: { webSearch: true, cliRateLimits: true },
+      };
+    }
+
+    if (available.anthropicApi) {
+      return {
+        preferred: 'auto',
+        selected: 'anthropic-api',
+        available,
+        capabilities: { webSearch: false, cliRateLimits: false },
+      };
+    }
+  }
+
   throw new Error(
-    'No supported model backend found. Install Claude Code or Codex CLI, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.',
+    allowLegacyAnthropicFallback()
+      ? 'No supported model backend found. Install Codex CLI, set OPENAI_API_KEY, or explicitly enable a legacy Anthropic backend.'
+      : 'No supported OpenAI backend found. Install Codex CLI or set OPENAI_API_KEY. Legacy Anthropic fallback is disabled.',
   );
 }
 
@@ -316,6 +513,39 @@ export interface ModelCallResult {
   outputTokens: number;
 }
 
+const MIN_MODEL_TIMEOUT_MS = 15 * 60 * 1000;
+const MAX_MODEL_TIMEOUT_MS = 45 * 60 * 1000;
+
+export function resolveAdaptiveModelTimeout(prompt: string, systemPrompt: string | undefined, maxTokens: number): number {
+  const combinedLength = prompt.length + (systemPrompt?.length ?? 0);
+  let timeoutMs = MIN_MODEL_TIMEOUT_MS;
+
+  if (combinedLength > 10_000) timeoutMs += 5 * 60 * 1000;
+  if (combinedLength > 25_000) timeoutMs += 10 * 60 * 1000;
+  if (maxTokens > 4_096) timeoutMs += 5 * 60 * 1000;
+  if (/repo brief|self-audit|autonomy-cycle|canary review|project review/i.test(prompt)) {
+    timeoutMs += 5 * 60 * 1000;
+  }
+
+  return Math.min(MAX_MODEL_TIMEOUT_MS, timeoutMs);
+}
+
+async function withModelTimeout<T>(promiseFactory: () => Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promiseFactory(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 60_000)} minutes`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 interface ClaudeJsonResult {
   result: string;
   usage?: {
@@ -340,17 +570,17 @@ function errorMessage(error: unknown): string {
 
 export function shouldFallbackFromClaudeCliToApi(error: unknown): boolean {
   const message = errorMessage(error);
-  return /credit balance is too low|RATE_LIMITED|rate limit|429|529|overloaded/i.test(message);
+  return /credit balance is too low|RATE_LIMITED|rate limit|429|529|overloaded|connection error|fetch failed|network error|spawn error|timed out|timeout/i.test(message);
 }
 
 export function shouldFallbackFromAnthropicToOpenAi(error: unknown): boolean {
   const message = errorMessage(error);
-  return /credit balance is too low|insufficient|rate limit|429|529|overloaded|401|403|unauthorized/i.test(message);
+  return /credit balance is too low|insufficient|rate limit|429|529|overloaded|401|403|unauthorized|connection error|fetch failed|network error|socket hang up|econnreset|econnrefused|transport|timed out|timeout/i.test(message);
 }
 
 export function shouldFallbackFromCodexCli(error: unknown): boolean {
   const message = errorMessage(error);
-  return /rate limit|429|403|401|unauthorized|login|quota|billing|credit|usage limit|insufficient/i.test(message);
+  return /rate limit|429|403|401|unauthorized|login|quota|billing|credit|usage limit|insufficient|connection error|fetch failed|network error|timed out|timeout/i.test(message);
 }
 
 function buildPrompt(prompt: string, systemPrompt?: string): string {
@@ -363,11 +593,12 @@ function callClaude(
   prompt: string,
   model: string,
   systemPrompt?: string,
+  maxTokens = 2048,
 ): Promise<ModelCallResult> {
   return new Promise((resolve, reject) => {
     const args = [
       '-p',
-      '--model', MODEL_ALIASES[model] ?? model,
+      '--model', MODEL_ALIASES[model as LogicalModelProfile] ?? model,
       '--output-format', 'json',
       '--no-session-persistence',
     ];
@@ -382,11 +613,12 @@ function callClaude(
 
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
+    const timeoutMs = resolveAdaptiveModelTimeout(prompt, systemPrompt, maxTokens);
 
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error('claude CLI timed out after 15 minutes'));
-    }, 15 * 60 * 1000);
+      reject(new Error(`claude CLI timed out after ${Math.round(timeoutMs / 60_000)} minutes`));
+    }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => errChunks.push(chunk));
@@ -463,17 +695,20 @@ function callClaude(
 
 function callCodexCli(
   prompt: string,
-  _model: string,
+  model: SupportedModelProfile,
   systemPrompt?: string,
+  maxTokens = 2048,
 ): Promise<ModelCallResult> {
   return new Promise((resolve, reject) => {
     const tempDir = mkdtempSync(join(tmpdir(), 'organism-model-codex-'));
     const outputFile = join(tempDir, 'last-message.txt');
+    const resolvedModel = resolveOpenAiModelSpec(model).cliModel;
     const args = [
       'exec',
       '--skip-git-repo-check',
       '--sandbox', 'read-only',
       '--ephemeral',
+      '--model', resolvedModel,
       '-o', outputFile,
       '-',
     ];
@@ -488,11 +723,12 @@ function callCodexCli(
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    const timeoutMs = resolveAdaptiveModelTimeout(prompt, systemPrompt, maxTokens);
 
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error('codex CLI timed out after 15 minutes'));
-    }, 15 * 60 * 1000);
+      reject(new Error(`codex CLI timed out after ${Math.round(timeoutMs / 60_000)} minutes`));
+    }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
@@ -535,7 +771,7 @@ function callCodexCli(
 
 async function callApiDirect(
   prompt: string,
-  model: string,
+  model: SupportedModelProfile,
   systemPrompt?: string,
   maxTokens = 8192,
 ): Promise<ModelCallResult> {
@@ -550,14 +786,22 @@ async function callApiDirect(
   if (!apiKey) {
     throw new Error('Selected model backend "anthropic-api" requires ANTHROPIC_API_KEY');
   }
+  if (!(model in MODEL_IDS)) {
+    throw new Error(`Anthropic backend does not support the OpenAI-only model profile "${model}"`);
+  }
 
   const client = new Anthropic({ apiKey });
-  const response = await client.messages.create({
-    model: MODEL_IDS[model] ?? model,
-    max_tokens: maxTokens,
-    ...(systemPrompt ? { system: systemPrompt } : {}),
-    messages: [{ role: 'user', content: prompt }],
-  });
+  const timeoutMs = resolveAdaptiveModelTimeout(prompt, systemPrompt, maxTokens);
+  const response = await withModelTimeout(
+    () => client.messages.create({
+      model: MODEL_IDS[model] ?? model,
+      max_tokens: maxTokens,
+      ...(systemPrompt ? { system: systemPrompt } : {}),
+      messages: [{ role: 'user', content: prompt }],
+    }),
+    timeoutMs,
+    'Anthropic API',
+  );
 
   const text = response.content
     .filter((block) => block.type === 'text')
@@ -578,7 +822,7 @@ interface OpenAIResponse {
 
 async function callOpenAiDirect(
   prompt: string,
-  model: string,
+  model: SupportedModelProfile,
   systemPrompt?: string,
   maxTokens = 8192,
 ): Promise<ModelCallResult> {
@@ -587,27 +831,38 @@ async function callOpenAiDirect(
     throw new Error('Selected model backend "openai-api" requires OPENAI_API_KEY');
   }
 
-  const reasoningEffort = model === 'haiku' ? 'low' : model === 'sonnet' ? 'medium' : 'high';
-  const configuredModel = process.env.ORGANISM_OPENAI_FALLBACK_MODEL
-    ?? (model === 'haiku' ? process.env.ORGANISM_OPENAI_SMALL_MODEL : null)
-    ?? 'gpt-5.4';
+  const modelSpec = resolveOpenAiModelSpec(model);
+  const timeoutMs = resolveAdaptiveModelTimeout(prompt, systemPrompt, maxTokens);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: configuredModel,
-      max_completion_tokens: maxTokens,
-      reasoning_effort: reasoningEffort,
-      messages: [
-        ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
-        { role: 'user', content: prompt },
-      ],
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: modelSpec.apiModel,
+        max_completion_tokens: maxTokens,
+        ...(supportsReasoningEffort(modelSpec.apiModel) ? { reasoning_effort: modelSpec.reasoningEffort } : {}),
+        messages: [
+          ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+          { role: 'user', content: prompt },
+        ],
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+      throw new Error(`OpenAI API timed out after ${Math.round(timeoutMs / 60_000)} minutes`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
@@ -623,12 +878,26 @@ async function callOpenAiDirect(
 }
 
 function autoFallbackOrder(status: ModelBackendStatus): ModelBackendKind[] {
-  const candidates: ModelBackendKind[] = [
-    'claude-cli',
-    'anthropic-api',
-    'codex-cli',
-    'openai-api',
-  ];
+  const candidates: ModelBackendKind[] = allowLegacyAnthropicFallback()
+    ? ['codex-cli', 'openai-api', 'claude-cli', 'anthropic-api']
+    : ['codex-cli', 'openai-api'];
+
+  const prioritized = candidates.filter((backend) => {
+    switch (backend) {
+      case 'claude-cli':
+        return status.available.claudeCli && !claudeCliRateLimited() && !backendOnCooldown('claude-cli');
+      case 'anthropic-api':
+        return status.available.anthropicApi && !backendOnCooldown('anthropic-api');
+      case 'codex-cli':
+        return status.available.codexCli && !backendOnCooldown('codex-cli');
+      case 'openai-api':
+        return status.available.openaiApi && !backendOnCooldown('openai-api');
+    }
+  });
+
+  if (prioritized.length > 0) {
+    return prioritized;
+  }
 
   return candidates.filter((backend) => {
     switch (backend) {
@@ -647,17 +916,17 @@ function autoFallbackOrder(status: ModelBackendStatus): ModelBackendKind[] {
 async function callBackend(
   backend: ModelBackendKind,
   prompt: string,
-  model: 'haiku' | 'sonnet' | 'opus',
+  model: SupportedModelProfile,
   systemPrompt: string | undefined,
   maxTokens: number,
 ): Promise<ModelCallResult> {
   switch (backend) {
     case 'claude-cli':
-      return callClaude(prompt, model, systemPrompt);
+      return callClaude(prompt, model, systemPrompt, maxTokens);
     case 'anthropic-api':
       return callApiDirect(prompt, model, systemPrompt, maxTokens);
     case 'codex-cli':
-      return callCodexCli(prompt, model, systemPrompt);
+      return callCodexCli(prompt, model, systemPrompt, maxTokens);
     case 'openai-api':
       return callOpenAiDirect(prompt, model, systemPrompt, maxTokens);
   }
@@ -678,7 +947,7 @@ function shouldTryNextBackend(backend: ModelBackendKind, error: unknown): boolea
 
 async function callSelectedBackend(
   prompt: string,
-  model: 'haiku' | 'sonnet' | 'opus',
+  model: SupportedModelProfile,
   systemPrompt: string | undefined,
   maxTokens: number,
 ): Promise<ModelCallResult> {
@@ -693,13 +962,16 @@ async function callSelectedBackend(
   for (let index = 0; index < candidates.length; index++) {
     const candidate = candidates[index];
     try {
-      return await callBackend(candidate, prompt, model, systemPrompt, maxTokens);
+      const result = await callBackend(candidate, prompt, model, systemPrompt, maxTokens);
+      clearBackendCooldown(candidate);
+      return result;
     } catch (error) {
       lastError = error;
       const next = candidates[index + 1];
       if (!next || !shouldTryNextBackend(candidate, error)) {
         throw error;
       }
+      markBackendCooldown(candidate, error);
       console.warn(`[ModelBackend] ${candidate} failed (${errorMessage(error)}). Falling back to ${next}.`);
     }
   }
@@ -709,7 +981,7 @@ async function callSelectedBackend(
 
 export async function callModel(
   prompt: string,
-  model: 'haiku' | 'sonnet' | 'opus',
+  model: LogicalModelProfile,
   systemPrompt?: string,
 ): Promise<ModelCallResult> {
   return callSelectedBackend(prompt, model, systemPrompt, 2048);
@@ -717,7 +989,7 @@ export async function callModel(
 
 export async function callModelLong(
   prompt: string,
-  model: 'haiku' | 'sonnet' | 'opus',
+  model: LogicalModelProfile,
   systemPrompt?: string,
   maxTokens = 4096,
 ): Promise<ModelCallResult> {
@@ -726,8 +998,17 @@ export async function callModelLong(
 
 export async function callModelUltra(
   prompt: string,
-  model: 'haiku' | 'sonnet' | 'opus',
+  model: LogicalModelProfile,
   systemPrompt?: string,
 ): Promise<ModelCallResult> {
   return callSelectedBackend(prompt, model, systemPrompt, 8192);
+}
+
+export async function callNativeModel(
+  prompt: string,
+  model: Extract<SupportedModelProfile, 'gpt4o' | 'gpt5.4'>,
+  systemPrompt?: string,
+  maxTokens = 4096,
+): Promise<ModelCallResult> {
+  return callSelectedBackend(prompt, model, systemPrompt, maxTokens);
 }

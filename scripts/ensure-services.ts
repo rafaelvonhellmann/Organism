@@ -8,41 +8,56 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, execSync } from 'child_process';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { STATE_DIR, DB_PATH, PIDS_DIR } from '../packages/shared/src/state-dir.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
+const DAEMON_STATUS_FILE = path.join(STATE_DIR, 'daemon-status.json');
+const DAEMON_STATUS_STALE_MS = 2 * 60 * 1000;
+const require = createRequire(import.meta.url);
+const TSX_PACKAGE_JSON = require.resolve('tsx/package.json');
+const TSX_CLI_PATH = path.resolve(path.dirname(TSX_PACKAGE_JSON), 'dist', 'cli.mjs');
+
+interface ServiceSignature {
+  processName?: string;
+  commandNeedle?: string;
+}
+
+function getServiceSignature(name: string): ServiceSignature | null {
+  switch (name) {
+    case 'daemon':
+      return { processName: 'node.exe', commandNeedle: 'scripts/start-daemon.ts' };
+    case 'dashboard':
+      return { processName: 'node.exe', commandNeedle: 'packages/dashboard/src/server.ts' };
+    case 'stixdb':
+      return { processName: 'python.exe', commandNeedle: 'packages/stixdb/start.py' };
+    default:
+      return null;
+  }
+}
 
 // Spawn a detached background process. On Windows, uses PowerShell Start-Process -WindowStyle Hidden
 // to guarantee no console window flashes. On Unix, uses standard detached spawn.
-function spawnHidden(cmd: string, args: string[], opts: { cwd: string; env?: NodeJS.ProcessEnv }): { pid: number | undefined } {
-  if (process.platform === 'win32') {
-    // Resolve node to actual exe path
-    const exe = cmd === 'node' ? process.execPath : cmd;
-    const escaped = args.map(a => a.replace(/'/g, "''" )).join("','");
-    const psCmd = `Start-Process -FilePath '${exe}' -ArgumentList '${escaped}' -WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id`;
-    try {
-      const pidStr = execSync(`powershell -NoProfile -Command "${psCmd}"`, {
-        cwd: opts.cwd,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: opts.env,
-        windowsHide: true,
-      }).trim();
-      return { pid: parseInt(pidStr, 10) || undefined };
-    } catch {
-      return { pid: undefined };
-    }
-  } else {
-    const child = spawn(cmd, args, {
-      cwd: opts.cwd,
-      detached: true,
-      stdio: 'ignore',
-      env: opts.env,
-    });
-    const pid = child.pid;
-    child.unref();
-    return { pid };
-  }
+function spawnHidden(
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; env?: NodeJS.ProcessEnv; stdoutFile?: string; stderrFile?: string },
+): { pid: number | undefined } {
+  const executable = cmd === 'node' ? process.execPath : cmd;
+  const stdoutFd = opts.stdoutFile ? fs.openSync(opts.stdoutFile, 'a') : 'ignore';
+  const stderrFd = opts.stderrFile ? fs.openSync(opts.stderrFile, 'a') : 'ignore';
+  const child = spawn(executable, args, {
+    cwd: opts.cwd,
+    detached: true,
+    stdio: ['ignore', stdoutFd, stderrFd],
+    env: opts.env,
+    windowsHide: true,
+    shell: false,
+  });
+  const pid = child.pid;
+  child.unref();
+  return { pid };
 }
 
 // Ensure pids directory exists
@@ -69,6 +84,97 @@ function clearPid(name: string): void {
   if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
 }
 
+function getWindowsProcessInfo(pid: number): { name: string; commandLine: string } | null {
+  if (process.platform !== 'win32') return null;
+  try {
+    const ps = [
+      `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}";`,
+      'if ($p) {',
+      '  $p | Select-Object Name, CommandLine | ConvertTo-Json -Compress',
+      '}',
+    ].join(' ');
+    const out = execSync(`powershell -NoProfile -Command "${ps}"`, {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    }).trim();
+    if (!out) return null;
+    const parsed = JSON.parse(out) as { Name?: string; CommandLine?: string };
+    return {
+      name: parsed.Name ?? '',
+      commandLine: parsed.CommandLine ?? '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function matchesServiceSignature(pid: number, signature: ServiceSignature): boolean {
+  if (process.platform !== 'win32') return true;
+  const info = getWindowsProcessInfo(pid);
+  if (!info) return false;
+  if (signature.processName && info.name.toLowerCase() !== signature.processName.toLowerCase()) {
+    return false;
+  }
+  if (signature.commandNeedle && !info.commandLine.includes(signature.commandNeedle)) {
+    return false;
+  }
+  return true;
+}
+
+function readDaemonStatusUpdatedAt(): number | null {
+  if (!fs.existsSync(DAEMON_STATUS_FILE)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(DAEMON_STATUS_FILE, 'utf8')) as { updatedAt?: string };
+    if (!raw.updatedAt) return null;
+    const parsed = Date.parse(raw.updatedAt);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isDaemonStatusFresh(maxAgeMs = DAEMON_STATUS_STALE_MS): boolean {
+  const updatedAt = readDaemonStatusUpdatedAt();
+  return updatedAt !== null && (Date.now() - updatedAt) <= maxAgeMs;
+}
+
+function nextServiceLogPaths(name: string): { stdoutFile: string; stderrFile: string } {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
+  return {
+    stdoutFile: path.join(STATE_DIR, `${name}-${stamp}.out.log`),
+    stderrFile: path.join(STATE_DIR, `${name}-${stamp}.err.log`),
+  };
+}
+
+function findWindowsPid(commandNeedle: string, processName?: string): number | null {
+  if (process.platform !== 'win32') return null;
+  try {
+    const escaped = commandNeedle.replace(/'/g, "''");
+    const nameClause = processName
+      ? ` -and $_.Name -ieq '${processName.replace(/'/g, "''")}'`
+      : '';
+    const ps = [
+      '$p = Get-CimInstance Win32_Process |',
+      `  Where-Object { $_.CommandLine -like '*${escaped}*'${nameClause} -and $_.CommandLine -notlike '*Get-CimInstance Win32_Process*' } |`,
+      '  Sort-Object CreationDate -Descending |',
+      '  Select-Object -First 1 -ExpandProperty ProcessId;',
+      'if ($p) { $p }',
+    ].join(' ');
+    const out = execSync(`powershell -NoProfile -Command "${ps}"`, {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    }).trim();
+    const pid = Number.parseInt(out, 10);
+    return Number.isFinite(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
 // --- Process checks ---
 
 export function isProcessRunning(pid: number): boolean {
@@ -89,7 +195,12 @@ export function isProcessRunning(pid: number): boolean {
 export function isPidAlive(name: string): boolean {
   const pid = readPid(name);
   if (pid === null) return false;
-  if (isProcessRunning(pid)) return true;
+  if (isProcessRunning(pid)) {
+    const signature = getServiceSignature(name);
+    if (!signature || matchesServiceSignature(pid, signature)) {
+      return true;
+    }
+  }
   // Stale PID file — clean up
   clearPid(name);
   return false;
@@ -173,25 +284,61 @@ export async function ensureStixDB(): Promise<boolean> {
 // --- Daemon ---
 
 export async function ensureDaemon(): Promise<void> {
-  if (isPidAlive('daemon')) {
-    console.log('  Daemon already running.');
-    return;
+  const pidFromFile = readPid('daemon');
+  const discoveredPid = pidFromFile ?? findWindowsPid('scripts/start-daemon.ts', 'node.exe');
+  if (discoveredPid !== null && isProcessRunning(discoveredPid)) {
+    if (!pidFromFile) {
+      writePid('daemon', discoveredPid);
+    }
+    if (isDaemonStatusFresh()) {
+      console.log('  Daemon already running.');
+      return;
+    }
+
+    console.log('  Daemon process found but status is stale. Restarting it cleanly...');
+    if (process.platform === 'win32') {
+      try {
+        execSync(`taskkill /PID ${discoveredPid} /T /F`, { stdio: 'ignore' });
+      } catch {
+        // Best effort; start below will surface any real conflict.
+      }
+    } else {
+      try {
+        process.kill(discoveredPid, 'SIGTERM');
+      } catch {
+        // Best effort.
+      }
+    }
+    clearPid('daemon');
+    await sleep(1500);
   }
 
   console.log('  Starting daemon...');
+  const logs = nextServiceLogPaths('daemon');
   const { pid } = spawnHidden(
-    'node',
-    ['--import', 'tsx', '--experimental-sqlite', path.join(ROOT, 'scripts/start-daemon.ts')],
-    { cwd: ROOT, env: { ...process.env } },
+    process.execPath,
+    [TSX_CLI_PATH, '--experimental-sqlite', path.join(ROOT, 'scripts/start-daemon.ts')],
+    { cwd: ROOT, env: { ...process.env }, ...logs },
   );
 
   if (pid) {
     writePid('daemon', pid);
+  } else {
+    const discoveredPid = findWindowsPid('scripts/start-daemon.ts', 'node.exe');
+    if (discoveredPid) {
+      writePid('daemon', discoveredPid);
+    }
   }
 
-  // Brief wait to let it start
-  await sleep(2000);
-  console.log('  Daemon started.');
+  for (let i = 0; i < 20; i++) {
+    await sleep(1000);
+    if (isDaemonStatusFresh()) {
+      console.log('  Daemon started.');
+      return;
+    }
+  }
+
+  console.log(`  Daemon did not report a fresh heartbeat in time. Check ${logs.stdoutFile} and ${logs.stderrFile}.`);
 }
 
 // --- Dashboard ---
@@ -203,10 +350,11 @@ export async function ensureDashboard(): Promise<void> {
   }
 
   console.log('  Starting dashboard...');
+  const logs = nextServiceLogPaths('dashboard');
   const { pid } = spawnHidden(
-    'node',
-    ['--import', 'tsx', '--experimental-sqlite', path.join(ROOT, 'packages/dashboard/src/server.ts')],
-    { cwd: ROOT, env: { ...process.env } },
+    process.execPath,
+    [TSX_CLI_PATH, '--experimental-sqlite', path.join(ROOT, 'packages/dashboard/src/server.ts')],
+    { cwd: ROOT, env: { ...process.env }, ...logs },
   );
 
   if (pid) {
@@ -220,7 +368,15 @@ export async function ensureDashboard(): Promise<void> {
 // --- Kill helpers ---
 
 export function killService(name: string): boolean {
-  const pid = readPid(name);
+  const pid = readPid(name) ?? (
+    name === 'daemon'
+      ? findWindowsPid('scripts/start-daemon.ts', 'node.exe')
+      : name === 'dashboard'
+        ? findWindowsPid('packages/dashboard/src/server.ts', 'node.exe')
+        : name === 'stixdb'
+          ? findWindowsPid('packages/stixdb/start.py', 'python.exe')
+          : null
+  );
   if (pid === null) return false;
 
   try {
@@ -265,4 +421,21 @@ export function getServiceStatuses(): ServiceStatus[] {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+async function main(): Promise<void> {
+  console.log('Ensuring Organism services...');
+  await ensureDB();
+  await ensureStixDB();
+  await ensureDashboard();
+  await ensureDaemon();
+  console.log('Service bootstrap complete.');
+}
+
+const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;
+if (invokedPath === import.meta.url) {
+  main().catch((error) => {
+    console.error('ensure-services failed:', error);
+    process.exitCode = 1;
+  });
 }

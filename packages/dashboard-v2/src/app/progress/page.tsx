@@ -208,7 +208,7 @@ export default function ProgressPage() {
   useEffect(() => {
     setLoading(true);
     fetchData();
-    const id = setInterval(fetchData, 60_000);
+    const id = setInterval(fetchData, 10_000);
     return () => clearInterval(id);
   }, [fetchData]);
 

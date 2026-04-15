@@ -16,6 +16,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { getDb } from '../packages/core/src/task-queue.js';
 import { loadRegistry } from '../packages/core/src/registry.js';
@@ -25,9 +27,9 @@ import { startScheduler } from '../packages/core/src/scheduler.js';
 import { startDaemon, dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
 import { listProjectAutonomyHealth } from '../packages/core/src/autonomy-governor.js';
 import { autoHealPausedReviewTasks, recoverInterruptedWork, recoverStaleWork } from '../packages/core/src/run-recovery.js';
-import { syncToTurso } from '../packages/core/src/turso-sync.js';
 import { processDashboardActions } from '../packages/core/src/action-processor.js';
 import { processApprovedFindings } from '../packages/core/src/auto-executor.js';
+import { seedIdleAutonomyCycles } from '../packages/core/src/autonomy-loop.js';
 import { isRateLimited, getRateLimitStatus, resolveModelBackend } from '../agents/_base/mcp-client.js';
 import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
 import { bootstrapRuntimeEnv } from '../packages/shared/src/runtime-env.js';
@@ -36,10 +38,14 @@ import { getSecretOrNull } from '../packages/shared/src/secrets.js';
 let dashboardServer: unknown = null;
 bootstrapRuntimeEnv();
 const VERSION = '0.2.0';
+const require = createRequire(import.meta.url);
+const TSX_PACKAGE_JSON = require.resolve('tsx/package.json');
+const TSX_CLI_PATH = path.resolve(path.dirname(TSX_PACKAGE_JSON), 'dist', 'cli.mjs');
 const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? '7391');
 const DAEMON_POLL_MS = 10_000;   // 10 seconds — agent runner polling interval
 const SCHEDULER_TICK_MS = 60_000; // 60 seconds — scheduler tick interval
 const DASHBOARD_ACTION_POLL_MS = 10_000; // 10 seconds — responsive website action pickup
+const SYNC_TIMEOUT_MS = 90_000;
 
 // ── Daemon config ─────────────────────────────────────────────────────────
 
@@ -70,6 +76,10 @@ interface DaemonStatus {
   itemsExecutedSinceRestart: number;
   itemsSyncedSinceRestart: number;
   reviewsRunSinceRestart: number;
+  syncStatus: {
+    status: 'idle' | 'ok' | 'blocked' | 'skipped' | 'error';
+    reason: string | null;
+  };
   rateLimitStatus: {
     limited: boolean;
     resetsAt: string | null;
@@ -113,9 +123,10 @@ interface DaemonStatus {
   version: string;
 }
 
-import { STATE_DIR } from '../packages/shared/src/state-dir.js';
+import { PIDS_DIR, STATE_DIR } from '../packages/shared/src/state-dir.js';
 const STATUS_FILE = path.join(STATE_DIR, 'daemon-status.json');
 const LOCK_FILE = path.join(STATE_DIR, 'daemon.lock.json');
+const PID_FILE = path.join(PIDS_DIR, 'daemon.pid');
 
 const daemonState = {
   startedAt: new Date().toISOString(),
@@ -126,9 +137,44 @@ const daemonState = {
   itemsExecuted: 0,
   itemsSynced: 0,
   reviewsRun: 0,
+  lastSyncStatus: 'idle' as 'idle' | 'ok' | 'blocked' | 'skipped' | 'error',
+  lastSyncReason: null as string | null,
 };
 
 let syncCycleInFlight: Promise<void> | null = null;
+
+async function syncWithTimeout(): Promise<{ status: 'ok' | 'blocked' | 'skipped'; reason: string | null }> {
+  try {
+    const stdout = execFileSync(
+      process.execPath,
+      [TSX_CLI_PATH, '--experimental-sqlite', 'scripts/sync-state.ts'],
+      {
+        cwd: process.cwd(),
+        windowsHide: true,
+        timeout: SYNC_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    const text = String(stdout ?? '').trim();
+    const lastLine = text.split(/\r?\n/).filter(Boolean).at(-1) ?? '{}';
+    const parsed = JSON.parse(lastLine) as { status?: 'ok' | 'blocked' | 'skipped'; reason?: string | null };
+    return {
+      status: parsed.status ?? 'ok',
+      reason: parsed.reason ?? null,
+    };
+  } catch (error) {
+    if (error instanceof Error && 'stdout' in error && 'stderr' in error) {
+      const detail = [
+        String((error as { stdout?: Buffer | string }).stdout ?? '').trim(),
+        String((error as { stderr?: Buffer | string }).stderr ?? '').trim(),
+        error.message,
+      ].filter(Boolean).join('\n');
+      throw new Error(detail);
+    }
+    throw error;
+  }
+}
 
 function computeNextCycle(lastMs: number, intervalMs: number): string | null {
   if (lastMs === 0) {
@@ -205,6 +251,10 @@ function buildStatus(): DaemonStatus {
     itemsExecutedSinceRestart: daemonState.itemsExecuted,
     itemsSyncedSinceRestart: daemonState.itemsSynced,
     reviewsRunSinceRestart: daemonState.reviewsRun,
+    syncStatus: {
+      status: daemonState.lastSyncStatus,
+      reason: daemonState.lastSyncReason,
+    },
     rateLimitStatus: {
       limited: rlStatus.limited,
       resetsAt: rlStatus.resetsAt ? new Date(rlStatus.resetsAt).toISOString() : null,
@@ -224,6 +274,9 @@ function buildStatus(): DaemonStatus {
 
 function persistStatus(): void {
   try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.mkdirSync(PIDS_DIR, { recursive: true });
+    fs.writeFileSync(PID_FILE, String(process.pid));
     fs.writeFileSync(STATUS_FILE, JSON.stringify(buildStatus(), null, 2));
   } catch (err) {
     console.error('[Lifecycle] Failed to write daemon status:', err);
@@ -242,6 +295,9 @@ function processExists(pid: number | null | undefined): boolean {
 
 function releaseDaemonLock(): void {
   try {
+    if (fs.existsSync(PID_FILE)) {
+      fs.unlinkSync(PID_FILE);
+    }
     if (!fs.existsSync(LOCK_FILE)) return;
     const raw = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8')) as { pid?: number };
     if (raw.pid && raw.pid !== process.pid) return;
@@ -252,6 +308,8 @@ function releaseDaemonLock(): void {
 }
 
 function acquireDaemonLock(): void {
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  fs.mkdirSync(PIDS_DIR, { recursive: true });
   if (fs.existsSync(LOCK_FILE)) {
     try {
       const raw = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8')) as { pid?: number; startedAt?: string };
@@ -276,6 +334,7 @@ function acquireDaemonLock(): void {
     startedAt: new Date().toISOString(),
     cwd: process.cwd(),
   }, null, 2), { flag: 'wx' });
+  fs.writeFileSync(PID_FILE, String(process.pid));
 }
 
 export function recoverWorkOnStartup(logger: (line: string) => void = console.log): ReturnType<typeof recoverInterruptedWork> {
@@ -294,6 +353,18 @@ export function recoverWorkOnStartup(logger: (line: string) => void = console.lo
     );
   }
   return recovered;
+}
+
+async function bootstrapIdleAutonomy(logger: (line: string) => void = console.log): Promise<number> {
+  const created = await seedIdleAutonomyCycles();
+  if (created > 0) {
+    logger(`[Daemon] Seeded ${created} idle autonomy cycle(s) during startup`);
+    const dispatched = await dispatchPendingTasks();
+    logger(`[Daemon] Startup dispatch launched ${dispatched} worker(s) after autonomy reseed`);
+  } else {
+    logger('[Daemon] No idle autonomy cycles needed at startup');
+  }
+  return created;
 }
 
 // ── Execute cycle: approved action items + pending tasks ──────────────────
@@ -389,10 +460,20 @@ async function runSyncCycle(force = false): Promise<void> {
   }
 
   try {
-    await syncToTurso();
-    daemonState.itemsSynced += 1;
-    console.log('[Lifecycle] Sync cycle complete — Turso sync finished');
+    const result = await syncWithTimeout();
+    daemonState.lastSyncStatus = result.status;
+    daemonState.lastSyncReason = result.reason;
+    if (result.status === 'ok') {
+      daemonState.itemsSynced += 1;
+      console.log('[Lifecycle] Sync cycle complete — Turso sync finished');
+    } else if (result.status === 'blocked') {
+      console.warn('[Lifecycle] Sync cycle in degraded mode — remote writes are blocked, localhost bridge remains authoritative');
+    } else {
+      console.log('[Lifecycle] Sync cycle skipped — Turso not configured');
+    }
   } catch (err) {
+    daemonState.lastSyncStatus = 'error';
+    daemonState.lastSyncReason = err instanceof Error ? err.message : String(err);
     console.error('[Lifecycle] Sync cycle error:', err);
   }
 
@@ -489,7 +570,7 @@ function runHealthCheck(): void {
   try {
     const backend = resolveModelBackend();
     console.log(
-      `${backend.selected} (preferred=${backend.preferred}, claudeCli=${backend.available.claudeCli}, anthropicApi=${backend.available.anthropicApi}, webSearch=${backend.capabilities.webSearch})`,
+      `${backend.selected} (preferred=${backend.preferred}, claudeCli=${backend.available.claudeCli}, anthropicApi=${backend.available.anthropicApi}, codexCli=${backend.available.codexCli}, openaiApi=${backend.available.openaiApi}, webSearch=${backend.capabilities.webSearch})`,
     );
   } catch (err) {
     console.log(`FAIL — ${err}`);
@@ -505,12 +586,11 @@ function runHealthCheck(): void {
     allOk = false;
   }
 
-  process.stdout.write('Anthropic API key: ');
-  if (getSecretOrNull('ANTHROPIC_API_KEY')) {
-    console.log('Present');
-  } else {
-    console.log('Missing — Claude CLI backend required');
-  }
+  process.stdout.write('OpenAI API key: ');
+  console.log(getSecretOrNull('OPENAI_API_KEY') ? 'Present' : 'Missing — Codex CLI remains primary, API fallback disabled');
+
+  process.stdout.write('Anthropic API key (legacy optional): ');
+  console.log(getSecretOrNull('ANTHROPIC_API_KEY') ? 'Present — legacy fallback available' : 'Missing — legacy fallback disabled');
 
   // State directory
   process.stdout.write('State directory: ');
@@ -558,10 +638,6 @@ function runHealthCheck(): void {
   process.stdout.write('Turso credentials: ');
   const tursoEnv = loadTursoEnv();
   console.log(tursoEnv ? 'Present' : 'Missing — sync cycle will not function');
-
-  // OpenAI (optional)
-  process.stdout.write('OpenAI API key (optional): ');
-  console.log(getSecretOrNull('OPENAI_API_KEY') ? 'Present' : 'Missing — Codex Review will not function');
 
   console.log('');
 
@@ -618,6 +694,7 @@ async function main(): Promise<void> {
   // 1. Health check — exits if critical secrets missing
   runHealthCheck();
   acquireDaemonLock();
+  process.env.ORGANISM_DISABLE_SCHEDULER_SYNC = '1';
 
   // 2. Startup banner
   printBanner();
@@ -646,6 +723,10 @@ async function main(): Promise<void> {
 
   // 4b. Recover any interrupted work before the scheduler/runner resume.
   recoverWorkOnStartup();
+  await bootstrapIdleAutonomy();
+  persistStatus();
+  await runSyncCycle(true);
+  persistStatus();
 
   // 5. Start scheduler (60s tick)
   const schedulerHandle = startScheduler(SCHEDULER_TICK_MS);

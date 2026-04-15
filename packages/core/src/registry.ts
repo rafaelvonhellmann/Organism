@@ -16,6 +16,10 @@ interface ProjectAgentRoster {
   specialist: string[];
 }
 
+interface CapabilityFilterOptions {
+  includeShadow?: boolean;
+}
+
 let _registry: AgentCapability[] | null = null;
 
 function loadProjectRoster(projectId: string): ProjectAgentRoster | null {
@@ -35,28 +39,32 @@ function loadProjectRoster(projectId: string): ProjectAgentRoster | null {
   }
 }
 
-function isEnabledForProject(capability: AgentCapability, projectId?: string): boolean {
-  if (!projectId) return capability.status === 'active';
+function isCapabilityStatusEnabled(capability: AgentCapability, options?: CapabilityFilterOptions): boolean {
+  return capability.status === 'active' || (options?.includeShadow === true && capability.status === 'shadow');
+}
+
+function isEnabledForProject(capability: AgentCapability, projectId?: string, options?: CapabilityFilterOptions): boolean {
+  if (!projectId) return isCapabilityStatusEnabled(capability, options);
 
   const roster = loadProjectRoster(projectId);
   if (roster) {
     const allowedOwners = new Set([...roster.generalist, ...roster.specialist]);
     if (allowedOwners.size > 0) {
-      return capability.status === 'active' && allowedOwners.has(capability.owner);
+      return isCapabilityStatusEnabled(capability, options) && allowedOwners.has(capability.owner);
     }
   }
 
   if (!capability.projectScope || capability.projectScope === 'all') {
-    return capability.status === 'active';
+    return isCapabilityStatusEnabled(capability, options);
   }
 
-  return capability.status === 'active'
+  return isCapabilityStatusEnabled(capability, options)
     && Array.isArray(capability.projectScope)
     && capability.projectScope.includes(projectId);
 }
 
-export function getCapabilitiesForProject(projectId?: string): AgentCapability[] {
-  return loadRegistry().filter((capability) => isEnabledForProject(capability, projectId));
+export function getCapabilitiesForProject(projectId?: string, options?: CapabilityFilterOptions): AgentCapability[] {
+  return loadRegistry().filter((capability) => isEnabledForProject(capability, projectId, options));
 }
 
 export function loadRegistry(): AgentCapability[] {
@@ -125,8 +133,8 @@ export function getShadowRunCount(agentName: string): number {
   return row?.count ?? 0;
 }
 
-export function canAgentExecute(agentName: string, projectId?: string): boolean {
-  return getCapabilitiesForProject(projectId).some((capability) => capability.owner === agentName);
+export function canAgentExecute(agentName: string, projectId?: string, options?: CapabilityFilterOptions): boolean {
+  return getCapabilitiesForProject(projectId, options).some((capability) => capability.owner === agentName);
 }
 
 export function getProjectCoreAgents(projectId: string): string[] {

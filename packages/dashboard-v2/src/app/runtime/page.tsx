@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Header } from '@/components/header';
 import { getInitialSelectedProject } from '@/lib/selected-project';
+import { loadLocalRuntimeBridge, type LocalRuntimeBridgeSnapshot } from '@/lib/runtime-bridge-client';
 
 interface RuntimeGoal {
   id: string;
@@ -248,6 +249,7 @@ function rolloutTone(stage: string): string {
 export default function RuntimePage() {
   const [project, setProject] = useState(() => getInitialSelectedProject());
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot | null>(null);
+  const [localBridge, setLocalBridge] = useState<LocalRuntimeBridgeSnapshot | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [connected, setConnected] = useState(false);
 
@@ -260,16 +262,23 @@ export default function RuntimePage() {
     setLastUpdated(new Date());
   }, [project]);
 
+  const fetchLocalBridge = useCallback(async () => {
+    const bridge = await loadLocalRuntimeBridge(project || undefined);
+    setLocalBridge(bridge);
+  }, [project]);
+
   useEffect(() => {
     fetchSnapshot().catch(() => {});
-  }, [fetchSnapshot]);
+    fetchLocalBridge().catch(() => {});
+  }, [fetchSnapshot, fetchLocalBridge]);
 
   useEffect(() => {
     const id = setInterval(() => {
       fetchSnapshot().catch(() => {});
+      fetchLocalBridge().catch(() => {});
     }, 10_000);
     return () => clearInterval(id);
-  }, [fetchSnapshot]);
+  }, [fetchSnapshot, fetchLocalBridge]);
 
   useEffect(() => {
     const url = project ? `/api/runtime/events?project=${project}` : '/api/runtime/events';
@@ -318,8 +327,32 @@ export default function RuntimePage() {
   }, [project, snapshot]);
   const daemonAgeMs = snapshot?.daemon?.observedAt ? Math.max(0, Date.now() - snapshot.daemon.observedAt) : null;
   const daemonLooksStale = daemonAgeMs != null && daemonAgeMs > 90_000;
+  const localBridgeLooksFresh = (localBridge?.daemon.observedAt ?? 0) > 0
+    && Date.now() - (localBridge?.daemon.observedAt ?? 0) <= 90_000;
+  const localDaemonAlive = localBridge?.daemon.alive === true;
+  const preferLocalBridge = !!localBridge
+    && (
+      daemonLooksStale
+      || !snapshot?.daemon
+      || (localBridge.daemon.observedAt ?? 0) > (snapshot.daemon.observedAt ?? 0)
+    );
+  const effectiveActiveRunCount = preferLocalBridge
+    ? localBridge?.activeRuns ?? activeRuns.length
+    : activeRuns.length;
+  const effectivePausedRunCount = preferLocalBridge
+    ? localBridge?.pausedRuns ?? pausedRuns.length
+    : pausedRuns.length;
+  const effectiveDaemonObservedAt = preferLocalBridge
+    ? localBridge?.daemon.observedAt ?? snapshot?.daemon?.observedAt ?? null
+    : snapshot?.daemon?.observedAt ?? null;
+  const effectiveDaemonAgeMs = effectiveDaemonObservedAt != null ? Math.max(0, Date.now() - effectiveDaemonObservedAt) : null;
+  const effectiveDaemonLooksStale = effectiveDaemonAgeMs != null && effectiveDaemonAgeMs > 90_000;
   const blockerCount = snapshot?.blockers?.length ?? 0;
-  const daemonStateLabel = daemonLooksStale ? 'stale' : activeRuns.length > 0 ? 'active' : blockerCount > 0 ? 'blocked' : 'idle';
+  const rolloutActiveRuns = snapshot?.autonomy.reduce((sum, health) => sum + health.activeRuns, 0) ?? 0;
+  const hasLiveSignals = effectiveActiveRunCount > 0 || rolloutActiveRuns > 0 || connected || localBridgeLooksFresh || localDaemonAlive;
+  const daemonStateLabel = effectiveDaemonLooksStale
+    ? hasLiveSignals ? 'active (sync stale)' : 'stale'
+    : hasLiveSignals ? 'active' : blockerCount > 0 ? 'blocked' : 'idle';
 
   return (
     <>
@@ -347,7 +380,7 @@ export default function RuntimePage() {
               Web search: {snapshot?.daemon?.runtime.webSearchAvailable ? 'available' : 'unavailable'}
             </div>
             <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">
-              Paused runs: {pausedRuns.length}
+              Paused runs: {effectivePausedRunCount}
             </div>
             <div className="rounded-lg bg-surface-alt/30 p-3 text-zinc-300">
               Pending interrupts: {snapshot?.interrupts.filter((item) => item.status === 'pending').length ?? 0}
@@ -359,6 +392,11 @@ export default function RuntimePage() {
               Daemon state: {daemonStateLabel}
             </div>
           </div>
+          {preferLocalBridge && (
+            <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
+              Local daemon truth is overriding stale hosted runtime state for this view.
+            </div>
+          )}
           {snapshot?.daemon && (
             <div className="mt-3 text-xs text-zinc-500">
               Last daemon update: {snapshot.daemon.updatedAt ?? 'unknown'}
@@ -368,8 +406,10 @@ export default function RuntimePage() {
           )}
           {daemonLooksStale && (
             <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300">
-              The dashboard snapshot is stale. The daemon has not reported fresh state for {formatDuration(daemonAgeMs)}.
-              The website may still show old in-progress cards until the next successful sync.
+              The dashboard snapshot is stale. The daemon has not reported fresh synced state for {formatDuration(daemonAgeMs)}.
+              {hasLiveSignals
+                ? ' Live run activity still exists, so the daemon should be treated as active while sync catches up.'
+                : ' The website may still show old in-progress cards until the next successful sync.'}
             </div>
           )}
           {snapshot?.blockers?.length ? (

@@ -7,6 +7,13 @@ let _client: Client | null = null;
 let _dbError: string | null = null;
 let _migrationsRun = false;
 
+async function ensureColumn(client: Client, table: string, column: string, definition: string): Promise<void> {
+  const result = await client.execute(`PRAGMA table_info(${table})`);
+  const exists = result.rows.some((row) => String(row.name) === column);
+  if (exists) return;
+  await client.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
 export function getClient(): Client | null {
   if (_client) return _client;
 
@@ -80,6 +87,14 @@ export async function ensureTables(): Promise<void> {
       ON tasks(project_id, created_at)
     `);
 
+    await ensureColumn(client, 'tasks', 'goal_id', 'TEXT');
+    await ensureColumn(client, 'tasks', 'workflow_kind', 'TEXT');
+    await ensureColumn(client, 'tasks', 'source_kind', 'TEXT');
+    await ensureColumn(client, 'tasks', 'retry_class', 'TEXT');
+    await ensureColumn(client, 'tasks', 'retry_at', 'INTEGER');
+    await ensureColumn(client, 'tasks', 'provider_failure_kind', 'TEXT');
+    await ensureColumn(client, 'tasks', 'attempt_count', 'INTEGER NOT NULL DEFAULT 0');
+
     // Index on gates for the NOT EXISTS subquery
     await client.execute(`
       CREATE INDEX IF NOT EXISTS idx_gates_task_gate
@@ -112,6 +127,30 @@ export async function ensureTables(): Promise<void> {
     await client.execute(`
       CREATE INDEX IF NOT EXISTS idx_action_items_priority
       ON action_items(priority)
+    `);
+
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS innovation_radar_feedback (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        opportunity_title TEXT,
+        feedback_code TEXT NOT NULL,
+        notes TEXT,
+        trigger TEXT,
+        created_by TEXT NOT NULL DEFAULT 'rafael',
+        created_at INTEGER NOT NULL
+      )
+    `);
+
+    await client.execute(`
+      CREATE INDEX IF NOT EXISTS idx_innovation_feedback_project
+      ON innovation_radar_feedback(project_id, created_at)
+    `);
+
+    await client.execute(`
+      CREATE INDEX IF NOT EXISTS idx_innovation_feedback_task
+      ON innovation_radar_feedback(task_id)
     `);
 
     // ── Shape Up tables (readable from dashboard, written by core) ──

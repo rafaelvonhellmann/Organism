@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Header } from '@/components/header';
+import { loadLocalHistoryBridge } from '@/lib/local-bridge-client';
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -44,6 +45,7 @@ const AGENT_ROLES: Record<string, string> = {
   'customer-success': 'Success',
   'hr': 'HR',
   'design': 'Design',
+  'competitive-intel': 'Innovation Radar',
 };
 
 function agentRole(agent: string): string {
@@ -94,6 +96,13 @@ export default function HistoryPage() {
 
   const fetchHistory = useCallback(async () => {
     try {
+      const local = await loadLocalHistoryBridge(project || undefined);
+      if (local) {
+        setTasks(local.tasks);
+        setLastUpdated(new Date(local.generatedAt));
+        return;
+      }
+
       const url = project
         ? `/api/history?project=${project}`
         : '/api/history';

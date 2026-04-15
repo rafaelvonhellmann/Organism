@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getClient, getAgentMeta, ensureTables } from './db';
 import { getAgentCap, getBudgetStatus, SYSTEM_DAILY_CAP } from './constants';
+import { reconcileTaskOutput } from './task-output';
 import type { Client, Row, InArgs } from '@libsql/client';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
@@ -54,7 +55,7 @@ function formatTask(row: Row) {
     lane: s(row.lane),
     description: s(row.description),
     input: tryParse(row.input),
-    output: tryParse(row.output),
+    output: reconcileTaskOutput(row.output, row.error, row.project_id),
     tokensUsed: row.tokens_used != null ? n(row.tokens_used) : null,
     costUsd: row.cost_usd != null ? n(row.cost_usd) : null,
     startedAt: row.started_at != null ? n(row.started_at) : null,

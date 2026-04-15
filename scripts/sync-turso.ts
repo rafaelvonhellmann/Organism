@@ -101,11 +101,25 @@ async function main() {
       ts INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS innovation_radar_feedback (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      opportunity_title TEXT,
+      feedback_code TEXT NOT NULL,
+      notes TEXT,
+      trigger TEXT,
+      created_by TEXT NOT NULL DEFAULT 'rafael',
+      created_at INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent);
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
     CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent);
     CREATE INDEX IF NOT EXISTS idx_audit_task ON audit_log(task_id);
+    CREATE INDEX IF NOT EXISTS idx_innovation_feedback_project ON innovation_radar_feedback(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_innovation_feedback_task ON innovation_radar_feedback(task_id);
   `);
 
   console.log('Schema ensured');
@@ -133,6 +147,11 @@ async function main() {
 
   await syncTable(local, remote, 'shadow_runs', 'id', [
     'id', 'agent', 'task_id', 'output', 'quality_score', 'ts',
+  ]);
+
+  await syncTable(local, remote, 'innovation_radar_feedback', 'id', [
+    'id', 'task_id', 'project_id', 'opportunity_title', 'feedback_code',
+    'notes', 'trigger', 'created_by', 'created_at',
   ]);
 
   console.log('\nSync complete!');

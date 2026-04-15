@@ -1,7 +1,9 @@
 import { spawn, spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { homedir } from 'os';
+import { resolveOpenAiModelSpec } from '../../../agents/_base/mcp-client.js';
 
 export type CodeExecutorKind = 'claude' | 'codex';
 export type CodeExecutorPreference = CodeExecutorKind | 'auto';
@@ -17,6 +19,10 @@ export interface CodeExecutionParams {
   prompt: string;
   maxTurns?: number;
   preference?: CodeExecutorPreference;
+  description?: string;
+  workflowKind?: string;
+  timeoutMs?: number;
+  onHeartbeat?: (heartbeat: { executor: CodeExecutorKind; elapsedMs: number }) => void;
 }
 
 export interface CodeExecutionResult {
@@ -25,9 +31,81 @@ export interface CodeExecutionResult {
   rawOutput: string;
 }
 
+type ExecutorFailureClass = 'credit' | 'rate_limit' | 'transport' | 'auth' | 'timeout' | 'generic';
+
+const EXECUTOR_HEALTH_PATH = join(homedir(), '.organism', 'state', 'code-executor-health.json');
+const executorCooldownUntil = new Map<CodeExecutorKind, number>();
+
+function allowLegacyClaudeExecutorFallback(): boolean {
+  return /^(1|true|yes)$/i.test(process.env.ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK ?? '');
+}
+
+function resolveCodexExecutorModel(): string {
+  return process.env.ORGANISM_OPENAI_ENGINEERING_MODEL
+    ?? process.env.ORGANISM_OPENAI_DEFAULT_MODEL
+    ?? resolveOpenAiModelSpec('sonnet').cliModel;
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error ?? '');
+}
+
+const MIN_EXECUTOR_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_EXECUTOR_TIMEOUT_MS = 20 * 60 * 1000;
+const MAX_EXECUTOR_TIMEOUT_MS = 45 * 60 * 1000;
+
+function clampTimeoutMs(timeoutMs: number): number {
+  return Math.min(MAX_EXECUTOR_TIMEOUT_MS, Math.max(MIN_EXECUTOR_TIMEOUT_MS, timeoutMs));
+}
+
+function formatTimeoutLabel(timeoutMs: number): string {
+  const totalMinutes = Math.max(1, Math.round(timeoutMs / 60_000));
+  return `${totalMinutes} minute${totalMinutes === 1 ? '' : 's'}`;
+}
+
+export function resolveAdaptiveExecutorTimeout(params: Pick<CodeExecutionParams, 'description' | 'prompt' | 'workflowKind' | 'maxTurns' | 'timeoutMs'>): number {
+  if (typeof params.timeoutMs === 'number' && Number.isFinite(params.timeoutMs)) {
+    return clampTimeoutMs(params.timeoutMs);
+  }
+
+  let timeoutMs = DEFAULT_EXECUTOR_TIMEOUT_MS;
+  switch (params.workflowKind) {
+    case 'review':
+    case 'validate':
+      timeoutMs = 15 * 60 * 1000;
+      break;
+    case 'plan':
+      timeoutMs = 20 * 60 * 1000;
+      break;
+    case 'implement':
+      timeoutMs = 25 * 60 * 1000;
+      break;
+    case 'recover':
+      timeoutMs = 35 * 60 * 1000;
+      break;
+    default:
+      timeoutMs = DEFAULT_EXECUTOR_TIMEOUT_MS;
+      break;
+  }
+
+  const combinedContext = `${params.description ?? ''}\n${params.prompt}`.toLowerCase();
+  if (
+    combinedContext.includes('inspect the workspace')
+    || combinedContext.includes('rerun the implementation')
+    || combinedContext.includes('repo-review-brief')
+    || combinedContext.includes('preserved worktree')
+  ) {
+    timeoutMs += 10 * 60 * 1000;
+  }
+  if ((params.prompt?.length ?? 0) > 8_000) {
+    timeoutMs += 5 * 60 * 1000;
+  }
+  if ((params.maxTurns ?? 15) >= 20) {
+    timeoutMs += 5 * 60 * 1000;
+  }
+
+  return clampTimeoutMs(timeoutMs);
 }
 
 function commandExists(command: string): boolean {
@@ -36,11 +114,159 @@ function commandExists(command: string): boolean {
   return result.status === 0;
 }
 
+function resolveCommandPath(command: string): string {
+  const locator = process.platform === 'win32' ? 'where.exe' : 'which';
+  const result = spawnSync(locator, [command], { encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`Command "${command}" is not available on PATH`);
+  }
+  const candidates = String(result.stdout ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (candidates.length === 0) {
+    throw new Error(`Unable to resolve command path for "${command}"`);
+  }
+  if (process.platform === 'win32') {
+    const preferred = candidates.find((candidate) => /\.(cmd|bat|exe)$/i.test(candidate));
+    if (preferred) return preferred;
+  }
+  return candidates[0]!;
+}
+
+function spawnResolved(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) {
+  const resolved = resolveCommandPath(command);
+  const isWindowsCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolved);
+  if (isWindowsCmd) {
+    return spawn('cmd.exe', ['/d', '/s', '/c', resolved, ...args], {
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      shell: false,
+      env,
+    });
+  }
+
+  return spawn(resolved, args, {
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    shell: false,
+    env,
+  });
+}
+
+function killProcessTree(pid: number | undefined): void {
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    spawnSync('taskkill.exe', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // Ignore kill failures on already-closed processes.
+    }
+  }
+}
+
 function availableExecutors(): Record<CodeExecutorKind, boolean> {
   return {
     claude: commandExists('claude'),
     codex: commandExists('codex'),
   };
+}
+
+function loadExecutorCooldowns(): void {
+  if (executorCooldownUntil.size > 0) return;
+  if (!existsSync(EXECUTOR_HEALTH_PATH)) return;
+  try {
+    const raw = JSON.parse(readFileSync(EXECUTOR_HEALTH_PATH, 'utf8')) as Partial<Record<CodeExecutorKind, number>>;
+    for (const executor of ['claude', 'codex'] as const) {
+      const until = raw[executor];
+      if (typeof until === 'number' && Number.isFinite(until) && until > Date.now()) {
+        executorCooldownUntil.set(executor, until);
+      }
+    }
+  } catch {
+    // Ignore corrupted cooldown files and rebuild them on the next write.
+  }
+}
+
+function persistExecutorCooldowns(): void {
+  mkdirSync(join(homedir(), '.organism', 'state'), { recursive: true });
+  const payload: Partial<Record<CodeExecutorKind, number>> = {};
+  for (const [executor, until] of executorCooldownUntil.entries()) {
+    if (until > Date.now()) {
+      payload[executor] = until;
+    }
+  }
+  writeFileSync(EXECUTOR_HEALTH_PATH, JSON.stringify(payload, null, 2));
+}
+
+function executorOnCooldown(executor: CodeExecutorKind): boolean {
+  loadExecutorCooldowns();
+  const until = executorCooldownUntil.get(executor);
+  if (!until) return false;
+  if (until <= Date.now()) {
+    executorCooldownUntil.delete(executor);
+    persistExecutorCooldowns();
+    return false;
+  }
+  return true;
+}
+
+function clearExecutorCooldown(executor: CodeExecutorKind): void {
+  loadExecutorCooldowns();
+  if (!executorCooldownUntil.has(executor)) return;
+  executorCooldownUntil.delete(executor);
+  persistExecutorCooldowns();
+}
+
+function classifyExecutorFailure(error: unknown): ExecutorFailureClass {
+  const message = errorMessage(error).toLowerCase();
+  if (message.includes('credit balance is too low') || message.includes('insufficient') || message.includes('quota') || message.includes('billing')) {
+    return 'credit';
+  }
+  if (message.includes('rate limit') || message.includes('429') || message.includes('529') || message.includes('usage limit')) {
+    return 'rate_limit';
+  }
+  if (message.includes('unauthorized') || message.includes('401') || message.includes('403') || message.includes('login')) {
+    return 'auth';
+  }
+  if (message.includes('timed out') || message.includes('timeout')) {
+    return 'timeout';
+  }
+  if (message.includes('connection error') || message.includes('fetch failed') || message.includes('network error') || message.includes('spawn error')) {
+    return 'transport';
+  }
+  return 'generic';
+}
+
+function executorCooldownMs(executor: CodeExecutorKind, failure: ExecutorFailureClass): number {
+  switch (failure) {
+    case 'credit':
+      return executor === 'claude' ? 6 * 60 * 60 * 1000 : 60 * 60 * 1000;
+    case 'rate_limit':
+      return 30 * 60 * 1000;
+    case 'auth':
+      return 60 * 60 * 1000;
+    case 'timeout':
+      return 20 * 60 * 1000;
+    case 'transport':
+      return 15 * 60 * 1000;
+    default:
+      return 10 * 60 * 1000;
+  }
+}
+
+function markExecutorCooldown(executor: CodeExecutorKind, error: unknown): void {
+  loadExecutorCooldowns();
+  executorCooldownUntil.set(executor, Date.now() + executorCooldownMs(executor, classifyExecutorFailure(error)));
+  persistExecutorCooldowns();
 }
 
 export function resolveCodeExecutor(preference?: CodeExecutorPreference, available = availableExecutors()): CodeExecutorStatus {
@@ -53,14 +279,29 @@ export function resolveCodeExecutor(preference?: CodeExecutorPreference, availab
     return { preferred: requested, selected: requested, available };
   }
 
-  if (available.claude) {
-    return { preferred: 'auto', selected: 'claude', available };
+  if (available.codex && !executorOnCooldown('codex')) {
+    return { preferred: 'auto', selected: 'codex', available };
   }
+
+  if (allowLegacyClaudeExecutorFallback()) {
+    if (available.claude && !executorOnCooldown('claude')) {
+      return { preferred: 'auto', selected: 'claude', available };
+    }
+  }
+
   if (available.codex) {
     return { preferred: 'auto', selected: 'codex', available };
   }
 
-  throw new Error('No supported code executor found. Install Claude Code or Codex CLI, or set ORGANISM_CODE_EXECUTOR explicitly.');
+  if (allowLegacyClaudeExecutorFallback() && available.claude) {
+    return { preferred: 'auto', selected: 'claude', available };
+  }
+
+  throw new Error(
+    allowLegacyClaudeExecutorFallback()
+      ? 'No supported code executor found. Install Codex CLI or explicitly enable a legacy Claude executor.'
+      : 'No supported OpenAI code executor found. Install Codex CLI or set ORGANISM_CODE_EXECUTOR explicitly. Legacy Claude fallback is disabled.',
+  );
 }
 
 function runClaudeExec(params: CodeExecutionParams): Promise<CodeExecutionResult> {
@@ -72,27 +313,28 @@ function runClaudeExec(params: CodeExecutionParams): Promise<CodeExecutionResult
       '--max-turns', String(params.maxTurns ?? 15),
     ];
 
-    const child = spawn('claude', args, {
-      cwd: params.cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-      shell: true,
-      env: { ...process.env, CLAUDE_AUTO_ACCEPT: '1' },
-    });
+    const child = spawnResolved('claude', args, params.cwd, { ...process.env, CLAUDE_AUTO_ACCEPT: '1' });
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    const startedAt = Date.now();
+    const timeoutMs = resolveAdaptiveExecutorTimeout(params);
+    const heartbeat = params.onHeartbeat
+      ? setInterval(() => params.onHeartbeat?.({ executor: 'claude', elapsedMs: Date.now() - startedAt }), 15_000)
+      : null;
 
     const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error('claude code executor timed out after 15 minutes'));
-    }, 15 * 60 * 1000);
+      if (heartbeat) clearInterval(heartbeat);
+      killProcessTree(child.pid);
+      reject(new Error(`claude code executor timed out after ${formatTimeoutLabel(timeoutMs)}`));
+    }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
 
     child.on('close', (code) => {
       clearTimeout(timer);
+      if (heartbeat) clearInterval(heartbeat);
       const stdout = Buffer.concat(stdoutChunks).toString('utf8');
       const stderr = Buffer.concat(stderrChunks).toString('utf8');
       const rawOutput = `${stdout}${stderr}`.trim();
@@ -124,6 +366,7 @@ function runClaudeExec(params: CodeExecutionParams): Promise<CodeExecutionResult
 
     child.on('error', (error) => {
       clearTimeout(timer);
+      if (heartbeat) clearInterval(heartbeat);
       reject(new Error(`claude executor spawn error: ${error.message}`));
     });
 
@@ -136,36 +379,39 @@ function runCodexExec(params: CodeExecutionParams): Promise<CodeExecutionResult>
   return new Promise((resolve, reject) => {
     const tempDir = mkdtempSync(join(tmpdir(), 'organism-codex-'));
     const outputFile = join(tempDir, 'last-message.txt');
+    const codexModel = resolveCodexExecutorModel();
     const args = [
       'exec',
       '-C', params.cwd,
       '--sandbox', 'workspace-write',
       '--ephemeral',
+      '--model', codexModel,
       '-o', outputFile,
       '-',
     ];
 
-    const child = spawn('codex', args, {
-      cwd: params.cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-      shell: true,
-      env: { ...process.env },
-    });
+    const child = spawnResolved('codex', args, params.cwd, { ...process.env });
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    const startedAt = Date.now();
+    const timeoutMs = resolveAdaptiveExecutorTimeout(params);
+    const heartbeat = params.onHeartbeat
+      ? setInterval(() => params.onHeartbeat?.({ executor: 'codex', elapsedMs: Date.now() - startedAt }), 15_000)
+      : null;
 
     const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error('codex executor timed out after 15 minutes'));
-    }, 15 * 60 * 1000);
+      if (heartbeat) clearInterval(heartbeat);
+      killProcessTree(child.pid);
+      reject(new Error(`codex executor timed out after ${formatTimeoutLabel(timeoutMs)}`));
+    }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
 
     child.on('close', (code) => {
       clearTimeout(timer);
+      if (heartbeat) clearInterval(heartbeat);
       try {
         const stdout = Buffer.concat(stdoutChunks).toString('utf8');
         const stderr = Buffer.concat(stderrChunks).toString('utf8');
@@ -191,6 +437,7 @@ function runCodexExec(params: CodeExecutionParams): Promise<CodeExecutionResult>
 
     child.on('error', (error) => {
       clearTimeout(timer);
+      if (heartbeat) clearInterval(heartbeat);
       rmSync(tempDir, { recursive: true, force: true });
       reject(new Error(`codex executor spawn error: ${error.message}`));
     });
@@ -202,12 +449,12 @@ function runCodexExec(params: CodeExecutionParams): Promise<CodeExecutionResult>
 
 export function shouldFallbackFromClaudeExecutor(error: unknown): boolean {
   const message = errorMessage(error);
-  return /credit balance is too low|rate limit|429|529|overloaded|RATE_LIMITED/i.test(message);
+  return /credit balance is too low|rate limit|429|529|overloaded|RATE_LIMITED|spawn error|connection error|fetch failed|network error|timed out|timeout/i.test(message);
 }
 
 export function shouldFallbackFromCodexExecutor(error: unknown): boolean {
   const message = errorMessage(error);
-  return /rate limit|429|403|401|unauthorized|login|quota|billing|credit|usage limit|insufficient/i.test(message);
+  return /rate limit|429|403|401|unauthorized|login|quota|billing|credit|usage limit|insufficient|spawn error|connection error|fetch failed|network error|timed out|timeout/i.test(message);
 }
 
 export async function runCodeExecutor(params: CodeExecutionParams): Promise<CodeExecutionResult> {
@@ -218,22 +465,32 @@ export async function runCodeExecutor(params: CodeExecutionParams): Promise<Code
 
   if (executor.selected === 'claude') {
     try {
-      return await runClaudeExec(params);
+      const result = await runClaudeExec(params);
+      clearExecutorCooldown('claude');
+      return result;
     } catch (error) {
       if (executor.available.codex && shouldFallbackFromClaudeExecutor(error)) {
+        markExecutorCooldown('claude', error);
         console.warn(`[CodeExecutor] Claude failed (${errorMessage(error)}). Falling back to Codex.`);
-        return runCodexExec(params);
+        const fallback = await runCodexExec(params);
+        clearExecutorCooldown('codex');
+        return fallback;
       }
       throw error;
     }
   }
 
   try {
-    return await runCodexExec(params);
+    const result = await runCodexExec(params);
+    clearExecutorCooldown('codex');
+    return result;
   } catch (error) {
-    if (executor.available.claude && shouldFallbackFromCodexExecutor(error)) {
+    if (allowLegacyClaudeExecutorFallback() && executor.available.claude && shouldFallbackFromCodexExecutor(error)) {
+      markExecutorCooldown('codex', error);
       console.warn(`[CodeExecutor] Codex failed (${errorMessage(error)}). Falling back to Claude.`);
-      return runClaudeExec(params);
+      const fallback = await runClaudeExec(params);
+      clearExecutorCooldown('claude');
+      return fallback;
     }
     throw error;
   }

@@ -14,6 +14,9 @@ interface TaskRow {
   status: string;
   lane: string;
   description: string;
+  output?: unknown;
+  input?: Record<string, unknown> | null;
+  workflowKind?: string | null;
   costUsd: number | null;
   createdAt: number;
   completedAt: number | null;
@@ -124,63 +127,6 @@ const SYNAPSE_PLANS: PerspectivePlan[] = [
   },
 ];
 
-const TOKENS_FOR_GOOD_PLANS: PerspectivePlan[] = [
-  {
-    name: 'Strategy',
-    role: 'ceo',
-    thisWeek: 'Run the first safe canary review and confirm Organism can inspect Tokens for Good without widening risk.',
-    fifteenDays: 'Move from review-only into constrained implementation with PR-only output and no deploy.',
-    oneMonth: 'Graduate the project from first-canary mode if healthy-run evidence is building.',
-    threeMonths: 'Let Tokens for Good become the first stable external proof that Organism can operate on a real repo.',
-    sixMonths: 'Use the project as the template for onboarding additional mission-aligned products.',
-  },
-  {
-    name: 'Product',
-    role: 'product-manager',
-    thisWeek: 'Clarify the smallest user-visible improvement worth shipping after the canary review.',
-    fifteenDays: 'Sequence a few low-blast-radius product improvements into PR-sized missions.',
-    oneMonth: 'Use real run history to separate platform bugs from genuine product backlog.',
-    threeMonths: 'Turn project memory into a clearer long-horizon roadmap powered by completed agent work.',
-    sixMonths: 'Make the project a polished showcase of autonomous product iteration under policy.',
-  },
-  {
-    name: 'Engineering',
-    role: 'engineering',
-    thisWeek: 'Keep worktree isolation, verification, commit, and PR handoff clean on the first review and first implementation task.',
-    fifteenDays: 'Land one or two small PRs with clean controller-owned execution and zero recursive noise.',
-    oneMonth: 'Automate repeated repo-safe changes with less operator involvement.',
-    threeMonths: 'Treat Tokens for Good as a stable proving ground for cross-executor engineering autonomy.',
-    sixMonths: 'Reach boring reliability where routine engineering changes feel normal rather than experimental.',
-  },
-  {
-    name: 'Operations',
-    role: 'devops',
-    thisWeek: 'Keep deploy locked behind the healthy-run gate and make sure PR-oriented flow is stable first.',
-    fifteenDays: 'Validate deploy readiness and environment expectations without widening autonomy too early.',
-    oneMonth: 'Open deploys only after stable PR output and recovery behavior are repeatedly confirmed.',
-    threeMonths: 'Promote deployment from guarded to routine for this project if the rollout gate is genuinely earned.',
-    sixMonths: 'Use the project as the template for safe deploy governance across future client repos.',
-  },
-  {
-    name: 'Quality',
-    role: 'quality-agent',
-    thisWeek: 'Verify that review tasks stay review tasks and do not collapse into shaping or recursive follow-ups.',
-    fifteenDays: 'Build confidence that the first few runs produce usable findings rather than orchestration churn.',
-    oneMonth: 'Use run history to tune guardrails and remove false positives from the review path.',
-    threeMonths: 'Make quality review feel like a reliable control plane signal instead of a fragile checkpoint.',
-    sixMonths: 'Treat quality artifacts as first-class evidence for graduation into broader autonomy.',
-  },
-  {
-    name: 'Security',
-    role: 'security-audit',
-    thisWeek: 'Keep credentials scoped, review launch posture, and make sure the project stays inside its declared policy envelope.',
-    fifteenDays: 'Validate that PR-only flow, isolated worktrees, and sensitive-action gating are holding under real use.',
-    oneMonth: 'Use Tokens for Good to prove the controller can stay least-privilege without becoming brittle.',
-    threeMonths: 'Codify the project’s secure operating pattern into reusable defaults for the rest of Organism.',
-    sixMonths: 'Make security review mostly about exceptions, not about cleaning up runtime drift.',
-  },
-];
-
 function buildGenericPlans(projectLabel: string): PerspectivePlan[] {
   return [
     {
@@ -213,9 +159,154 @@ function buildGenericPlans(projectLabel: string): PerspectivePlan[] {
   ];
 }
 
-function plansForProject(projectId: string): PerspectivePlan[] {
+function taskTimestamp(task: TaskRow): number {
+  return task.completedAt ?? task.createdAt;
+}
+
+function summarizeText(text: string, maxLength = 180): string {
+  const cleaned = text
+    .replace(/[_*`>#-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned.length <= maxLength) return cleaned;
+  return `${cleaned.slice(0, maxLength - 1).trim()}…`;
+}
+
+function extractTaskSummary(output: unknown): string | null {
+  if (!output) return null;
+  if (typeof output === 'string') {
+    return summarizeText(output);
+  }
+
+  if (typeof output !== 'object') return null;
+
+  const record = output as Record<string, unknown>;
+  for (const key of ['summary', 'review', 'text', 'verdict', 'recommendation', 'result']) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return summarizeText(value);
+    }
+  }
+
+  const findings = Array.isArray(record.findings) ? record.findings : [];
+  const findingSummaries = findings
+    .map((finding) => {
+      if (!finding || typeof finding !== 'object') return null;
+      const entry = finding as Record<string, unknown>;
+      const summary = entry.summary ?? entry.description ?? entry.remediation;
+      return typeof summary === 'string' ? summary.trim() : null;
+    })
+    .filter((value): value is string => Boolean(value))
+    .slice(0, 2);
+
+  if (findingSummaries.length > 0) {
+    return summarizeText(findingSummaries.join(' '));
+  }
+
+  return summarizeText(JSON.stringify(record));
+}
+
+function isCanaryTask(task: TaskRow): boolean {
+  return /canary review/i.test(task.description) || task.input?.canaryPreset === true;
+}
+
+function buildTokensPlans(tasks: TaskRow[]): PerspectivePlan[] {
+  const completedCanary = tasks
+    .filter((task) => task.status === 'completed' && isCanaryTask(task))
+    .sort((a, b) => taskTimestamp(b) - taskTimestamp(a))[0] ?? null;
+  const latestReviewTask = tasks
+    .filter((task) =>
+      task.status === 'completed' &&
+      (
+        task.workflowKind === 'review' ||
+        isCanaryTask(task) ||
+        task.agent === 'quality-agent' ||
+        task.agent === 'codex-review'
+      ))
+    .sort((a, b) => taskTimestamp(b) - taskTimestamp(a))[0] ?? null;
+  const latestReviewSummary = latestReviewTask ? extractTaskSummary(latestReviewTask.output) : null;
+  const activeFollowups = tasks.filter((task) =>
+    ['pending', 'in_progress', 'awaiting_review'].includes(task.status) &&
+    ['implement', 'validate', 'plan'].includes(task.workflowKind ?? ''),
+  );
+  const completedFollowups = tasks.filter((task) =>
+    task.status === 'completed' &&
+    ['implement', 'validate', 'plan'].includes(task.workflowKind ?? ''),
+  );
+
+  return [
+    {
+      name: 'Strategy',
+      role: 'ceo',
+      thisWeek: completedCanary
+        ? 'The canary review is done. The next move is to convert validated findings into bounded low and medium risk work, not to keep rerunning the same review.'
+        : 'Run the first safe canary review and confirm Organism can inspect Tokens for Good without widening risk.',
+      fifteenDays: 'Move from review-only into constrained implementation with PR-only output and no deploy.',
+      oneMonth: 'Graduate the project from first-canary mode if healthy-run evidence is building.',
+      threeMonths: 'Let Tokens for Good become the first stable external proof that Organism can operate on a real repo.',
+      sixMonths: 'Use the project as the template for onboarding additional mission-aligned products.',
+    },
+    {
+      name: 'Product',
+      role: 'product-manager',
+      thisWeek: completedCanary
+        ? 'Pick the smallest user-visible improvement that came out of the canary findings and turn it into one bounded PR-sized mission.'
+        : 'Clarify the smallest user-visible improvement worth shipping after the canary review.',
+      fifteenDays: 'Sequence a few low-blast-radius product improvements into PR-sized missions.',
+      oneMonth: 'Use real run history to separate platform bugs from genuine product backlog.',
+      threeMonths: 'Turn project memory into a clearer long-horizon roadmap powered by completed agent work.',
+      sixMonths: 'Make the project a polished showcase of autonomous product iteration under policy.',
+    },
+    {
+      name: 'Engineering',
+      role: 'engineering',
+      thisWeek: activeFollowups.length > 0
+        ? `Autonomous follow-up is live: ${activeFollowups.length} bounded engineering or validation task${activeFollowups.length === 1 ? '' : 's'} are currently active or awaiting review.`
+        : completedFollowups.length > 0
+          ? `The first bounded follow-up pass completed ${completedFollowups.length} engineering or validation task${completedFollowups.length === 1 ? '' : 's'}. The next step is to choose the next approved low/medium task automatically.`
+          : 'Keep worktree isolation, verification, commit, and PR handoff clean on the first review and first implementation task.',
+      fifteenDays: 'Land one or two small PRs with clean controller-owned execution and zero recursive noise.',
+      oneMonth: 'Automate repeated repo-safe changes with less operator involvement.',
+      threeMonths: 'Treat Tokens for Good as a stable proving ground for cross-executor engineering autonomy.',
+      sixMonths: 'Reach boring reliability where routine engineering changes feel normal rather than experimental.',
+    },
+    {
+      name: 'Operations',
+      role: 'devops',
+      thisWeek: completedCanary
+        ? 'Keep deploy locked behind the healthy-run gate while the canary findings feed PR-oriented execution. The controller should prove boring reliability before deployment widens.'
+        : 'Keep deploy locked behind the healthy-run gate and make sure PR-oriented flow is stable first.',
+      fifteenDays: 'Validate deploy readiness and environment expectations without widening autonomy too early.',
+      oneMonth: 'Open deploys only after stable PR output and recovery behavior are repeatedly confirmed.',
+      threeMonths: 'Promote deployment from guarded to routine for this project if the rollout gate is genuinely earned.',
+      sixMonths: 'Use the project as the template for safe deploy governance across future client repos.',
+    },
+    {
+      name: 'Quality',
+      role: 'quality-agent',
+      thisWeek: latestReviewSummary
+        ? `Latest canary outcome: ${latestReviewSummary}`
+        : 'Verify that review tasks stay review tasks and do not collapse into shaping or recursive follow-ups.',
+      fifteenDays: 'Build confidence that the first few runs produce usable findings rather than orchestration churn.',
+      oneMonth: 'Use run history to tune guardrails and remove false positives from the review path.',
+      threeMonths: 'Make quality review feel like a reliable control plane signal instead of a fragile checkpoint.',
+      sixMonths: 'Treat quality artifacts as first-class evidence for graduation into broader autonomy.',
+    },
+    {
+      name: 'Security',
+      role: 'security-audit',
+      thisWeek: 'Keep credentials scoped, review launch posture, and make sure the project stays inside its declared policy envelope.',
+      fifteenDays: 'Validate that PR-only flow, isolated worktrees, and sensitive-action gating are holding under real use.',
+      oneMonth: 'Use Tokens for Good to prove the controller can stay least-privilege without becoming brittle.',
+      threeMonths: 'Codify the project’s secure operating pattern into reusable defaults for the rest of Organism.',
+      sixMonths: 'Make security review mostly about exceptions, not about cleaning up runtime drift.',
+    },
+  ];
+}
+
+function plansForProject(projectId: string, tasks: TaskRow[]): PerspectivePlan[] {
   if (projectId === 'synapse') return SYNAPSE_PLANS;
-  if (projectId === 'tokens-for-good') return TOKENS_FOR_GOOD_PLANS;
+  if (projectId === 'tokens-for-good') return buildTokensPlans(tasks);
   if (projectId === 'organism') return buildGenericPlans('Organism');
   return buildGenericPlans(projectId.replace(/-/g, ' '));
 }
@@ -261,12 +352,30 @@ export default function PlanPage() {
   const [project, setProject] = useState(() => getInitialSelectedProject());
   const [activePeriod, setActivePeriod] = useState<PeriodKey>('thisWeek');
   const taskUrl = project ? `/api/tasks?limit=200&project=${project}` : '/api/tasks?limit=200';
+  const reviewQueueUrl = project ? `/api/review-queue?project=${project}` : '/api/review-queue';
   const { data: tasksData, lastUpdated } = usePolling<{ tasks: TaskRow[] }>(taskUrl);
+  const { data: reviewQueueData } = usePolling<{ pending: number }>(reviewQueueUrl);
 
   const tasks = tasksData?.tasks ?? [];
-  const needsDecision = tasks.filter(t => t.status === 'awaiting_review').length;
-  const inProgress = tasks.filter(t => t.status === 'in_progress' || t.status === 'pending').length;
-  const plans = plansForProject(project || 'organism');
+  const needsDecision = reviewQueueData?.pending ?? 0;
+  const inProgress = tasks.filter(t => t.status === 'in_progress').length;
+  const plans = plansForProject(project || 'organism', tasks);
+  const latestReviewTask = tasks
+    .filter((task) =>
+      task.status === 'completed' &&
+      (
+        task.workflowKind === 'review' ||
+        isCanaryTask(task) ||
+        task.agent === 'quality-agent' ||
+        task.agent === 'codex-review'
+      ))
+    .sort((a, b) => taskTimestamp(b) - taskTimestamp(a))[0] ?? null;
+  const latestReviewSummary = latestReviewTask ? extractTaskSummary(latestReviewTask.output) : null;
+  const hasCompletedCanary = tasks.some((task) => task.status === 'completed' && isCanaryTask(task));
+  const activeAutonomousFollowups = tasks.filter((task) =>
+    ['pending', 'in_progress', 'awaiting_review'].includes(task.status) &&
+    ['implement', 'validate', 'plan'].includes(task.workflowKind ?? ''),
+  ).length;
 
   const activeColor = TIME_PERIODS.find(p => p.key === activePeriod)!.color;
   const colors = COLOR_MAP[activeColor];
@@ -292,6 +401,28 @@ export default function PlanPage() {
                 <span className="text-xs text-amber-400/70">in progress</span>
               </div>
             )}
+          </div>
+        )}
+
+        {project === 'tokens-for-good' && (
+          <div className="mb-6 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 md:p-5">
+            <div className="flex flex-wrap items-center gap-3 justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${hasCompletedCanary ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
+                <h2 className="text-sm font-semibold text-zinc-100">Latest canary outcome</h2>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
+                <span>{hasCompletedCanary ? 'Canary review completed' : 'Canary review still pending'}</span>
+                <span>•</span>
+                <span>{activeAutonomousFollowups} bounded follow-up task{activeAutonomousFollowups === 1 ? '' : 's'} active</span>
+              </div>
+            </div>
+            <p className="text-sm text-zinc-300 leading-relaxed">
+              {latestReviewSummary ?? 'No review artifact has been surfaced yet. Once the canary completes, this card will show the latest captured summary directly from the review pipeline.'}
+            </p>
+            <p className="mt-3 text-xs text-zinc-500">
+              No extra formal review should be required just to understand the canary. This panel reflects the latest review artifact the dashboard has captured for Tokens for Good.
+            </p>
           </div>
         )}
 

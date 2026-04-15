@@ -67,7 +67,7 @@ Every task is classified by `packages/core/src/risk-classifier.ts`:
 
 No new perspective goes live without shadow mode promotion:
 1. Register as `status: 'shadow'` in `knowledge/capability-registry.json`
-2. Run 10 shadow tasks (output discarded, logged to `state/shadow-runs.jsonl`)
+2. Run 10 shadow tasks (logged to `shadow_runs` and mirrored to `~/.organism/state/shadow-runs.jsonl`)
 3. Run `scripts/shadow-promote.ts` after quality threshold is met
 4. Perspective becomes `status: 'active'`
 

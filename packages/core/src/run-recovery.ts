@@ -1,6 +1,7 @@
 import { createTask, getDb, getTask, updateTaskRuntimeState } from './task-queue.js';
 import { appendRunProgress } from './run-memory.js';
-import { createArtifact, getRunSession, listRunSteps, updateRunStatus, updateRunStep } from './run-state.js';
+import { createArtifact, getRunSession, listRunSteps, mapProviderFailure, updateRunStatus, updateRunStep } from './run-state.js';
+import { resolveFollowupRoute } from './followup-routing.js';
 import type { RiskLane, WorkflowKind } from '../../shared/src/types.js';
 
 const DEFAULT_RETRY_DELAY_MS = 60_000;
@@ -39,6 +40,8 @@ interface OrphanedTaskRow {
   goal_id: string | null;
   agent: string;
   attempt_count: number | null;
+  provider_failure_kind: string | null;
+  error: string | null;
 }
 
 interface PausedReviewTaskRow {
@@ -74,7 +77,7 @@ function runningRuns(): RecoveryRow[] {
 
 function orphanedInProgressTasks(): OrphanedTaskRow[] {
   return getDb().prepare(`
-    SELECT id, goal_id, agent, attempt_count
+    SELECT id, goal_id, agent, attempt_count, provider_failure_kind, error
     FROM tasks
     WHERE status = 'in_progress'
     ORDER BY started_at ASC, created_at ASC
@@ -93,7 +96,7 @@ function staleRunningRuns(cutoff: number): RecoveryRow[] {
 
 function staleInProgressTasks(cutoff: number): OrphanedTaskRow[] {
   return getDb().prepare(`
-    SELECT id, goal_id, agent, attempt_count
+    SELECT id, goal_id, agent, attempt_count, provider_failure_kind, error
     FROM tasks
     WHERE status = 'in_progress'
       AND COALESCE(started_at, created_at) < ?
@@ -169,6 +172,112 @@ function retryClassForFailureKind(providerFailureKind: string | null): 'rate_lim
     default:
       return 'transient_error';
   }
+}
+
+function summarizeRecoveryError(existing: string | null | undefined, recoverySummary: string): string {
+  const normalizedExisting = (existing ?? '').trim();
+  if (!normalizedExisting) return recoverySummary;
+  if (normalizedExisting.includes(recoverySummary)) return normalizedExisting;
+  return `${normalizedExisting} | ${recoverySummary}`;
+}
+
+function inferFailureKindFromError(error: string | null | undefined): string | null {
+  if (!error) return null;
+  const mapped = mapProviderFailure(error);
+  return mapped.providerFailureKind === 'tool_failure' ? null : mapped.providerFailureKind;
+}
+
+type RecoveryFailureKind =
+  | 'transport_error'
+  | 'overload'
+  | 'timeout'
+  | 'rate_limit'
+  | 'tool_failure'
+  | 'auth_failure'
+  | 'missing_secret'
+  | 'policy_block';
+
+function isRetryableRecoveryFailureKind(kind: RecoveryFailureKind): kind is 'transport_error' | 'overload' | 'timeout' | 'rate_limit' {
+  return AUTO_HEAL_PROVIDER_FAILURES.has(kind);
+}
+
+function latestRecoverableFailureForGoalAgent(goalId: string | null, agent: string): string | null {
+  if (!goalId) return null;
+  const row = getDb().prepare(`
+    SELECT provider_failure_kind, detail
+    FROM run_steps
+    JOIN run_sessions ON run_sessions.id = run_steps.run_id
+    WHERE run_sessions.goal_id = ?
+      AND run_sessions.agent = ?
+      AND run_sessions.provider_failure_kind IN ('transport_error', 'overload', 'timeout', 'rate_limit')
+    ORDER BY run_sessions.updated_at DESC, run_steps.updated_at DESC
+    LIMIT 1
+  `).get(goalId, agent) as { provider_failure_kind: string | null; detail: string | null } | undefined;
+  if (row?.provider_failure_kind) return row.provider_failure_kind;
+  if (row?.detail) return inferFailureKindFromError(row.detail);
+
+  const taskRow = getDb().prepare(`
+    SELECT provider_failure_kind, error
+    FROM tasks
+    WHERE goal_id = ? AND agent = ?
+      AND provider_failure_kind IN ('transport_error', 'overload', 'timeout', 'rate_limit')
+    ORDER BY COALESCE(completed_at, created_at) DESC
+    LIMIT 1
+  `).get(goalId, agent) as { provider_failure_kind: string | null; error: string | null } | undefined;
+  if (taskRow?.provider_failure_kind) return taskRow.provider_failure_kind;
+  if (taskRow?.error) return inferFailureKindFromError(taskRow.error);
+
+  return null;
+}
+
+function resolveRecoverableFailureKind(params: {
+  goalId: string | null;
+  agent: string;
+  providerFailureKind?: string | null;
+  error?: string | null;
+  fallbackKind: 'transport_error' | 'timeout';
+}): RecoveryFailureKind {
+  const direct = params.providerFailureKind ?? null;
+  if (direct && AUTO_HEAL_PROVIDER_FAILURES.has(direct)) {
+    return direct as 'transport_error' | 'overload' | 'timeout' | 'rate_limit';
+  }
+  if (direct === 'tool_failure' || direct === 'auth_failure' || direct === 'missing_secret' || direct === 'policy_block') {
+    return direct;
+  }
+
+  const fromError = inferFailureKindFromError(params.error ?? null);
+  if (fromError && AUTO_HEAL_PROVIDER_FAILURES.has(fromError)) {
+    return fromError as 'transport_error' | 'overload' | 'timeout' | 'rate_limit';
+  }
+  if (fromError === 'tool_failure' || fromError === 'auth_failure' || fromError === 'missing_secret' || fromError === 'policy_block') {
+    return fromError;
+  }
+
+  const historical = latestRecoverableFailureForGoalAgent(params.goalId, params.agent);
+  if (historical && AUTO_HEAL_PROVIDER_FAILURES.has(historical)) {
+    return historical as 'transport_error' | 'overload' | 'timeout' | 'rate_limit';
+  }
+
+  return params.fallbackKind;
+}
+
+function resolveAutoHealFailureKind(task: PausedReviewTaskRow): 'transport_error' | 'overload' | 'timeout' | 'rate_limit' | null {
+  const direct = task.provider_failure_kind ?? null;
+  if (direct && AUTO_HEAL_PROVIDER_FAILURES.has(direct)) {
+    return direct as 'transport_error' | 'overload' | 'timeout' | 'rate_limit';
+  }
+
+  const fromError = inferFailureKindFromError(task.error);
+  if (fromError && AUTO_HEAL_PROVIDER_FAILURES.has(fromError)) {
+    return fromError as 'transport_error' | 'overload' | 'timeout' | 'rate_limit';
+  }
+
+  const historical = latestRecoverableFailureForGoalAgent(task.goal_id, task.agent);
+  if (historical && AUTO_HEAL_PROVIDER_FAILURES.has(historical)) {
+    return historical as 'transport_error' | 'overload' | 'timeout' | 'rate_limit';
+  }
+
+  return null;
 }
 
 function compactReviewFocus(description: string, maxLength = 120): string {
@@ -260,20 +369,32 @@ function createReviewFallbackTask(task: PausedReviewTaskRow): boolean {
     || originalTask?.workflowKind === 'recover'
     || originalTask?.workflowKind === 'ship';
 
-  const targetAgent = executionParent ? 'engineering' : 'quality-agent';
-  const workflowKind: WorkflowKind = executionParent
+  const requestedAgent = executionParent ? 'engineering' : 'quality-agent';
+  const requestedWorkflowKind: WorkflowKind = executionParent
     ? (originalTask?.workflowKind === 'recover' ? 'recover' : 'implement')
     : 'validate';
-  const lane: RiskLane = executionParent ? 'MEDIUM' : 'LOW';
+  const requestedLane: RiskLane = executionParent ? 'MEDIUM' : 'LOW';
   const description = executionParent
     ? `Resolve blocked ${task.agent} review for "${focus}"`
     : `Continue bounded validation for "${focus}"`;
+  const providerFailureKind = resolveAutoHealFailureKind(task) ?? 'transport_error';
+  const route = resolveFollowupRoute({
+    projectId: task.project_id,
+    preferredAgent: requestedAgent,
+    workflowKind: requestedWorkflowKind,
+    lane: requestedLane,
+    description,
+    allowReadOnlyDegrade: true,
+  });
+  if (!route) {
+    return false;
+  }
 
   if (hasEquivalentReviewFallback({
     goalId: task.goal_id,
     projectId: task.project_id,
-    agent: targetAgent,
-    workflowKind,
+    agent: route.agent,
+    workflowKind: route.workflowKind,
     description,
     sourceTaskId: task.id,
     originalTaskId: originalTask?.id ?? null,
@@ -282,8 +403,8 @@ function createReviewFallbackTask(task: PausedReviewTaskRow): boolean {
   }
 
   createTask({
-    agent: targetAgent,
-    lane,
+    agent: route.agent,
+    lane: route.lane,
     description,
     input: {
       sourceTaskId: task.id,
@@ -294,40 +415,43 @@ function createReviewFallbackTask(task: PausedReviewTaskRow): boolean {
       blockedReviewAgent: task.agent,
       sourceError: task.error ?? null,
       projectId: task.project_id,
-      execution: executionParent,
+      execution: executionParent && (route.workflowKind === 'implement' || route.workflowKind === 'recover'),
+      requestedTargetAgent: requestedAgent,
+      requestedWorkflowKind,
+      routedFollowup: route.rerouted,
     },
     parentTaskId: originalTask?.id ?? task.id,
     projectId: task.project_id,
     goalId: task.goal_id ?? undefined,
-    workflowKind,
+    workflowKind: route.workflowKind,
     sourceKind: 'agent_followup',
   });
 
-  const summary = `Rerouted paused ${task.agent} review work into a bounded ${targetAgent} ${workflowKind} task after retry exhaustion.`;
+  const summary = `Rerouted paused ${task.agent} review work into a bounded ${route.agent} ${route.workflowKind} task after retry exhaustion.`;
   updateTaskRuntimeState({
     taskId: task.id,
     status: 'failed',
     error: `${task.error ?? 'Paused review task'} | ${summary}`,
     retryClass: 'manual_pause',
     retryAt: null,
-    providerFailureKind: task.provider_failure_kind,
+    providerFailureKind,
   });
 
   const run = latestRunForGoalAgent(task.goal_id, task.agent);
   if (run && (run.status === 'paused' || run.status === 'retry_scheduled')) {
     updateRunStatus({
-      runId: run.id,
-      status: 'failed',
-      retryClass: 'manual_pause',
-      retryAt: null,
-      providerFailureKind: (task.provider_failure_kind ?? 'transport_error') as 'transport_error' | 'overload' | 'timeout' | 'rate_limit',
-      summary,
-    });
+        runId: run.id,
+        status: 'failed',
+        retryClass: 'manual_pause',
+        retryAt: null,
+        providerFailureKind,
+        summary,
+      });
   }
 
   if (task.goal_id) {
     appendRunProgress(task.goal_id, [
-      `- Rerouted exhausted **${task.agent}** review work into **${targetAgent}** (${workflowKind})`,
+      `- Rerouted exhausted **${task.agent}** review work into **${route.agent}** (${route.workflowKind})`,
     ]);
   }
 
@@ -346,7 +470,13 @@ function markRunningStepsPaused(runId: string, detail: string): void {
   }
 }
 
-function recoverTask(taskId: string, summary: string, retryAt: number | null, maxAttempts: number): 'retried' | 'paused' {
+function recoverTask(
+  taskId: string,
+  summary: string,
+  retryAt: number | null,
+  maxAttempts: number,
+  providerFailureKind: RecoveryFailureKind,
+): 'retried' | 'paused' {
   const task = getTask(taskId);
   if (!task) return retryAt ? 'retried' : 'paused';
 
@@ -354,10 +484,10 @@ function recoverTask(taskId: string, summary: string, retryAt: number | null, ma
   updateTaskRuntimeState({
     taskId,
     status: shouldRetry ? 'retry_scheduled' : 'paused',
-    error: summary,
+    error: summarizeRecoveryError(task.error, summary),
     retryClass: shouldRetry ? 'transient_error' : 'manual_pause',
     retryAt: shouldRetry ? retryAt : null,
-    providerFailureKind: shouldRetry ? 'transport_error' : 'tool_failure',
+    providerFailureKind,
   });
   return shouldRetry ? 'retried' : 'paused';
 }
@@ -380,25 +510,36 @@ export function recoverInterruptedWork(options: {
   const recoveredTaskIds = new Set<string>();
 
   for (const run of runningRuns()) {
-    const summary = `Recovered orphaned run after daemon restart for ${run.agent}. Resuming from the latest verified checkpoint.`;
     const taskRow = db.prepare(`
-      SELECT id, attempt_count
+      SELECT id, attempt_count, provider_failure_kind, error
       FROM tasks
       WHERE goal_id = ? AND agent = ? AND status = 'in_progress'
       ORDER BY started_at DESC, created_at DESC
       LIMIT 1
-    `).get(run.goal_id, run.agent) as { id: string; attempt_count: number | null } | undefined;
+    `).get(run.goal_id, run.agent) as {
+      id: string;
+      attempt_count: number | null;
+      provider_failure_kind: string | null;
+      error: string | null;
+    } | undefined;
 
-    markRunningStepsPaused(run.id, summary);
-
-    const shouldRetry = !!taskRow && (taskRow.attempt_count ?? 0) < maxAttempts;
+    const providerFailureKind = resolveRecoverableFailureKind({
+      goalId: run.goal_id,
+      agent: run.agent,
+      providerFailureKind: taskRow?.provider_failure_kind ?? null,
+      error: taskRow?.error ?? null,
+      fallbackKind: 'transport_error',
+    });
+    const shouldRetry = !!taskRow && isRetryableRecoveryFailureKind(providerFailureKind) && (taskRow.attempt_count ?? 0) < maxAttempts;
     const retryAt = shouldRetry ? now + retryDelayMs : null;
+    const summary = `Recovered orphaned run after daemon restart for ${run.agent}. ${shouldRetry ? 'Retry scheduled from the latest verified checkpoint.' : 'Manual intervention required from the latest verified checkpoint.'}`;
+    markRunningStepsPaused(run.id, summary);
     updateRunStatus({
       runId: run.id,
       status: shouldRetry ? 'retry_scheduled' : 'paused',
       retryClass: shouldRetry ? 'transient_error' : 'manual_pause',
       retryAt,
-      providerFailureKind: shouldRetry ? 'transport_error' : 'tool_failure',
+      providerFailureKind,
       summary,
     });
 
@@ -417,7 +558,7 @@ export function recoverInterruptedWork(options: {
     }
 
     if (taskRow) {
-      const outcome = recoverTask(taskRow.id, summary, retryAt, maxAttempts);
+      const outcome = recoverTask(taskRow.id, summary, retryAt, maxAttempts, providerFailureKind);
       recoveredTaskIds.add(taskRow.id);
       if (outcome === 'retried') counts.retriedTasks++;
       else counts.pausedTasks++;
@@ -428,11 +569,17 @@ export function recoverInterruptedWork(options: {
 
   for (const task of orphanedInProgressTasks()) {
     if (recoveredTaskIds.has(task.id)) continue;
-
-    const shouldRetry = (task.attempt_count ?? 0) < maxAttempts;
+    const providerFailureKind = resolveRecoverableFailureKind({
+      goalId: task.goal_id,
+      agent: task.agent,
+      providerFailureKind: task.provider_failure_kind,
+      error: task.error,
+      fallbackKind: 'transport_error',
+    });
+    const shouldRetry = isRetryableRecoveryFailureKind(providerFailureKind) && (task.attempt_count ?? 0) < maxAttempts;
     const retryAt = shouldRetry ? now + retryDelayMs : null;
     const summary = `Recovered orphaned task after daemon restart for ${task.agent}. ${shouldRetry ? 'Retry scheduled automatically.' : 'Manual intervention required after repeated attempts.'}`;
-    const outcome = recoverTask(task.id, summary, retryAt, maxAttempts);
+    const outcome = recoverTask(task.id, summary, retryAt, maxAttempts, providerFailureKind);
     if (outcome === 'retried') counts.retriedTasks++;
     else counts.pausedTasks++;
   }
@@ -461,25 +608,36 @@ export function recoverStaleWork(options: {
   const recoveredTaskIds = new Set<string>();
 
   for (const run of staleRunningRuns(cutoff)) {
-    const summary = `Recovered stale run for ${run.agent} after ${Math.round(staleAgeMs / 60_000)} minutes without a heartbeat. Scheduling a retry from the latest checkpoint.`;
     const taskRow = db.prepare(`
-      SELECT id, attempt_count
+      SELECT id, attempt_count, provider_failure_kind, error
       FROM tasks
       WHERE goal_id = ? AND agent = ? AND status = 'in_progress'
       ORDER BY started_at DESC, created_at DESC
       LIMIT 1
-    `).get(run.goal_id, run.agent) as { id: string; attempt_count: number | null } | undefined;
+    `).get(run.goal_id, run.agent) as {
+      id: string;
+      attempt_count: number | null;
+      provider_failure_kind: string | null;
+      error: string | null;
+    } | undefined;
 
-    markRunningStepsPaused(run.id, summary);
-
-    const shouldRetry = !!taskRow && (taskRow.attempt_count ?? 0) < maxAttempts;
+    const providerFailureKind = resolveRecoverableFailureKind({
+      goalId: run.goal_id,
+      agent: run.agent,
+      providerFailureKind: taskRow?.provider_failure_kind ?? null,
+      error: taskRow?.error ?? null,
+      fallbackKind: 'timeout',
+    });
+    const shouldRetry = !!taskRow && isRetryableRecoveryFailureKind(providerFailureKind) && (taskRow.attempt_count ?? 0) < maxAttempts;
     const retryAt = shouldRetry ? now + retryDelayMs : null;
+    const summary = `Recovered stale run for ${run.agent} after ${Math.round(staleAgeMs / 60_000)} minutes without a heartbeat. ${shouldRetry ? 'Scheduling a retry from the latest checkpoint.' : 'Manual intervention required from the latest checkpoint.'}`;
+    markRunningStepsPaused(run.id, summary);
     updateRunStatus({
       runId: run.id,
       status: shouldRetry ? 'retry_scheduled' : 'paused',
       retryClass: shouldRetry ? 'transient_error' : 'manual_pause',
       retryAt,
-      providerFailureKind: shouldRetry ? 'timeout' : 'tool_failure',
+      providerFailureKind,
       summary,
     });
 
@@ -498,7 +656,7 @@ export function recoverStaleWork(options: {
     }
 
     if (taskRow) {
-      const outcome = recoverTask(taskRow.id, summary, retryAt, maxAttempts);
+      const outcome = recoverTask(taskRow.id, summary, retryAt, maxAttempts, providerFailureKind);
       recoveredTaskIds.add(taskRow.id);
       if (outcome === 'retried') counts.retriedTasks++;
       else counts.pausedTasks++;
@@ -509,10 +667,17 @@ export function recoverStaleWork(options: {
 
   for (const task of staleInProgressTasks(cutoff)) {
     if (recoveredTaskIds.has(task.id)) continue;
-    const shouldRetry = (task.attempt_count ?? 0) < maxAttempts;
+    const providerFailureKind = resolveRecoverableFailureKind({
+      goalId: task.goal_id,
+      agent: task.agent,
+      providerFailureKind: task.provider_failure_kind,
+      error: task.error,
+      fallbackKind: 'timeout',
+    });
+    const shouldRetry = isRetryableRecoveryFailureKind(providerFailureKind) && (task.attempt_count ?? 0) < maxAttempts;
     const retryAt = shouldRetry ? now + retryDelayMs : null;
     const summary = `Recovered stale task for ${task.agent} after ${Math.round(staleAgeMs / 60_000)} minutes without a heartbeat. ${shouldRetry ? 'Retry scheduled automatically.' : 'Manual intervention required after repeated attempts.'}`;
-    const outcome = recoverTask(task.id, summary, retryAt, maxAttempts);
+    const outcome = recoverTask(task.id, summary, retryAt, maxAttempts, providerFailureKind);
     if (outcome === 'retried') counts.retriedTasks++;
     else counts.pausedTasks++;
   }
@@ -546,10 +711,10 @@ export function autoHealPausedReviewTasks(options: {
     lookbackCutoff: now - lookbackMs,
     cooldownCutoff: now - cooldownMs,
   })) {
-    const providerFailureKind = task.provider_failure_kind ?? 'none';
+    const providerFailureKind = resolveAutoHealFailureKind(task);
     const allowedAttempts = isReviewLaneTask(task) ? reviewMaxAttempts : maxAttempts;
     const supersedingExecution = findSupersedingExecutionTask(task);
-    if (!isReviewLaneTask(task) || !AUTO_HEAL_PROVIDER_FAILURES.has(providerFailureKind)) {
+    if (!isReviewLaneTask(task) || !providerFailureKind) {
       counts.skippedTasks += 1;
       continue;
     }
@@ -561,7 +726,7 @@ export function autoHealPausedReviewTasks(options: {
         error: `${task.error ?? 'Paused review task'} | ${summary}`,
         retryClass: 'manual_pause',
         retryAt: null,
-        providerFailureKind: providerFailureKind,
+        providerFailureKind,
       });
 
       const run = latestRunForGoalAgent(task.goal_id, task.agent);
@@ -571,7 +736,7 @@ export function autoHealPausedReviewTasks(options: {
           status: 'failed',
           retryClass: 'manual_pause',
           retryAt: null,
-          providerFailureKind: providerFailureKind as 'transport_error' | 'overload' | 'timeout' | 'rate_limit',
+          providerFailureKind,
           summary,
         });
       }
@@ -604,7 +769,7 @@ export function autoHealPausedReviewTasks(options: {
     updateTaskRuntimeState({
       taskId: task.id,
       status: 'retry_scheduled',
-      error: task.error ?? summary,
+      error: summarizeRecoveryError(task.error, summary),
       retryClass,
       retryAt,
       providerFailureKind,
@@ -617,7 +782,7 @@ export function autoHealPausedReviewTasks(options: {
         status: 'retry_scheduled',
         retryClass,
         retryAt,
-        providerFailureKind: providerFailureKind as 'transport_error' | 'overload' | 'timeout' | 'rate_limit',
+        providerFailureKind,
         summary,
       });
       counts.resumedRuns += 1;

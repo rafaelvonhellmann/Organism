@@ -10,7 +10,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Business Model Canvas definition, ROI framework decisions, unit economics. References knowledge/business-model/roi-framework.md.",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "weekly",
       "projectScope": "all",
       "knowledgeSources": [
@@ -26,7 +26,7 @@
       "reviewerLane": "LOW",
       "description": "Defines company mission, vision, OKRs, and strategic priorities",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all"
     },
@@ -40,7 +40,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Company roadmap and quarterly planning",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all",
       "knowledgeSources": [
@@ -58,7 +58,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Product requirements documents, feature specifications, user stories",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all"
     },
@@ -71,7 +71,7 @@
       "reviewerLane": "LOW",
       "description": "Feature prioritization and backlog management",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all"
     },
@@ -82,7 +82,7 @@
       "reviewerLane": "LOW",
       "description": "Autoresearch quality review — generates 3+ approaches and scores them",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": "all"
     },
@@ -93,7 +93,7 @@
       "reviewerLane": "LOW",
       "description": "Socratic interrogation of decisions — challenges assumptions and blind spots",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt4o",
       "frequencyTier": "on-demand",
       "projectScope": "all"
     },
@@ -102,9 +102,9 @@
       "owner": "codex-review",
       "collaborators": [],
       "reviewerLane": "LOW",
-      "description": "GPT-5.4 code review (high effort) — cross-model blind spot coverage",
+      "description": "OpenAI review lane for logic, security, edge cases, and performance blind-spot coverage",
       "status": "active",
-      "model": "gpt5.4",
+      "model": "gpt4o",
       "frequencyTier": "on-demand",
       "projectScope": "all"
     },
@@ -118,7 +118,7 @@
       "reviewerLane": "HIGH",
       "description": "Full 6-phase quality audit with Playwright browser verification. Fires on HIGH-risk tasks and Saturday deep audit.",
       "status": "active",
-      "model": "opus",
+      "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": "all"
     },
@@ -132,7 +132,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Code writing, bug fixes, refactoring, technical implementation",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "always-on",
       "projectScope": "all"
     },
@@ -147,7 +147,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Campaign strategy, channel selection, keyword research, positioning. Uses the 80/20 popularize playbook. References knowledge/marketing/popularize-playbook.md.",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "2-3x-week",
       "projectScope": "all",
       "knowledgeSources": [
@@ -166,7 +166,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Growth strategy using the popularize playbook: multi-channel distribution, community building, content-led SEO, sustained promotion.",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "2-3x-week",
       "projectScope": "all",
       "knowledgeSources": [
@@ -183,7 +183,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Content creation, email campaigns, social media posts",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all"
     },
@@ -196,7 +196,7 @@
       "reviewerLane": "MEDIUM",
       "description": "SEO optimization, keyword research, content strategy",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all"
     },
@@ -210,7 +210,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Blog post writing for the company blog",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "2-3x-week",
       "projectScope": "all"
     },
@@ -223,7 +223,7 @@
       "reviewerLane": "MEDIUM",
       "description": "UI/UX design, wireframes, component specifications",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "always-on",
       "projectScope": "all"
     },
@@ -236,7 +236,7 @@
       "reviewerLane": "HIGH",
       "description": "Financial tracking, budget reporting, cost optimization",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "weekly",
       "projectScope": "all"
     },
@@ -249,7 +249,7 @@
       "reviewerLane": "HIGH",
       "description": "Deployment, infrastructure management, CI/CD",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "always-on",
       "projectScope": "all"
     },
@@ -262,7 +262,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Sales outreach, lead qualification, pipeline management",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "2-3x-week",
       "projectScope": "all"
     },
@@ -273,7 +273,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Customer support, issue resolution, user communication",
       "status": "shadow",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "always-on",
       "projectScope": "all"
     },
@@ -286,7 +286,7 @@
       "reviewerLane": "HIGH",
       "description": "Security audits, OWASP scanning, vulnerability assessment",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "weekly",
       "projectScope": "all"
     },
@@ -299,7 +299,7 @@
       "reviewerLane": "HIGH",
       "description": "Legal compliance, terms of service, privacy policy",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": "all"
     },
@@ -307,14 +307,18 @@
       "id": "intel.competitive",
       "owner": "competitive-intel",
       "collaborators": [
-        "marketing-strategist"
+        "cto",
+        "product-manager"
       ],
-      "reviewerLane": "LOW",
-      "description": "Competitive intelligence, market research, competitor analysis",
+      "reviewerLane": "MEDIUM",
+      "description": "Project-scoped innovation radar: surfaces recent external changes that map to current product bottlenecks, with evidence, bounded experiments, and kill criteria.",
       "status": "shadow",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "weekly",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/innovation/innovation-radar-playbook.md"
+      ]
     },
     {
       "id": "knowledge.obsidian",
@@ -323,7 +327,7 @@
       "reviewerLane": "LOW",
       "description": "Knowledge synthesis and Obsidian vault integration",
       "status": "shadow",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "monthly",
       "projectScope": "all"
     },
@@ -336,7 +340,7 @@
       "reviewerLane": "HIGH",
       "description": "Specialist review of medical education content for Synapse. Validates grading rubrics, answer keys, and benchmark answers against college syllabi (ANZCA, ACEM, CICM). All output is HIGH risk.",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": [
         "synapse"
@@ -352,7 +356,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Technology strategy, architecture decisions, build-vs-buy, scalability assessment",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "weekly",
       "projectScope": "all"
     },
@@ -365,7 +369,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Agent lifecycle management, shadow promotion oversight, hiring strategy, team structure",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "weekly",
       "projectScope": "all"
     },
@@ -379,7 +383,7 @@
       "reviewerLane": "MEDIUM",
       "description": "User retention, onboarding, NPS, churn prevention, feedback loops",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all"
     },
@@ -393,7 +397,7 @@
       "reviewerLane": "LOW",
       "description": "Metrics, funnel analysis, cohort analysis, SQL generation, data-driven insights",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all"
     },
@@ -408,7 +412,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Press releases, media pitches, founder narrative, crisis communications",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": "all"
     },
@@ -422,7 +426,7 @@
       "reviewerLane": "MEDIUM",
       "description": "Community strategy, trust cultivation, engagement in professional networks",
       "status": "active",
-      "model": "sonnet",
+      "model": "gpt5.4",
       "frequencyTier": "2-3x-week",
       "projectScope": "all"
     }

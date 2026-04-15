@@ -69,6 +69,7 @@ const ROUTES: Route[] = [
   { patterns: [/research\s+(\S+)\s+competitors?/i], handler: 'research-competitors' },
   { patterns: [/research\s+(\S+)\s+market/i], handler: 'research-market' },
   { patterns: [/research\s+(\S+)\s+(.+)/i], handler: 'research-topic' },
+  { patterns: [/^innovation\s+radar(?:\s+(\S+))?$/i, /^radar(?:\s+(\S+))?$/i], handler: 'innovation-radar' },
 
   // Perspective review commands (must precede generic review routes)
   { patterns: [/perspectives?\s+(\S+)/i, /perspective\s+review\s+(\S+)/i, /review\s+(\S+)\s+perspectives?/i], handler: 'perspective-review' },
@@ -562,23 +563,73 @@ async function handleSubmitTask(input: string): Promise<void> {
     { description: input, input: { userCommand: input } },
     {},
   );
+  await waitForTaskResult(taskId, dispatchPendingTasks, getTask, getSystemSpend);
+}
 
+async function handleInnovationRadar(projectName?: string): Promise<void> {
+  const projectId = (projectName?.trim().toLowerCase() || 'organism').replace(/\s+/g, '-');
+  console.log(`\n  Submitting innovation radar for ${projectId}...\n`);
+
+  await ensureDB();
+  await ensureStixDB();
+
+  const { submitTask } = await import('../packages/core/src/orchestrator.js');
+  const { loadProjectPolicy } = await import('../packages/core/src/project-policy.js');
+  const { dispatchPendingTasks } = await import('../packages/core/src/agent-runner.js');
+  const { getTask } = await import('../packages/core/src/task-queue.js');
+  const { getSystemSpend } = await import('../packages/core/src/budget.js');
+  const policy = loadProjectPolicy(projectId);
+
+  const taskId = await submitTask({
+    title: `Innovation radar for ${projectId}`,
+    description: policy.innovationRadar.description,
+    input: {
+      projectId,
+      project: projectId,
+      triggeredBy: 'cli',
+      innovationRadar: true,
+      shadowMode: policy.innovationRadar.shadow,
+      focusAreas: policy.innovationRadar.focusAreas,
+      maxOpportunities: policy.innovationRadar.maxOpportunities,
+    },
+    projectId,
+    workflowKind: 'review',
+    sourceKind: 'user',
+  }, {
+    agent: policy.innovationRadar.agent,
+    projectId,
+    workflowKind: 'review',
+    sourceKind: 'user',
+  });
+
+  await waitForTaskResult(taskId, dispatchPendingTasks, getTask, getSystemSpend);
+}
+
+async function waitForTaskResult(
+  taskId: string,
+  dispatchPendingTasks: () => Promise<number>,
+  getTask: (taskId: string) => Promise<unknown> | unknown,
+  getSystemSpend: () => Promise<number> | number,
+): Promise<void> {
   console.log(`  Task created: ${taskId.slice(0, 8)}`);
 
-  // Dispatch loop — keep running until this task completes or max rounds
   const spinner = startSpinner('Processing...');
   const maxRounds = 30;
   let round = 0;
 
   while (round < maxRounds) {
     round++;
-    const task = getTask(taskId);
+    const task = await getTask(taskId) as {
+      status?: string;
+      output?: unknown;
+      error?: string | null;
+      costUsd?: number | null;
+    } | null;
     if (!task) break;
 
     if (task.status === 'completed' || task.status === 'failed' || task.status === 'dead_letter') {
       spinner.stop(`${task.status === 'completed' ? 'Done' : 'Task ' + task.status}`);
 
-      // Print output
       if (task.output) {
         const out = task.output as Record<string, unknown>;
         const text = (out.text as string) ?? (out.implementation as string) ?? (out.report as string) ?? (out.summary as string) ?? '';
@@ -595,9 +646,9 @@ async function handleSubmitTask(input: string): Promise<void> {
         console.log(`\n  Error: ${task.error ?? 'unknown'}`);
       }
 
-      console.log(`\n  Cost: $${(task.costUsd ?? 0).toFixed(4)} | Total spend: $${getSystemSpend().toFixed(4)}`);
+      const totalSpend = await Promise.resolve(getSystemSpend());
+      console.log(`\n  Cost: $${(task.costUsd ?? 0).toFixed(4)} | Total spend: $${totalSpend.toFixed(4)}`);
 
-      // Sync to Turso so dashboard updates immediately
       try { const { syncToTurso } = await import('../packages/core/src/turso-sync.js'); await syncToTurso(); } catch { /* non-critical */ }
       return;
     }
@@ -610,9 +661,9 @@ async function handleSubmitTask(input: string): Promise<void> {
   spinner.stop('Timed out');
   console.log(`\n  Task ${taskId.slice(0, 8)} did not complete in ${maxRounds} rounds.`);
   console.log('  It may still be processing. Run: npm run organism "status"');
-  console.log(`\n  Spend so far: $${getSystemSpend().toFixed(4)}\n`);
+  const totalSpend = await Promise.resolve(getSystemSpend());
+  console.log(`\n  Spend so far: $${totalSpend.toFixed(4)}\n`);
 
-  // Sync to Turso so dashboard updates immediately
   try { const { syncToTurso } = await import('../packages/core/src/turso-sync.js'); await syncToTurso(); } catch { /* non-critical */ }
 }
 
@@ -755,6 +806,10 @@ async function main(): Promise<void> {
         await handleResearch(m[1] ?? '', m[2] ?? 'general');
         break;
       }
+      case 'innovation-radar': {
+        await handleInnovationRadar(matchRoute(input).match[1] ?? 'organism');
+        break;
+      }
       case 'review-synapse': await handleReviewSynapse(); break;
       case 'review-tokens-for-good': await handleReviewTokensForGood(); break;
       case 'palate-add': {
@@ -810,6 +865,7 @@ function printUsage(): void {
   console.log('    research <project> competitors  Competitor analysis → vault');
   console.log('    research <project> market       Market landscape → vault');
   console.log('    research <project> <topic>      Custom research → vault');
+  console.log('    innovation radar [project]      Run the shadow innovation radar for a project');
   console.log('');
   console.log('  Evolution:');
   console.log('    fitness <project>             Show Darwinian perspective fitness scores');

@@ -5,7 +5,10 @@ import { useSearchParams } from 'next/navigation';
 import { Header } from '@/components/header';
 import { StatusBadge } from '@/components/status-badge';
 import { renderMarkdown, cleanForDisplay } from '@/lib/markdown';
+import { INNOVATION_RADAR_REVIEW_OPTIONS, composeInnovationRadarReason, type InnovationRadarFeedbackCode } from '@/lib/innovation-radar-feedback';
 import { getInitialSelectedProject } from '@/lib/selected-project';
+import { submitDashboardAction } from '@/lib/dashboard-action-client';
+import { loadLocalHealthBridge, type LocalHealthBridgeSnapshot } from '@/lib/local-bridge-client';
 import { usePolling } from '@/hooks/use-polling';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard';
 import Link from 'next/link';
@@ -60,6 +63,7 @@ const AGENT_ROLES: Record<string, string> = {
   'customer-success': 'Success',
   'hr': 'HR',
   'design': 'Design',
+  'competitive-intel': 'Innovation Radar',
 };
 
 function agentRole(agent: string): string {
@@ -330,6 +334,10 @@ function formatTimestamp(ms: number | null): string {
   });
 }
 
+function isInnovationRadarTask(task: QueueTask | null): boolean {
+  return task?.agent === 'competitive-intel';
+}
+
 function duration(start: number | null, end: number | null): string {
   if (!start || !end) return '';
   const s = Math.floor((end - start) / 1000);
@@ -377,7 +385,8 @@ function ReviewQueueInner() {
   const [deciding, setDeciding] = useState(false);
   const [showReplyForm, setShowReplyForm] = useState(false);
   const [replyText, setReplyText] = useState('');
-  const [sessionStats, setSessionStats] = useState({ approved: 0, replied: 0, dismissed: 0, skipped: 0 });
+  const [radarNote, setRadarNote] = useState('');
+  const [sessionStats, setSessionStats] = useState({ approved: 0, replied: 0, rejected: 0, dismissed: 0, skipped: 0 });
   const [error, setError] = useState<string | null>(null);
   const replyRef = useRef<HTMLTextAreaElement>(null);
 
@@ -390,6 +399,23 @@ function ReviewQueueInner() {
     taskCounts: Record<string, number>;
     pendingActions: number;
   }>('/api/health');
+  const [localHealth, setLocalHealth] = useState<LocalHealthBridgeSnapshot | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    const poll = async () => {
+      const snapshot = await loadLocalHealthBridge(project || undefined);
+      if (mounted) setLocalHealth(snapshot);
+    };
+    void poll();
+    const id = setInterval(() => { void poll(); }, 10_000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, [project]);
+
+  const effectiveHealth = localHealth ?? health ?? null;
 
   // Browser notification tracking
   const prevQueueLenRef = useRef(0);
@@ -459,6 +485,7 @@ function ReviewQueueInner() {
     } else {
       currentTaskIdRef.current = null;
     }
+    setRadarNote('');
   }, [queue, currentIndex]);
 
   // Focus textarea when reply form opens
@@ -506,6 +533,8 @@ function ReviewQueueInner() {
         setSessionStats(s => ({ ...s, approved: s.approved + 1 }));
       } else if (decision === 'reply') {
         setSessionStats(s => ({ ...s, replied: s.replied + 1 }));
+      } else if (decision === 'rejected') {
+        setSessionStats(s => ({ ...s, rejected: s.rejected + 1 }));
       } else if (decision === 'dismissed') {
         setSessionStats(s => ({ ...s, dismissed: s.dismissed + 1 }));
       }
@@ -514,6 +543,7 @@ function ReviewQueueInner() {
       if (decision === 'reply') {
         setShowReplyForm(false);
         setReplyText('');
+        setRadarNote('');
         setShowFullText(false);
         // Move to next item
         if (currentIndex < queue.length - 1) {
@@ -534,6 +564,7 @@ function ReviewQueueInner() {
 
         setShowReplyForm(false);
         setReplyText('');
+        setRadarNote('');
         setShowFullText(false);
 
         // Notify sidebar to update count
@@ -548,6 +579,9 @@ function ReviewQueueInner() {
 
   function handleApprove() { postDecision('approved'); }
   function handleDismiss() { postDecision('dismissed'); }
+  function handleRadarFeedback(code: Exclude<InnovationRadarFeedbackCode, 'APPROVED'>) {
+    postDecision('rejected', composeInnovationRadarReason(code, radarNote));
+  }
 
   function handleReply() {
     if (!showReplyForm) {
@@ -564,22 +598,18 @@ function ReviewQueueInner() {
       return;
     }
     try {
-      await fetch('/api/actions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'review', payload: { project } }),
-      });
-    } catch { /* silent */ }
+      await submitDashboardAction({ action: 'review', payload: { project } });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create review action');
+    }
   }, [project]);
 
   const handleDispatch = useCallback(async () => {
     try {
-      await fetch('/api/actions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'execute' }),
-      });
-    } catch { /* silent */ }
+      await submitDashboardAction({ action: 'execute' });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create execute action');
+    }
   }, []);
 
   async function handleBatchApprove() {
@@ -612,6 +642,7 @@ function ReviewQueueInner() {
     setCurrentIndex(0);
     setShowReplyForm(false);
     setReplyText('');
+    setRadarNote('');
     setShowFullText(false);
     setDeciding(false);
     notifyDecision();
@@ -621,6 +652,7 @@ function ReviewQueueInner() {
     setSessionStats(s => ({ ...s, skipped: s.skipped + 1 }));
     setShowReplyForm(false);
     setReplyText('');
+    setRadarNote('');
     setShowFullText(false);
     if (currentIndex < queue.length - 1) {
       setCurrentIndex(currentIndex + 1);
@@ -652,8 +684,9 @@ function ReviewQueueInner() {
   const condensed = assessment ? condenseAssessment(assessment) : null;
   const whyMatters = assessment ? extractWhyItMatters(assessment) : null;
   const urgency = currentTask ? urgencyLabel(currentTask.lane) : null;
+  const innovationRadar = isInnovationRadarTask(currentTask);
   const queueEmpty = !loading && queue.length === 0;
-  const sessionTotal = sessionStats.approved + sessionStats.replied + sessionStats.dismissed + sessionStats.skipped;
+  const sessionTotal = sessionStats.approved + sessionStats.replied + sessionStats.rejected + sessionStats.dismissed + sessionStats.skipped;
 
   // Inbox-specific keyboard shortcuts via global hook
   const inboxHandlers = useMemo(() => ({
@@ -682,19 +715,19 @@ function ReviewQueueInner() {
 
       <div className="flex flex-col min-h-[calc(100vh-3.5rem)] md:min-h-screen">
         {/* Health status bar */}
-        {health && (
+        {effectiveHealth && (
           <div className="bg-zinc-900 border-b border-zinc-800 px-4 py-2">
             <div className="max-w-3xl mx-auto flex items-center gap-4 text-xs">
               <div className="flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full ${health.daemonAlive ? 'bg-green-500' : 'bg-red-500'}`} />
-                <span className="text-zinc-400">{health.daemonAlive ? 'Daemon active' : 'Daemon inactive'}</span>
+                <span className={`w-2 h-2 rounded-full ${effectiveHealth.daemonAlive ? 'bg-green-500' : 'bg-red-500'}`} />
+                <span className="text-zinc-400">{effectiveHealth.daemonAlive ? 'Daemon active' : 'Daemon inactive'}</span>
               </div>
-              {health.lastActivity && (
+              {effectiveHealth.lastActivity && (
                 <span className="text-zinc-600">
-                  Last activity: {health.minutesSinceActivity < 1 ? 'just now' : `${health.minutesSinceActivity}m ago`}
+                  Last activity: {effectiveHealth.minutesSinceActivity < 1 ? 'just now' : `${effectiveHealth.minutesSinceActivity}m ago`}
                 </span>
               )}
-              <span className="text-zinc-600">Today: <span className="text-amber-400">${health.todaySpend.toFixed(2)}</span></span>
+              <span className="text-zinc-600">Today: <span className="text-amber-400">${effectiveHealth.todaySpend.toFixed(2)}</span></span>
               <div className="ml-auto flex items-center gap-2">
                 <button
                   onClick={handleRunReview}
@@ -764,7 +797,7 @@ function ReviewQueueInner() {
               </div>
             )}
 
-            {/* LOW/MEDIUM items auto-ship — only HIGH items appear here */}
+            {/* LOW/MEDIUM items auto-ship by default; competitive-intel is the curated exception */}
 
             {/* Loading state */}
             {loading && (
@@ -785,6 +818,7 @@ function ReviewQueueInner() {
                     <p className="text-zinc-600">
                       {sessionStats.approved > 0 && <span className="text-green-400">{sessionStats.approved} approved</span>}
                       {sessionStats.replied > 0 && <><span className="text-zinc-600"> &middot; </span><span className="text-blue-400">{sessionStats.replied} replied</span></>}
+                      {sessionStats.rejected > 0 && <><span className="text-zinc-600"> &middot; </span><span className="text-amber-400">{sessionStats.rejected} rejected</span></>}
                       {sessionStats.dismissed > 0 && <><span className="text-zinc-600"> &middot; </span><span className="text-zinc-400">{sessionStats.dismissed} dismissed</span></>}
                       {sessionStats.skipped > 0 && <><span className="text-zinc-600"> &middot; </span><span className="text-zinc-400">{sessionStats.skipped} skipped</span></>}
                     </p>
@@ -963,6 +997,39 @@ function ReviewQueueInner() {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+
+            {currentTask && innovationRadar && !showReplyForm && (
+              <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div>
+                    <p className="text-sm font-semibold text-amber-300">Innovation Radar Feedback</p>
+                    <p className="text-xs text-zinc-400 mt-1">
+                      Use a structured rejection code so future radar runs tighten the right filter instead of guessing.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                  {INNOVATION_RADAR_REVIEW_OPTIONS.map((option) => (
+                    <button
+                      key={option.code}
+                      onClick={() => handleRadarFeedback(option.code)}
+                      disabled={deciding}
+                      className="rounded-lg border border-amber-500/20 bg-zinc-900/70 px-3 py-2 text-left hover:border-amber-400/40 hover:bg-zinc-900 transition-colors disabled:opacity-50"
+                    >
+                      <div className="text-sm font-medium text-amber-300">{option.label}</div>
+                      <div className="mt-1 text-[11px] leading-4 text-zinc-500">{option.hint}</div>
+                    </button>
+                  ))}
+                </div>
+                <textarea
+                  value={radarNote}
+                  onChange={e => setRadarNote(e.target.value)}
+                  placeholder="Optional note or trigger condition. Example: Revisit after pilot demand is validated."
+                  className="mt-3 w-full resize-none rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-amber-500"
+                  rows={2}
+                />
               </div>
             )}
 

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from '@/components/header';
 import { cleanForDisplay } from '@/lib/markdown';
 import { getInitialSelectedProject } from '@/lib/selected-project';
+import { loadDashboardActions, submitDashboardAction } from '@/lib/dashboard-action-client';
 
 interface Action {
   id: number;
@@ -59,12 +60,8 @@ export default function CommandPage() {
 
   const fetchActions = useCallback(async () => {
     try {
-      const url = project ? `/api/actions?project=${project}` : '/api/actions';
-      const res = await fetch(url, { cache: 'no-store' });
-      if (res.ok) {
-        const data = await res.json();
-        setActions(data.actions ?? []);
-      }
+      const data = await loadDashboardActions(project || undefined);
+      setActions(data);
     } catch {}
   }, [project]);
 
@@ -98,23 +95,28 @@ export default function CommandPage() {
     setSending(true);
     setError(null);
     try {
-      const res = await fetch('/api/actions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'command',
-          payload: {
-            command: cmd.trim(),
-            project,
-            workflowKind: options?.workflowKind,
-            canaryPreset: options?.canaryPreset === true,
-          },
-        }),
+      const payload = {
+        command: cmd.trim(),
+        project,
+        workflowKind: options?.workflowKind,
+        canaryPreset: options?.canaryPreset === true,
+      };
+      const result = await submitDashboardAction({
+        action: 'command',
+        payload,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: 'Failed to create action' }));
-        throw new Error(body.error ?? 'Failed to create action');
-      }
+      setActions((current) => [
+        ...current,
+        {
+          id: -Date.now(),
+          action: 'command',
+          payload: JSON.stringify(payload),
+          status: 'pending',
+          result: result.via === 'local' ? 'Queued via local daemon bridge' : null,
+          created_at: Date.now(),
+          completed_at: null,
+        },
+      ]);
       setCommand('');
       setTimeout(fetchActions, 500);
     } catch (err) {
@@ -131,15 +133,23 @@ export default function CommandPage() {
     setSending(true);
     setError(null);
     try {
-      const res = await fetch('/api/actions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'review', payload: { project, canaryPreset: true } }),
+      const payload = { project, canaryPreset: true };
+      const result = await submitDashboardAction({
+        action: 'review',
+        payload,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: 'Failed to create review action' }));
-        throw new Error(body.error ?? 'Failed to create review action');
-      }
+      setActions((current) => [
+        ...current,
+        {
+          id: -Date.now(),
+          action: 'review',
+          payload: JSON.stringify(payload),
+          status: 'pending',
+          result: result.via === 'local' ? 'Queued via local daemon bridge' : null,
+          created_at: Date.now(),
+          completed_at: null,
+        },
+      ]);
       setTimeout(fetchActions, 500);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit review');

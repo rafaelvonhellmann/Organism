@@ -70,7 +70,7 @@ export default class QualityGuardianAgent extends BaseAgent {
   constructor() {
     super({
       name: 'quality-guardian',
-      model: 'sonnet',
+      model: 'gpt5.4',
       capability: {
         id: 'quality.deep_audit',
         owner: 'quality-guardian',
@@ -78,7 +78,7 @@ export default class QualityGuardianAgent extends BaseAgent {
         reviewerLane: 'HIGH',
         description: '6-phase deep audit — Platform Health Score, root cause analysis, auto-fix proposals',
         status: 'shadow',
-        model: 'sonnet',
+        model: 'gpt5.4',
         frequencyTier: 'weekly',
         projectScope: 'all',
       },
@@ -112,7 +112,7 @@ ${JSON.stringify({ ...input, output: undefined })}
 
 Apply the 6-phase audit. Produce the structured Quality Guardian Report. Begin directly with the report.`;
 
-    const result = await callModelUltra(prompt, 'sonnet', GUARDIAN_SYSTEM);
+    const result = await callModelUltra(prompt, 'opus', GUARDIAN_SYSTEM);
 
     const healthScoreMatch = result.text.match(/Platform Health Score:\s*(\d+)/);
     const healthScore = healthScoreMatch ? parseInt(healthScoreMatch[1], 10) : null;

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 
 export function usePolling<T>(
   url: string,
-  intervalMs: number = 60_000,
+  intervalMs: number = 10_000,
 ): { data: T | null; loading: boolean; error: string | null; refresh: () => void; lastUpdated: Date | null } {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);

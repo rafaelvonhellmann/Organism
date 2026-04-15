@@ -115,9 +115,12 @@ export async function processDashboardActions(): Promise<void> {
           const project = payload.project.trim();
           const { loadProjectPolicy } = await import('./project-policy.js');
           const policy = loadProjectPolicy(project);
+          const innovationRadarCommand = /^\s*(innovation\s+radar|radar)\b/i.test(cmd);
           const inferredReview = /^\s*(canary\s+)?review\b/i.test(cmd);
           const workflowKind = typeof payload.workflowKind === 'string'
             ? payload.workflowKind
+            : innovationRadarCommand
+              ? 'review'
             : inferredReview
               ? 'review'
               : undefined;
@@ -130,12 +133,17 @@ export async function processDashboardActions(): Promise<void> {
           const { submitTask } = await import('./orchestrator.js');
           const { dispatchPendingTasks } = await import('./agent-runner.js');
           await submitTask({
-            description: cmd,
+            description: innovationRadarCommand ? policy.innovationRadar.description : cmd,
             input: {
               projectId: project,
+              project,
               triggeredBy: 'dashboard-command',
               canaryPreset: payload.canaryPreset === true,
               medicalReadOnlyCanary,
+              innovationRadar: innovationRadarCommand,
+              shadowMode: innovationRadarCommand ? policy.innovationRadar.shadow : undefined,
+              focusAreas: innovationRadarCommand ? policy.innovationRadar.focusAreas : undefined,
+              maxOpportunities: innovationRadarCommand ? policy.innovationRadar.maxOpportunities : undefined,
               followupPolicy: medicalReadOnlyCanary
                 ? {
                     boundedLane: 'medical_read_only',
@@ -151,7 +159,14 @@ export async function processDashboardActions(): Promise<void> {
             projectId: project,
             workflowKind,
             sourceKind: 'dashboard',
-          }, workflowKind === 'review'
+          }, innovationRadarCommand
+            ? {
+                agent: policy.innovationRadar.agent,
+                projectId: project,
+                workflowKind,
+                sourceKind: 'dashboard',
+              }
+            : workflowKind === 'review'
             ? {
                 agent: 'quality-agent',
                 projectId: project,

@@ -1,7 +1,11 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import {
   resolveModelBackend,
+  resolveAdaptiveModelTimeout,
   shouldFallbackFromAnthropicToOpenAi,
   shouldFallbackFromClaudeCliToApi,
   shouldFallbackFromCodexCli,
@@ -9,6 +13,8 @@ import {
 
 const ORIGINAL_MODEL_BACKEND = process.env.ORGANISM_MODEL_BACKEND;
 const ORIGINAL_USE_API_DIRECT = process.env.USE_API_DIRECT;
+const ORIGINAL_LEGACY_FALLBACK = process.env.ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK;
+const BACKEND_HEALTH_PATH = join(homedir(), '.organism', 'state', 'model-backend-health.json');
 
 afterEach(() => {
   if (ORIGINAL_MODEL_BACKEND === undefined) {
@@ -21,6 +27,16 @@ afterEach(() => {
     delete process.env.USE_API_DIRECT;
   } else {
     process.env.USE_API_DIRECT = ORIGINAL_USE_API_DIRECT;
+  }
+
+  if (ORIGINAL_LEGACY_FALLBACK === undefined) {
+    delete process.env.ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK;
+  } else {
+    process.env.ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK = ORIGINAL_LEGACY_FALLBACK;
+  }
+
+  if (existsSync(BACKEND_HEALTH_PATH)) {
+    rmSync(BACKEND_HEALTH_PATH, { force: true });
   }
 });
 
@@ -35,46 +51,46 @@ describe('model backend resolution', () => {
     assert.equal(result.selected, 'anthropic-api');
   });
 
-  it('falls back to claude-cli first in auto mode for backward compatibility', () => {
+  it('prefers codex-cli first in auto mode', () => {
     const result = resolveModelBackend('auto', {
       claudeCli: true,
       anthropicApi: true,
       codexCli: true,
       openaiApi: true,
     });
-    assert.equal(result.selected, 'claude-cli');
-    assert.equal(result.capabilities.webSearch, true);
-  });
-
-  it('uses anthropic-api automatically when claude cli is unavailable', () => {
-    const result = resolveModelBackend('auto', {
-      claudeCli: false,
-      anthropicApi: true,
-      codexCli: true,
-      openaiApi: true,
-    });
-    assert.equal(result.selected, 'anthropic-api');
-    assert.equal(result.capabilities.webSearch, false);
-  });
-
-  it('uses codex-cli automatically when anthropic backends are unavailable', () => {
-    const result = resolveModelBackend('auto', {
-      claudeCli: false,
-      anthropicApi: false,
-      codexCli: true,
-      openaiApi: true,
-    });
     assert.equal(result.selected, 'codex-cli');
+    assert.equal(result.capabilities.webSearch, false);
   });
 
   it('uses openai-api automatically when codex cli is unavailable', () => {
     const result = resolveModelBackend('auto', {
-      claudeCli: false,
-      anthropicApi: false,
+      claudeCli: true,
+      anthropicApi: true,
       codexCli: false,
       openaiApi: true,
     });
     assert.equal(result.selected, 'openai-api');
+    assert.equal(result.capabilities.webSearch, false);
+  });
+
+  it('does not auto-fall back to Anthropic unless legacy fallback is enabled', () => {
+    assert.throws(() => resolveModelBackend('auto', {
+      claudeCli: true,
+      anthropicApi: true,
+      codexCli: false,
+      openaiApi: false,
+    }), /No supported OpenAI backend found/);
+  });
+
+  it('uses legacy Anthropic backends in auto mode only when explicitly enabled', () => {
+    process.env.ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK = 'true';
+    const result = resolveModelBackend('auto', {
+      claudeCli: true,
+      anthropicApi: true,
+      codexCli: false,
+      openaiApi: false,
+    });
+    assert.equal(result.selected, 'claude-cli');
   });
 
   it('honors ORGANISM_MODEL_BACKEND from the environment', () => {
@@ -88,7 +104,7 @@ describe('model backend resolution', () => {
     assert.equal(result.selected, 'anthropic-api');
   });
 
-  it('maps legacy USE_API_DIRECT to anthropic-api', () => {
+  it('maps legacy USE_API_DIRECT to openai-api', () => {
     delete process.env.ORGANISM_MODEL_BACKEND;
     process.env.USE_API_DIRECT = 'true';
     const result = resolveModelBackend(undefined, {
@@ -97,7 +113,7 @@ describe('model backend resolution', () => {
       codexCli: true,
       openaiApi: true,
     });
-    assert.equal(result.selected, 'anthropic-api');
+    assert.equal(result.selected, 'openai-api');
   });
 
   it('auto-falls back to the Anthropic API for exhausted claude-cli credit', () => {
@@ -109,7 +125,7 @@ describe('model backend resolution', () => {
 
   it('does not treat unrelated claude-cli errors as automatic API fallback triggers', () => {
     assert.equal(
-      shouldFallbackFromClaudeCliToApi(new Error('claude CLI spawn error: executable missing')),
+      shouldFallbackFromClaudeCliToApi(new Error('claude CLI returned malformed JSON response')),
       false,
     );
   });
@@ -121,10 +137,34 @@ describe('model backend resolution', () => {
     );
   });
 
+  it('falls back from anthropic to the next backend for transport failures', () => {
+    assert.equal(
+      shouldFallbackFromAnthropicToOpenAi(new Error('Connection error while reaching Anthropic API')),
+      true,
+    );
+  });
+
   it('falls back from codex cli for auth and quota failures', () => {
     assert.equal(
       shouldFallbackFromCodexCli(new Error('codex CLI exited 1: 401 unauthorized')),
       true,
     );
+  });
+
+  it('falls back from codex cli for transport failures', () => {
+    assert.equal(
+      shouldFallbackFromCodexCli(new Error('codex CLI exited 1: fetch failed')),
+      true,
+    );
+  });
+
+  it('extends adaptive model timeout for large autonomy-cycle prompts', () => {
+    const timeoutMs = resolveAdaptiveModelTimeout(
+      'Autonomy cycle review for tokens-for-good.\n'.repeat(800),
+      'System prompt for project review',
+      8192,
+    );
+
+    assert.equal(timeoutMs, 35 * 60 * 1000);
   });
 });

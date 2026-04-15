@@ -6,6 +6,12 @@ import { SpendBar } from '@/components/spend-bar';
 import { SparkChart } from '@/components/spark-chart';
 import { TimeRangeSelector, RANGES } from '@/components/time-range';
 import { getInitialSelectedProject } from '@/lib/selected-project';
+import {
+  loadLocalHealthBridge,
+  loadLocalHistoryBridge,
+  type LocalHealthBridgeSnapshot,
+  type LocalHistoryBridgeSnapshot,
+} from '@/lib/local-bridge-client';
 import { usePolling } from '@/hooks/use-polling';
 
 // ── Types ──────────────────────────────────────────────────────
@@ -289,8 +295,32 @@ export default function SystemPage() {
   const { data: history, lastUpdated: historyUpdated } = usePolling<{ tasks: HistoryTask[] }>('/api/history');
   const { data: health } = usePolling<HealthData>('/api/health');
   const { logs, newIds, polling: logsPolling } = useLiveLogs();
+  const [localHealth, setLocalHealth] = useState<LocalHealthBridgeSnapshot | null>(null);
+  const [localHistory, setLocalHistory] = useState<LocalHistoryBridgeSnapshot | null>(null);
 
-  const alerts = computeAlerts(budget, health, history);
+  useEffect(() => {
+    let mounted = true;
+    const poll = async () => {
+      const [healthSnapshot, historySnapshot] = await Promise.all([
+        loadLocalHealthBridge(project || undefined),
+        loadLocalHistoryBridge(project || undefined),
+      ]);
+      if (!mounted) return;
+      setLocalHealth(healthSnapshot);
+      setLocalHistory(historySnapshot);
+    };
+    void poll();
+    const id = setInterval(() => { void poll(); }, 10_000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, [project]);
+
+  const effectiveHealth = localHealth ?? health ?? null;
+  const effectiveHistory = localHistory ? { tasks: localHistory.tasks } : history;
+
+  const alerts = computeAlerts(budget, effectiveHealth, effectiveHistory);
   const logsUpdated = logs.length > 0 ? new Date(logs[0].ts) : null;
   const lastUpdated = { budget: budgetUpdated, agents: agentsUpdated, knowledge: upstreamUpdated ?? palateUpdated, logs: logsUpdated ?? historyUpdated }[tab];
 

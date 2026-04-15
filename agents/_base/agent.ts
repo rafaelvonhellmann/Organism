@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { readRecentForAgent } from '../../packages/core/src/audit.js';
 import { assertBudget, recordSpend, estimateCost, getAgentSpend, checkOverspend, getPerTaskHardCap } from '../../packages/core/src/budget.js';
-import { checkoutTask, completeTask, failTask, awaitReviewTask, getPendingTasks, createTask, getSiblingTaskOutputs, updateTaskRuntimeState } from '../../packages/core/src/task-queue.js';
+import { checkoutTask, completeTask, awaitReviewTask, getPendingTasks, createTask, getSiblingTaskOutputs, isTaskShadowMode, recordShadowRun, updateTaskRuntimeState } from '../../packages/core/src/task-queue.js';
 import { writeAudit } from '../../packages/core/src/audit.js';
 import { evaluateG1 } from '../../packages/core/src/gates.js';
 import { Task, AgentCapability } from '../../packages/shared/src/types.js';
@@ -50,6 +50,13 @@ export abstract class BaseAgent {
   protected crossAgentMemory: CrossAgentResult[] = [];
   protected relatedFindings: Array<{ agent: string; description: string; outputSummary: string }> = [];
   private heartbeatInterval?: ReturnType<typeof setInterval>;
+  private activeTaskHeartbeat: {
+    taskId: string;
+    runStepId: string;
+    runId: string;
+    description: string;
+    startedAt: number;
+  } | null = null;
 
   constructor(config: AgentConfig) {
     let runtimeConfig = config;
@@ -172,7 +179,7 @@ export abstract class BaseAgent {
     console.log(`[${this.name}] Starting. Model: ${this.model}`);
 
     // Start heartbeat
-    this.heartbeatInterval = setInterval(() => this.heartbeat(), 5 * 60 * 1000);
+    this.heartbeatInterval = setInterval(() => this.heartbeat(), 30 * 1000);
 
     try {
       await this.processPendingTasks();
@@ -189,7 +196,8 @@ export abstract class BaseAgent {
     }
 
     for (const task of pending) {
-      if (!canAgentExecute(this.name, task.projectId)) {
+      const taskShadowMode = isTaskShadowMode(task);
+      if (!canAgentExecute(this.name, task.projectId, { includeShadow: taskShadowMode })) {
         updateTaskRuntimeState({
           taskId: task.id,
           status: 'paused',
@@ -210,6 +218,7 @@ export abstract class BaseAgent {
       return;
     }
     const attemptCount = checked.attemptCount ?? 1;
+    const taskShadowMode = isTaskShadowMode(checked);
 
     const startedAt = Date.now();
     const maxRunTime = this.config.maxRunTimeMs ?? 30 * 60 * 1000;
@@ -267,6 +276,13 @@ export abstract class BaseAgent {
         detail: task.description.slice(0, 240),
       });
       updateRunStep({ stepId: runStep.id, status: 'running' });
+      this.activeTaskHeartbeat = {
+        taskId: task.id,
+        runStepId: runStep.id,
+        runId: run.id,
+        description: task.description,
+        startedAt,
+      };
     }
 
     // Budget guard
@@ -301,6 +317,7 @@ export abstract class BaseAgent {
         retryClass: 'budget_pause',
         providerFailureKind: 'policy_block',
       });
+      this.activeTaskHeartbeat = null;
       return;
     }
 
@@ -333,6 +350,7 @@ export abstract class BaseAgent {
         retryAt: Date.now() + 10 * 60 * 1000,
         providerFailureKind: 'timeout',
       });
+      this.activeTaskHeartbeat = null;
     }, maxRunTime);
 
     // Cross-agent memory: pull relevant findings from other agents before executing
@@ -443,7 +461,7 @@ export abstract class BaseAgent {
         'legal', 'security-audit',
       ];
       const isPipelineInternal = PIPELINE_INTERNAL_AGENTS.includes(this.name);
-      if (task.lane === 'HIGH' && !isPipelineInternal) {
+      if (task.lane === 'HIGH' && !isPipelineInternal && !taskShadowMode) {
         // Queue the HIGH-lane review pipeline with TRIGGER DISCIPLINE:
         // Not all reviewers fire for every task. Match reviewers to task content.
         const outputSummary = extractEnvelopeText(envelope).slice(0, 3000);
@@ -511,10 +529,32 @@ export abstract class BaseAgent {
           payload: { durationMs: Date.now() - startedAt, tokensUsed, costUsd, awaitingReview: true, reviewsQueued: reviewAgents },
           outcome: 'success',
         });
+        this.activeTaskHeartbeat = null;
         return; // Stop here — no auto-chaining until Rafael approves
       }
 
       completeTask(task.id, envelope, tokensUsed, costUsd);
+      if (taskShadowMode) {
+        recordShadowRun({
+          agent: this.name,
+          taskId: task.id,
+          output: envelope,
+          projectId: task.projectId,
+          lane: task.lane,
+          description: task.description,
+        });
+        writeAudit({
+          agent: this.name,
+          taskId: task.id,
+          action: 'shadow_run',
+          payload: {
+            lane: task.lane,
+            projectId: task.projectId ?? 'organism',
+            summary: envelope.summary,
+          },
+          outcome: 'success',
+        });
+      }
 
       if (run && runStep) {
         updateRunStep({ stepId: runStep.id, status: 'completed', detail: envelope.summary });
@@ -556,7 +596,7 @@ export abstract class BaseAgent {
       }
 
       // Auto-chain: for MEDIUM tasks, queue codex-review
-      if (task.lane === 'MEDIUM') {
+      if (task.lane === 'MEDIUM' && !taskShadowMode) {
         try {
           createTask({
             agent: 'codex-review',
@@ -608,6 +648,7 @@ export abstract class BaseAgent {
       });
 
       console.log(`[${this.name}] Task ${task.id} completed. Cost: $${costUsd.toFixed(4)}`);
+      this.activeTaskHeartbeat = null;
     } catch (err) {
       clearTimeout(timeoutHandle);
       const errorMsg = String(err);
@@ -642,6 +683,11 @@ export abstract class BaseAgent {
         providerFailureKind: providerFailure.providerFailureKind,
       });
       console.error(`[${this.name}] Task ${task.id} failed: ${errorMsg}`);
+      this.activeTaskHeartbeat = null;
+    } finally {
+      if (this.activeTaskHeartbeat?.taskId === task.id) {
+        this.activeTaskHeartbeat = null;
+      }
     }
   }
 
@@ -652,6 +698,19 @@ export abstract class BaseAgent {
       action: 'task_created', // reusing action field as signal
       payload: { heartbeat: true, ts: Date.now() },
       outcome: 'success',
+    });
+
+    if (!this.activeTaskHeartbeat) return;
+
+    const elapsedMs = Math.max(0, Date.now() - this.activeTaskHeartbeat.startedAt);
+    const minutes = Math.floor(elapsedMs / 60_000);
+    const seconds = Math.floor((elapsedMs % 60_000) / 1000);
+    const elapsedLabel = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+
+    updateRunStep({
+      stepId: this.activeTaskHeartbeat.runStepId,
+      status: 'running',
+      detail: `Still working on "${this.activeTaskHeartbeat.description.slice(0, 180)}" · ${elapsedLabel} elapsed`,
     });
   }
 

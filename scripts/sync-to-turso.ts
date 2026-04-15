@@ -104,6 +104,19 @@ const SCHEMA = [
     quality_score REAL,
     ts INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
   )`,
+  `CREATE TABLE IF NOT EXISTS innovation_radar_feedback (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    opportunity_title TEXT,
+    feedback_code TEXT NOT NULL,
+    notes TEXT,
+    trigger TEXT,
+    created_by TEXT NOT NULL DEFAULT 'rafael',
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_innovation_feedback_project ON innovation_radar_feedback(project_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_innovation_feedback_task ON innovation_radar_feedback(task_id)`,
   `CREATE TABLE IF NOT EXISTS perspective_fitness (
     perspective_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
@@ -323,6 +336,57 @@ async function sync() {
       await remote.batch(stmts, 'write');
     }
     console.log(`  Gates: ${gates.length} ✓`);
+  }
+
+  // ── Sync shadow_runs ───────────────────────────────────────────────────
+  const shadowRuns = local.prepare('SELECT * FROM shadow_runs').all() as Record<string, unknown>[];
+  console.log(`Shadow runs to sync: ${shadowRuns.length}`);
+
+  if (shadowRuns.length > 0) {
+    await remote.execute('DELETE FROM shadow_runs');
+
+    const batchSize = 50;
+    for (let i = 0; i < shadowRuns.length; i += batchSize) {
+      const batch = shadowRuns.slice(i, i + batchSize);
+      const stmts = batch.map(run => ({
+        sql: `INSERT OR REPLACE INTO shadow_runs (id, agent, task_id, output, quality_score, ts) VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [
+          run.id as number, run.agent as string, run.task_id as string,
+          run.output as string | null, run.quality_score as number | null, run.ts as number,
+        ],
+      }));
+      await remote.batch(stmts, 'write');
+    }
+    console.log(`  Shadow runs: ${shadowRuns.length} ✓`);
+  }
+
+  // ── Sync innovation_radar_feedback ────────────────────────────────────
+  const innovationFeedback = local.prepare('SELECT * FROM innovation_radar_feedback').all() as Record<string, unknown>[];
+  console.log(`Innovation feedback rows to sync: ${innovationFeedback.length}`);
+
+  if (innovationFeedback.length > 0) {
+    await remote.execute('DELETE FROM innovation_radar_feedback');
+
+    const batchSize = 50;
+    for (let i = 0; i < innovationFeedback.length; i += batchSize) {
+      const batch = innovationFeedback.slice(i, i + batchSize);
+      const stmts = batch.map(row => ({
+        sql: `INSERT OR REPLACE INTO innovation_radar_feedback (id, task_id, project_id, opportunity_title, feedback_code, notes, trigger, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          row.id as string,
+          row.task_id as string,
+          row.project_id as string,
+          row.opportunity_title as string | null,
+          row.feedback_code as string,
+          row.notes as string | null,
+          row.trigger as string | null,
+          row.created_by as string,
+          row.created_at as number,
+        ],
+      }));
+      await remote.batch(stmts, 'write');
+    }
+    console.log(`  Innovation feedback: ${innovationFeedback.length} ✓`);
   }
 
   // ── Sync perspective_fitness ───────────────────────────────────────────

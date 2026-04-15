@@ -76,14 +76,14 @@ async function healthCheck() {
   const claudeMdPath = path.resolve(process.cwd(), 'CLAUDE.md');
   console.log(fs.existsSync(claudeMdPath) ? 'OK' : 'MISSING (non-fatal)');
 
-  // 6. Anthropic API key (optional unless anthropic-api backend selected)
-  process.stdout.write('Anthropic API key: ');
-  console.log(getSecretOrNull('ANTHROPIC_API_KEY') ? 'Present' : 'Missing — Claude CLI backend required');
-
-  // 7. OpenAI key (optional but needed for Codex Review)
-  process.stdout.write('OpenAI API key (optional): ');
+  // 6. OpenAI key (optional if Codex CLI is available, but required for API fallback)
+  process.stdout.write('OpenAI API key: ');
   const openaiKey = getSecretOrNull('OPENAI_API_KEY');
-  console.log(openaiKey ? 'Present' : 'Missing — Codex Review will not function');
+  console.log(openaiKey ? 'Present' : 'Missing — Codex CLI remains primary, API fallback disabled');
+
+  // 7. Anthropic API key (legacy optional only)
+  process.stdout.write('Anthropic API key (legacy optional): ');
+  console.log(getSecretOrNull('ANTHROPIC_API_KEY') ? 'Present — legacy fallback available' : 'Missing — legacy fallback disabled');
 
   // 8. Code executor availability
   process.stdout.write('Code executor: ');

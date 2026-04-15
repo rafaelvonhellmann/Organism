@@ -598,12 +598,12 @@ Use `"project_scope": ["all"]` if the agent works across all projects.
 
 **Step 5 — Run 10 shadow tasks**
 
-Submit tasks that this agent should handle, with shadow mode enabled:
+Submit real shadow-capable tasks that this agent should handle. For example:
 ```bash
-SHADOW_MODE=true npx tsx --experimental-sqlite scripts/submit-task.ts
+npm run organism "innovation radar organism"
 ```
 
-Shadow runs execute the full agent logic but discard output and log to `state/shadow-runs.jsonl` instead of `tasks.db`.
+Shadow runs execute the full agent logic, mirror their output into the `shadow_runs` table and `~/.organism/state/shadow-runs.jsonl`, and remain reviewable through the normal task pipeline when applicable.
 
 Check shadow run quality:
 ```bash

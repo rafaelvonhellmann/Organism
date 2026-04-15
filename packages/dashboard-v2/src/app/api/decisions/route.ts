@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { getClient, ensureTables } from '@/lib/db';
 import { createActionItem } from '@/lib/queries';
+import { buildInnovationRadarFeedbackRows } from '@/lib/innovation-radar-feedback';
 import { requireAuth, unauthorizedResponse } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
@@ -98,6 +99,12 @@ export async function POST(req: NextRequest) {
   const decidedAt = Date.now();
 
   try {
+    const taskResult = await client.execute({
+      sql: 'SELECT description, lane, agent, project_id, output FROM tasks WHERE id = ?',
+      args: [taskId],
+    });
+    const task = taskResult.rows.length > 0 ? taskResult.rows[0] : null;
+
     // 1. Always record in review_decisions (dashboard-owned table)
     await client.execute({
       sql: `INSERT INTO review_decisions (id, task_id, decision, reason, decided_by, decided_at, created_at)
@@ -140,6 +147,50 @@ export async function POST(req: NextRequest) {
 
     // 3. Transition task status based on decision
     let actionItemId: string | null = null;
+    const description = task ? String(task.description ?? '') : '';
+    const lane = task ? String(task.lane ?? 'MEDIUM') : 'MEDIUM';
+    const agent = task ? String(task.agent ?? '') : '';
+    const projectId = task ? String(task.project_id ?? 'organism') : 'organism';
+    const output = task?.output;
+
+    if (task && agent === 'competitive-intel' && decision !== 'reply') {
+      const feedbackDecision = decision === 'dismissed' ? 'rejected' : decision;
+      const shouldPersistFeedback =
+        feedbackDecision === 'approved'
+        || feedbackDecision === 'rejected'
+        || (feedbackDecision === 'changes_requested' && Boolean(reason?.trim()));
+
+      if (shouldPersistFeedback) {
+        const feedbackRows = buildInnovationRadarFeedbackRows({
+          decision: feedbackDecision,
+          reason: reason ?? null,
+          output,
+        });
+
+        await client.execute({
+          sql: 'DELETE FROM innovation_radar_feedback WHERE task_id = ?',
+          args: [taskId],
+        });
+
+        for (const row of feedbackRows) {
+          await client.execute({
+            sql: `INSERT INTO innovation_radar_feedback
+              (id, task_id, project_id, opportunity_title, feedback_code, notes, trigger, created_by, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 'rafael', ?)`,
+            args: [
+              crypto.randomUUID(),
+              taskId,
+              projectId,
+              row.opportunityTitle,
+              row.feedbackCode,
+              row.notes,
+              row.trigger,
+              decidedAt,
+            ],
+          });
+        }
+      }
+    }
 
     if (decision === 'approved') {
       await client.execute({
@@ -150,20 +201,10 @@ export async function POST(req: NextRequest) {
 
       // 4. Create an action item from the approved finding
       try {
-        const taskResult = await client.execute({
-          sql: 'SELECT description, lane, agent, project_id, output FROM tasks WHERE id = ?',
-          args: [taskId],
-        });
-
-        if (taskResult.rows.length > 0) {
-          const task = taskResult.rows[0];
-          const description = String(task.description ?? '');
-          const lane = String(task.lane ?? 'MEDIUM');
-          const agent = String(task.agent ?? '');
-          const projectId = String(task.project_id ?? 'organism');
+        if (task) {
           const { priority, dueDate } = laneToPriority(lane);
           const title = extractTitle(description);
-          const suggestedAction = extractSuggestedAction(task.output);
+          const suggestedAction = extractSuggestedAction(output);
 
           actionItemId = crypto.randomUUID();
           await createActionItem({

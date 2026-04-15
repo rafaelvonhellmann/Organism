@@ -45,12 +45,14 @@ export function hasEquivalentFollowup(params: {
   const recentCandidates = db.prepare(`
     SELECT description
     FROM tasks
-    WHERE project_id = ? AND agent = ? AND workflow_kind = ?
+    WHERE id != ?
+      AND project_id = ? AND agent = ? AND workflow_kind = ?
       AND created_at > ?
       AND status NOT IN ('failed', 'dead_letter', 'rolled_back', 'cancelled')
     ORDER BY created_at DESC
     LIMIT 20
   `).all(
+    params.sourceTaskId,
     params.projectId,
     params.agent,
     params.workflowKind,

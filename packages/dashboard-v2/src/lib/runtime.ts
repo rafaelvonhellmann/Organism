@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Client, Row } from '@libsql/client';
 import { getClient, ensureTables } from './db';
+import { summarizeTaskOutput } from './task-output';
 
 function n(value: unknown): number {
   return Number(value) || 0;
@@ -447,20 +448,6 @@ function formatEvent(row: Row) {
   };
 }
 
-function summarizeTaskOutput(raw: unknown): string | null {
-  const parsed = tryParse(raw);
-  if (parsed == null) return null;
-  if (typeof parsed === 'string') return parsed.slice(0, 1200);
-  if (typeof parsed === 'object') {
-    const record = parsed as Record<string, unknown>;
-    const preferred = [record.summary, record.review, record.text, record.verdict, record.result]
-      .find((value) => typeof value === 'string' && value.trim().length > 0);
-    if (typeof preferred === 'string') return preferred.slice(0, 1200);
-    return JSON.stringify(parsed, null, 2).slice(0, 1200);
-  }
-  return String(parsed).slice(0, 1200);
-}
-
 function formatArtifact(row: Row) {
   return {
     id: s(row.id),
@@ -481,7 +468,7 @@ function formatRecentOutput(row: Row) {
     status: s(row.status),
     lane: s(row.lane),
     description: s(row.description),
-    summary: summarizeTaskOutput(row.output),
+    summary: summarizeTaskOutput(row.output, row.error, row.project_id),
     completedAt: row.completed_at != null ? n(row.completed_at) : null,
     createdAt: n(row.created_at),
   };
@@ -835,7 +822,7 @@ export async function getRuntimeSnapshot(projectId?: string) {
     ),
     execute(
       client,
-      `SELECT id, agent, status, lane, description, output, completed_at, created_at
+      `SELECT id, project_id, agent, status, lane, description, output, error, completed_at, created_at
        FROM tasks
       ${taskOutputFilter}
        ORDER BY COALESCE(completed_at, created_at) DESC

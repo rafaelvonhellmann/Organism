@@ -41,7 +41,7 @@ type ScheduledProjectCadence = 'daily' | 'weekly';
 
 export interface ScheduledProjectRun {
   id: string;
-  kind: 'project_review' | 'self_audit';
+  kind: 'project_review' | 'self_audit' | 'innovation_radar';
   projectId: string;
   cadence: ScheduledProjectCadence;
   dayOfWeek: number | null;
@@ -52,6 +52,7 @@ export interface ScheduledProjectRun {
   workflowKind: WorkflowKind;
   sourceKind: GoalSourceKind;
   input: Record<string, unknown>;
+  shadowMode?: boolean;
 }
 
 const DEFAULT_PROJECT_SCHEDULE: ScheduledProjectRun[] = [
@@ -108,33 +109,61 @@ export function buildScheduledProjectRuns(policies: ProjectPolicy[] = listProjec
   const scheduled = [...DEFAULT_PROJECT_SCHEDULE];
 
   for (const policy of policies) {
-    if (!policy.selfAudit.enabled) continue;
-    scheduled.push({
-      id: `self-audit:${policy.projectId}`,
-      kind: 'self_audit',
-      projectId: policy.projectId,
-      cadence: policy.selfAudit.cadence,
-      dayOfWeek: policy.selfAudit.dayOfWeek,
-      hour: policy.selfAudit.hour,
-      agent: 'quality-agent',
-      title: `Scheduled self-audit of ${policy.projectId}`,
-      description: policy.selfAudit.description,
-      workflowKind: 'review',
-      sourceKind: 'scheduler',
-      input: {
+    if (policy.selfAudit.enabled) {
+      scheduled.push({
+        id: `self-audit:${policy.projectId}`,
+        kind: 'self_audit',
         projectId: policy.projectId,
-        triggeredBy: 'scheduler',
-        scheduledReview: true,
-        reviewScope: 'project',
-        selfAudit: true,
-        followupPolicy: {
-          boundedLane: 'self_audit',
-          allowedWorkflows: policy.selfAudit.workflows,
-          maxFollowups: policy.selfAudit.maxFollowups,
-          recursionDisabled: true,
+        cadence: policy.selfAudit.cadence,
+        dayOfWeek: policy.selfAudit.dayOfWeek,
+        hour: policy.selfAudit.hour,
+        agent: 'quality-agent',
+        title: `Scheduled self-audit of ${policy.projectId}`,
+        description: policy.selfAudit.description,
+        workflowKind: 'review',
+        sourceKind: 'scheduler',
+        input: {
+          projectId: policy.projectId,
+          triggeredBy: 'scheduler',
+          scheduledReview: true,
+          reviewScope: 'project',
+          selfAudit: true,
+          followupPolicy: {
+            boundedLane: 'self_audit',
+            allowedWorkflows: policy.selfAudit.workflows,
+            maxFollowups: policy.selfAudit.maxFollowups,
+            recursionDisabled: true,
+          },
         },
-      },
-    });
+      });
+    }
+
+    if (policy.innovationRadar.enabled) {
+      scheduled.push({
+        id: `innovation-radar:${policy.projectId}`,
+        kind: 'innovation_radar',
+        projectId: policy.projectId,
+        cadence: policy.innovationRadar.cadence,
+        dayOfWeek: policy.innovationRadar.dayOfWeek,
+        hour: policy.innovationRadar.hour,
+        agent: policy.innovationRadar.agent,
+        title: `Innovation radar for ${policy.projectId}`,
+        description: policy.innovationRadar.description,
+        workflowKind: 'review',
+        sourceKind: 'scheduler',
+        shadowMode: policy.innovationRadar.shadow,
+        input: {
+          projectId: policy.projectId,
+          project: policy.projectId,
+          triggeredBy: 'scheduler',
+          focusAreas: policy.innovationRadar.focusAreas,
+          maxOpportunities: policy.innovationRadar.maxOpportunities,
+          shadowMode: policy.innovationRadar.shadow,
+          innovationRadar: true,
+          scheduledReview: true,
+        },
+      });
+    }
   }
 
   return scheduled;
