@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
   const { action, payload } = body;
 
   if (!action) return Response.json({ error: 'Missing action' }, { status: 400 });
-  const projectRequired = action === 'command' || action === 'review';
+  const projectRequired = action === 'command' || action === 'review' || action === 'start';
   if (projectRequired && (!payload || typeof payload.project !== 'string' || payload.project.trim().length === 0)) {
     return Response.json({ error: 'Project selection is required for this action' }, { status: 400 });
   }

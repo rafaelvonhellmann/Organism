@@ -7,7 +7,8 @@ import { ProjectPolicy } from '../../shared/src/types.js';
 
 const PROJECTS_DIR = path.resolve(process.cwd(), 'knowledge', 'projects');
 const REVIEW_AGENTS = ['quality-agent', 'quality-guardian', 'codex-review', 'grill-me', 'legal', 'security-audit'];
-const AUTONOMY_CYCLE_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+const AUTONOMY_CYCLE_COOLDOWN_MS = 60 * 1000;
+const AUTONOMY_PERIOD_BUCKET_MINUTES = 1;
 const STALE_ORPHAN_REVIEW_MS = 15 * 60 * 1000;
 
 interface ProjectAutonomyMeta {
@@ -52,8 +53,9 @@ function loadProjectAutonomyMeta(projectId: string): ProjectAutonomyMeta {
 
 function autonomyPeriodKey(now = Date.now()): string {
   const date = new Date(now);
-  const bucket = Math.floor(date.getUTCHours() / 4) * 4;
-  return `${date.toISOString().slice(0, 10)}T${String(bucket).padStart(2, '0')}`;
+  const hour = date.getUTCHours();
+  const minuteBucket = Math.floor(date.getUTCMinutes() / AUTONOMY_PERIOD_BUCKET_MINUTES) * AUTONOMY_PERIOD_BUCKET_MINUTES;
+  return `${date.toISOString().slice(0, 10)}T${String(hour).padStart(2, '0')}:${String(minuteBucket).padStart(2, '0')}`;
 }
 
 function isSafeIdleAutonomyProject(policy: ProjectPolicy, meta: ProjectAutonomyMeta): boolean {
@@ -209,7 +211,7 @@ function buildAutonomySubmission(policy: ProjectPolicy, meta: ProjectAutonomyMet
   const periodKey = autonomyPeriodKey(now);
   if (policy.projectId === 'organism') {
     return {
-      title: `Scheduled self-audit of ${policy.projectId}`,
+      title: `Self review: ${policy.projectId}`,
       description: policy.selfAudit.description,
       input: {
         projectId: policy.projectId,
@@ -232,14 +234,14 @@ function buildAutonomySubmission(policy: ProjectPolicy, meta: ProjectAutonomyMet
 
   if (meta.qualityStandards.includes('MEDICAL') && policy.autonomySurfaces.readOnlyCanary) {
     return {
-      title: `Medical-safe autonomy canary: ${policy.projectId}`,
-      description: `Medical-safe read-only autonomy canary for ${policy.projectId}: inspect the repo, tasklist, and safety boundaries, then identify the next safest review or validation work without touching grading, answer-key, rubric, benchmark, or deployment flows.`,
+      title: `Safe review: ${policy.projectId}`,
+      description: `Safe project review for ${policy.projectId}: inspect the repo, tasklist, and safety boundaries, then identify the next safest review or validation work without touching grading, answer-key, rubric, benchmark, or deployment flows.`,
       input: {
         projectId: policy.projectId,
         triggeredBy: 'autonomy-loop',
         reviewScope: 'project',
         autonomyCycle: true,
-        medicalReadOnlyCanary: true,
+        medicalReadOnlyReview: true,
         tasklistPath: meta.tasklist,
         dedupeKey: `medical-autonomy:${policy.projectId}:${periodKey}`,
         followupPolicy: {
@@ -254,8 +256,8 @@ function buildAutonomySubmission(policy: ProjectPolicy, meta: ProjectAutonomyMet
   }
 
   return {
-    title: `Autonomy cycle: ${policy.projectId}`,
-    description: `Autonomy cycle review for ${policy.projectId}: inspect the repo, current tasklist, and known launch blockers, then choose the next safest useful low/medium improvements and seed bounded follow-up work.`,
+    title: `Project review: ${policy.projectId}`,
+    description: `Project review for ${policy.projectId}: inspect the repo, current tasklist, and known launch blockers, then choose the next safest useful low/medium improvements and seed bounded follow-up work.`,
     input: {
       projectId: policy.projectId,
       triggeredBy: 'autonomy-loop',

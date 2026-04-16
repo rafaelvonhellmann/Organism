@@ -2,103 +2,109 @@ import type { ReactNode } from 'react';
 
 const STARTUP_COMMANDS = [
   { cmd: 'pnpm install', desc: 'Install workspace dependencies.' },
-  { cmd: 'npx tsx --experimental-sqlite scripts/health-check.ts', desc: 'Verify secrets, database, backend selection, and executor availability.' },
-  { cmd: 'npx tsx --experimental-sqlite scripts/start-daemon.ts', desc: 'Start the daemon, scheduler, runtime recovery, and dashboard integration.' },
-  { cmd: 'npm run organism "status"', desc: 'Check whether the system is up and what is currently blocked.' },
+  { cmd: 'npx tsx --experimental-sqlite scripts/ensure-services.ts', desc: 'Start the local dashboard bridge, daemon, and supporting services together.' },
+  { cmd: 'npm run organism "status"', desc: 'Check what is running, what is blocked, and whether the local runtime is healthy.' },
 ];
 
 const OPERATOR_COMMANDS = [
-  { cmd: 'npm run organism "execute"', desc: 'Release pending work to the runner once the daemon is alive.' },
-  { cmd: 'npm run organism "review tokens for good"', desc: 'Run a constrained project review for the recommended first pilot.' },
-  { cmd: 'npm run organism "perspectives synapse"', desc: 'Run a perspective-only pass for Synapse when you want analysis without a high-risk execution path.' },
-  { cmd: 'npm run organism "morning brief"', desc: 'Summarize what happened overnight.' },
-  { cmd: 'npm run organism "palate stats"', desc: 'Inspect knowledge injection, cache savings, and source health.' },
+  { cmd: 'npm run organism "review tokens-for-good"', desc: 'Inspect project state and let Organism choose the next safe work.' },
+  { cmd: 'npm run organism "implement the next safest useful task for tokens-for-good"', desc: 'Move a project forward with one bounded implementation step.' },
+  { cmd: 'npm run organism "validate tokens-for-good current state"', desc: 'Verify the latest work and decide whether it is clean, safe, and complete.' },
 ];
 
 const CAPABILITY_CARDS = [
   {
-    title: 'Autonomous Execution',
-    body: 'Organism can accept a goal, route it to the right agent, prepare the workspace, run code changes, verify build and test commands, and decide whether the result is ready to commit, push, open a PR, or deploy.',
+    title: 'Controller-Owned Start / Continue',
+    body: 'The browser no longer decides the next workflow. Start / Continue now asks the controller to inspect current state and choose whether to continue, review, implement, or validate.',
   },
   {
-    title: 'Controller-Owned Safety',
-    body: 'Agents reason and propose. The controller owns privileged actions, policy checks, approvals, interrupts, PR creation, deploy auth checks, and runtime events so execution is auditable and harder to derail with prompt drift.',
+    title: 'One Runtime, Three Core Actions',
+    body: 'The operator model is intentionally small now: Review, Implement, and Validate. Everything else is internal system behavior, not something you should need to memorize.',
   },
   {
-    title: 'Crash Recovery',
-    body: 'Runs are durable. If the daemon stops mid-flight, Organism recovers orphaned runs, pauses or retries them deterministically, and resumes from run memory instead of starting from scratch.',
+    title: 'Local-First Control Plane',
+    body: 'Organism is powered by a local daemon plus a local dashboard bridge. The website becomes an operator shell over that local runtime, especially when remote database writes are restricted.',
   },
   {
-    title: 'Isolated Worktrees',
-    body: 'In stabilization mode, Organism can prepare an isolated git worktree for a run so dirty day-to-day repos do not get mixed with autonomous changes.',
+    title: 'Automatic Next Step Selection',
+    body: 'After a clean review, Organism should choose the next safe task. After a clean implementation, it should create validation work automatically instead of waiting for more operator clicks.',
   },
   {
-    title: 'Project Policies',
-    body: 'Every project can declare its repo path, default branch, install/lint/test/build/deploy commands, allowed actions, blocked actions, budgets, deploy targets, and autonomy mode.',
+    title: 'Project-Scoped Safety',
+    body: 'Each project declares what is safe to do, what is blocked, and how aggressively autonomy can proceed. Synapse is stricter than Tokens for Good because it is the higher-risk project.',
   },
   {
-    title: 'Runtime Visibility',
-    body: 'The Runtime page shows goals, runs, steps, retries, approvals, interrupts, provider failures, backend/executor status, and rollout blockers in one place.',
+    title: 'OpenAI-First Runtime',
+    body: 'OpenAI is the default company runtime now. Codex CLI is primary and OpenAI API is fallback. Legacy Anthropic paths are optional and should not be the normal operating path.',
   },
   {
-    title: 'Cross-Executor Operation',
-    body: 'The runtime can use Claude or Codex for engineering execution, and the model backend can prefer Claude CLI or Anthropic API depending on the environment.',
+    title: 'Recoverable State',
+    body: 'Runs, retries, and approvals are durable. If the daemon stops, Organism should recover state instead of quietly forgetting what it was doing.',
   },
   {
-    title: 'Bounded Tool Providers',
-    body: 'Optional sidecar tools such as MiniMax are project-scoped and allowlisted. They are not the main brain of Organism and are only used for narrow capabilities such as external search when policy enables them and local auth is ready.',
+    title: 'Project Memory Snapshot',
+    body: 'Each launch now captures a compact project memory snapshot with recent goals, blockers, and useful outputs so the next step starts from fresh project context instead of rediscovering everything.',
+  },
+];
+
+const WINDSURF_ADAPTATIONS = [
+  {
+    principle: 'One obvious action',
+    windsurf: 'Windsurf feels fast because the normal path is one continuous flow, not a menu of orchestration concepts.',
+    organism: 'Organism now centers Start / Continue and moves workflow choice into the controller instead of the browser.',
   },
   {
-    title: 'Upstream Source Watch',
-    body: 'Organism can track registered upstream repos for borrowed agents, skills, and tool providers and surface when they changed. It does not auto-apply those updates without explicit review.',
+    principle: 'Workspace memory',
+    windsurf: 'Windsurf keeps local context and recent work close to the agent experience.',
+    organism: 'Organism now captures a compact project memory snapshot on every launch so reviews and implementations inherit recent blockers and outputs.',
+  },
+  {
+    principle: 'Low-friction continuation',
+    windsurf: 'The tool naturally resumes the current thread of work instead of asking the operator to classify the next step every time.',
+    organism: 'Start / Continue now prefers continuing live work, then falls back to review, validate, or implement based on controller state.',
+  },
+  {
+    principle: 'Less operator jargon',
+    windsurf: 'The product does not ask the user to think in internal lifecycle labels.',
+    organism: 'Operator-facing canary/control-plane wording is being collapsed into review, implement, validate, and clear blocker language.',
   },
 ];
 
 const DASHBOARD_PAGES = [
   {
-    title: 'Runtime',
-    body: 'The main operational console. Use this to monitor live runs, approvals, retries, interrupts, rollout blockers, and whether a project is actually stabilizing.',
+    title: 'Launch',
+    body: 'The main operator surface. Use Start / Continue for the normal path. Use Manual Override only when you want to force Review, Implement, or Validate directly.',
   },
   {
-    title: 'Command',
-    body: 'The launch surface for operators today. This is where new work is submitted from the website. The Runtime page is monitoring-first, not the primary submit form.',
+    title: 'Runtime',
+    body: 'Use this to answer two questions quickly: what is Organism doing now, and what will it try next automatically.',
   },
   {
     title: 'Review',
-    body: 'The human review queue. Use this when the system pauses for a decision or when high-risk items require Rafael-level judgment.',
+    body: 'This is only for human decisions and paused items. If nothing needs judgment, you should not need to sit here.',
+  },
+  {
+    title: 'Plan',
+    body: 'The project-level view of what matters next. It should reflect current project intent, not random old task noise.',
   },
   {
     title: 'System',
-    body: 'Inspect agents, budgets, logs, and underlying health. This is the right place to sanity-check spend, capacity, and runtime noise.',
-  },
-  {
-    title: 'Plan and Progress',
-    body: 'Action items, goals, and planning views. Useful for understanding what Organism believes should happen next across projects.',
+    body: 'Check daemon health, budgets, agent posture, and whether the local bridge or sync layer is degraded.',
   },
 ];
 
 const LIMITS = [
-  'Organism is stronger mechanically, but it has not yet passed the 20 consecutive healthy-run graduation gate.',
-  'In stabilization mode, purchases, human contact, and account creation remain blocked or approval-gated by project policy.',
-  'The safest first live pilot is Tokens for Good. Synapse should start with review or validation work only because it is medical and currently has a very dirty worktree.',
-  'The website is an operator cockpit, not the full brain. The daemon must be running locally for the dashboard to reflect real work.',
-  'The Command page now requires an explicit project selection before it will launch work. This is intentional safety behavior.',
-  'PR creation can now use GitHub CLI auth, environment tokens, or stored Git credentials. Deploy readiness can use either Vercel tokens or an existing local Vercel session.',
-  'The first Tokens for Good runs are canary-restricted: the dashboard shows the launch posture, records a baseline snapshot automatically, and limits the first runs to review, implement, or validate workflows.',
+  'A project now targets 3 healthy goals, not 20. The goal is to prove bounded autonomy earlier and more honestly.',
+  'Synapse is still read-only or validation-first. Protected grading, benchmark, rubric, and medical-content paths should remain blocked from broad autonomous implementation.',
+  'The hosted dashboard can lag when remote writes are blocked. In that situation, the local daemon bridge is the source of truth.',
+  'If Start / Continue fails with a fetch error, the first thing to check is whether the local bridge on port 7391 is running.',
 ];
 
-const HARNESS_APPLIED = [
-  'Controller-owned execution: agents propose, while the controller owns verification, approvals, interrupts, commit, push, PR, and deploy actions.',
-  'Durable runs: Organism keeps per-run progress, checklist, facts, handoff, and command logs so work can survive long-running sessions and restarts.',
-  'Typed handoffs: findings, plans, handoff requests, command proposals, and approval requests are normalized into structured envelopes instead of relying on loose prose alone.',
-  'Recoverable runtime: restart recovery can pause or retry interrupted work instead of silently losing state.',
-];
-
-const HARNESS_GAPS = [
-  'Repository knowledge is better than before, but it is not yet a fully validated agent-first docs system with freshness checks and doc gardening.',
-  'Application legibility is still partial. Browser automation exists, but Organism does not yet have the same deep per-worktree observability harness described in the OpenAI article.',
-  'Entropy control is not fully continuous yet. We still need more recurring cleanup and refactoring loops that keep agent-generated code from drifting.',
-  'Organism is mechanically stronger, but it is not yet at the article’s fully proven autonomy stage because the healthy-run graduation history is still being accumulated.',
+const TROUBLESHOOTING = [
+  'If Launch says "failed to fetch", restart services with `npx tsx --experimental-sqlite scripts/ensure-services.ts`.',
+  'If the daemon looks inactive but tasks appear in progress, check Runtime first and then `npm run organism "status"` locally.',
+  'If the website looks stale, hard refresh once. The local runtime is usually more truthful than hosted history when remote writes are blocked.',
+  'If a project seems stuck, prefer Review or Validate over vague commands. Organism routes explicit workflow names much better than fuzzy text.',
 ];
 
 export default function GuidePage() {
@@ -106,53 +112,53 @@ export default function GuidePage() {
     <div className="max-w-5xl mx-auto px-4 md:px-6 py-8 md:py-12">
       <section className="rounded-3xl border border-edge bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.10),_transparent_42%),linear-gradient(180deg,rgba(24,24,27,0.98),rgba(9,9,11,0.98))] px-6 py-8 md:px-8 md:py-10">
         <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-zinc-500">
-          <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-emerald-300">v2 manual</span>
-          <span className="rounded-full border border-zinc-800 px-2.5 py-1">Local-first</span>
-          <span className="rounded-full border border-zinc-800 px-2.5 py-1">Autonomous orchestration</span>
-          <span className="rounded-full border border-zinc-800 px-2.5 py-1">Controller-owned actions</span>
+          <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-emerald-300">manual</span>
+          <span className="rounded-full border border-zinc-800 px-2.5 py-1">local-first</span>
+          <span className="rounded-full border border-zinc-800 px-2.5 py-1">review / implement / validate</span>
+          <span className="rounded-full border border-zinc-800 px-2.5 py-1">3 healthy goals</span>
         </div>
 
         <div className="mt-5 max-w-3xl">
           <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-zinc-50">
-            Organism is a local-first autonomous operator for Rafael&apos;s projects.
+            Organism is a local-first project operator with a deliberately smaller workflow.
           </h1>
           <p className="mt-4 text-base md:text-lg leading-8 text-zinc-300">
-            It can route work, run specialist agents, edit code, verify commands, recover from failures, and move toward commit, PR, and deploy outcomes inside explicit project policy boundaries.
+            The goal now is not to teach you a large control panel. The goal is to make one safe action work reliably, let Organism continue automatically, and surface clear blockers when it cannot.
           </p>
           <p className="mt-3 text-sm leading-7 text-zinc-400">
-            This guide is written for someone new to the system. It explains what Organism is, what it can do today, how to start it, where to click in the dashboard, and how to run the first safe pilot.
+            The normal operator path is simple: start the local services, open Launch, press Start / Continue, then watch Runtime.
           </p>
         </div>
 
         <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-3">
-          <Metric title="Primary role" value="Autonomous orchestration" />
-          <Metric title="Best operator view" value="Runtime + Command" />
-          <Metric title="Current first pilot" value="Tokens for Good" />
+          <Metric title="Primary launch path" value="Start / Continue" />
+          <Metric title="Core workflows" value="Review, Implement, Validate" />
+          <Metric title="Current posture" value="Bounded autonomy" />
         </div>
       </section>
 
       <Section title="What Organism Is">
         <P>
-          Organism is not a single chatbot. It is a local runtime made of an orchestrator, a controller, a set of project-scoped agents, a persistent SQLite state store, durable run-memory files, and an operator dashboard.
+          Organism is not just a website. It is a local daemon, a local dashboard bridge, a project policy system, and a set of specialist agents operating inside a controller-owned safety layer.
         </P>
         <P>
-          The orchestrator decides what kind of work is being requested. The controller owns sensitive actions such as verification, commit, push, PR, deploy, approvals, and interrupts. Agents do the reasoning and implementation work inside that boundary.
-        </P>
-        <P>
-          The dashboard is the operator cockpit. It shows what the system is doing, what is blocked, what needs review, and whether a project is actually becoming safe to run more autonomously.
+          The website is the cockpit. The local runtime is the actual engine. When the two disagree, the local runtime is usually the truth.
         </P>
       </Section>
 
-      <Section title="Which Version Is This?">
+      <Section title="The Simplified Workflow">
         <div className="rounded-2xl border border-edge bg-zinc-950/80 p-5 md:p-6 space-y-4">
+          <Step n={1} title="Review">
+            Understand the current project state and decide the next safest useful work.
+          </Step>
+          <Step n={2} title="Implement">
+            Execute one bounded improvement. Organism should keep this narrow and safe.
+          </Step>
+          <Step n={3} title="Validate">
+            Check whether the last change is clean, complete, and ready for the next step.
+          </Step>
           <P>
-            The improved codebase lives in <code className="text-emerald-300">packages/dashboard-v2</code>. That is the new Organism interface and manual.
-          </P>
-          <P>
-            Custom domains can lag behind deployments, so the safest way to verify you are on the improved version is to check this page itself. If you see the <span className="text-zinc-200 font-medium">v2 manual</span> badge and the <span className="text-zinc-200 font-medium">Harness Engineering</span> section below, you are on the updated dashboard.
-          </P>
-          <P>
-            In other words: <span className="text-zinc-200 font-medium">dashboard-v2 is the improved version</span>. The domain pointing to it may be <code className="text-emerald-300">organism-hq-v2</code> or, depending on Vercel aliasing, temporarily <code className="text-emerald-300">organism-hq</code>.
+            Everything else such as retries, approvals, fallbacks, recovery, and follow-up planning is internal control-plane behavior. You should not need to think in terms like canary, execute, autonomy cycle, or special launch presets anymore.
           </P>
         </div>
       </Section>
@@ -167,73 +173,45 @@ export default function GuidePage() {
         </div>
       </Section>
 
-      <Section title="Harness Engineering">
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5 md:p-6">
-            <Subheading>Already Applied</Subheading>
-            <Checklist items={HARNESS_APPLIED} />
-          </div>
-          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-5 md:p-6">
-            <Subheading>Still Missing</Subheading>
-            <Checklist items={HARNESS_GAPS} tone="amber" />
-          </div>
-        </div>
-        <div className="mt-4 rounded-2xl border border-edge bg-zinc-950/80 p-5 md:p-6">
-          <P>
-            Organism already follows the core harness idea that humans steer and agents execute inside a strong control plane. What is still incomplete is the deeper environment around the agents: a fully agent-first knowledge system, richer local observability, and stronger ongoing garbage collection for code and docs.
-          </P>
+      <Section title="What We Adapted From Windsurf">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          {WINDSURF_ADAPTATIONS.map((item) => (
+            <div key={item.principle} className="rounded-2xl border border-edge bg-zinc-950/80 p-4">
+              <h3 className="text-sm font-semibold text-emerald-300">{item.principle}</h3>
+              <p className="mt-2 text-sm leading-6 text-zinc-400">
+                <span className="text-zinc-300 font-medium">Windsurf:</span> {item.windsurf}
+              </p>
+              <p className="mt-2 text-sm leading-6 text-zinc-400">
+                <span className="text-zinc-300 font-medium">Organism:</span> {item.organism}
+              </p>
+            </div>
+          ))}
         </div>
       </Section>
 
-      <Section title="How It Works">
-        <div className="rounded-2xl border border-edge bg-zinc-950/80 p-5 md:p-6 space-y-4">
-          <Step n={1} title="A goal is submitted">
-            Work enters through the command flow, scripts, or automation. Organism creates or reuses a goal, assigns a workflow kind, and deduplicates repeated signals.
-          </Step>
-          <Step n={2} title="The orchestrator routes it">
-            Routing respects the project roster, risk lane, workflow type, and current project policy. Organism no longer treats free-text tasks as its only source of truth.
-          </Step>
-          <Step n={3} title="An agent works inside run memory">
-            The selected agent reads context, prior handoff state, facts, and recent command history from the durable run-memory files before it continues the mission.
-          </Step>
-          <Step n={4} title="The controller verifies and executes privileged steps">
-            Build, test, commit, push, PR, deploy, approval creation, and interrupt handling are controller-owned. Agents may propose these actions, but they do not directly own them.
-          </Step>
-          <Step n={5} title="Runtime state stays visible and recoverable">
-            Every run emits runtime events, records artifacts, and can be paused, retried, resumed, or recovered on daemon restart.
-          </Step>
-        </div>
-      </Section>
-
-      <Section title="How To Make It Function">
+      <Section title="How To Start It">
         <Split
           left={(
             <>
-              <Subheading>One-Time Requirements</Subheading>
-              <Checklist items={[
-                'The repository is cloned locally.',
-                'Dependencies are installed.',
-                'The project policy exists in knowledge/projects/<project>/config.json.',
-                'Required secrets are present for the chosen backend, code executor, GitHub access, and deploy targets.',
-                'The local state directory is writable.',
-              ]} />
-
-              <Subheading>Core Environment Options</Subheading>
-              <KeyValue label="Model backend" value="ORGANISM_MODEL_BACKEND=auto | claude-cli | anthropic-api" />
-              <KeyValue label="Code executor" value="ORGANISM_CODE_EXECUTOR=auto | claude | codex" />
-              <KeyValue label="State directory" value="%USERPROFILE%\\.organism\\state" />
+              <Subheading>Normal Startup</Subheading>
+              <CommandTable items={STARTUP_COMMANDS} />
             </>
           )}
           right={(
             <>
-              <Subheading>Startup Commands</Subheading>
-              <CommandTable items={STARTUP_COMMANDS} />
+              <Subheading>What Healthy Looks Like</Subheading>
+              <Checklist items={[
+                'Launch submits work without a fetch error.',
+                'Runtime shows a current step and a next automatic step.',
+                'The daemon is alive locally.',
+                'A project can finish a whole goal, not just a loose review subtask.',
+              ]} />
             </>
           )}
         />
       </Section>
 
-      <Section title="Where To Click In The Website">
+      <Section title="Where To Click">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {DASHBOARD_PAGES.map((item) => (
             <Card key={item.title} title={item.title} icon=">">
@@ -241,59 +219,33 @@ export default function GuidePage() {
             </Card>
           ))}
         </div>
-          <div className="mt-4 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4">
-          <p className="text-sm text-amber-200">
-            Important: the Runtime page is the best monitoring surface, but the Command page is still the clearest place to launch work from the website today. The Command page now requires an explicit project selection before it will submit anything.
-          </p>
-        </div>
       </Section>
 
-      <Section title="First Safe Pilot">
-        <div className="rounded-2xl border border-edge bg-zinc-950/80 p-5 md:p-6 space-y-4">
-          <P>
-            The recommended first live pilot is <span className="text-zinc-200 font-medium">Tokens for Good</span>.
-            It is a better autonomy candidate than Synapse because its risk surface is lower for a first run and its repo is a safer place to verify controller behavior.
-          </P>
-          <Checklist items={[
-            'Open the dashboard and go to Command.',
-            'Select Tokens for Good in the project selector.',
-            'Read the launch posture card before sending anything. It shows PR path, deploy gate, worktree mode, and the active canary guard.',
-            'Use the Canary Repo Review preset for the very first run if you want the safest possible start. It performs a read-only project review from repo and launch-state evidence.',
-            'If the selector is empty, do not launch anything yet. Choose the project first and check Runtime for blockers.',
-            'Start with a constrained engineering or review command, not a deploy.',
-            'Open Runtime in another tab and watch Live Runs, Interrupt Queue, and Autonomy Rollout.',
-            'Treat the first run as PR-oriented validation, not as broad unattended shipping. Every launch now records a baseline snapshot automatically.',
-          ]} />
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
-            <div className="text-xs uppercase tracking-[0.18em] text-zinc-500 mb-2">Recommended examples</div>
-            <code className="block text-sm text-emerald-400">npm run organism "review tokens for good"</code>
-            <code className="block text-sm text-emerald-400 mt-2">npm run organism "execute"</code>
-          </div>
-        </div>
-      </Section>
-
-      <Section title="What Organism Is Allowed To Do">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <Concept title="Routine autonomous actions">
-            Edit code, run tests, run build commands, create or resume runs, update artifacts, create PR-oriented changes, and emit approvals or interrupts when policy requires a pause.
-          </Concept>
-          <Concept title="Approval-gated actions">
-            Destructive migrations, cross-project actions, purchases, human contact, and account creation remain blocked or approval-gated depending on project policy and autonomy mode.
-          </Concept>
-          <Concept title="Review safeguards">
-            Shadow agents do not quietly become active. Promotion still requires shadow evidence, and rollout health now surfaces gaps where active agents lack the required shadow history.
-          </Concept>
-          <Concept title="Failure safeguards">
-            Provider overload, rate limits, auth failures, missing secrets, tool failures, and transport issues are all normalized into structured retry or pause behavior instead of becoming silent task chaos.
-          </Concept>
-          <Concept title="Canary safeguards">
-            In stabilization mode, autonomous launch requires a clean worktree and deploys stay PR-oriented until the project earns a healthy-run streak. The canary repo review is read-only and is meant to tell you whether the project is ready for Organism to operate safely before broader execution begins.
-          </Concept>
-        </div>
-      </Section>
-
-      <Section title="Operator Commands">
+      <Section title="Recommended Commands">
         <CommandTable items={OPERATOR_COMMANDS} />
+      </Section>
+
+      <Section title="Project Rules Right Now">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Concept title="Tokens for Good">
+            This is still the best autonomy proving ground. It is where we should expect clean review, implementation, and validation loops first.
+          </Concept>
+          <Concept title="Synapse">
+            Keep this read-only or validation-first until the safe lane proves itself. Medical-risk and grading-adjacent surfaces should remain tightly gated.
+          </Concept>
+          <Concept title="Organism on itself">
+            Self-audit is valuable and should continue, but bounded self-improvement is the right model, not uncontrolled self-rewriting.
+          </Concept>
+          <Concept title="Healthy goals">
+            A healthy goal is a whole mission that moves a project forward, not an individual subtask. The rollout ladder is now based on 3 healthy goals, not 20 runs.
+          </Concept>
+        </div>
+      </Section>
+
+      <Section title="If Launch Says Failed To Fetch">
+        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-5 md:p-6">
+          <Checklist items={TROUBLESHOOTING} tone="amber" />
+        </div>
       </Section>
 
       <Section title="Current Limits">
@@ -304,15 +256,15 @@ export default function GuidePage() {
 
       <Section title="Plain-English Summary">
         <P>
-          Organism is a local autonomous project operator. You start the daemon, watch the dashboard, submit or trigger work, and let the controller manage execution inside project policy boundaries.
+          Start the local services, use Start / Continue for the project you care about, and let Organism handle the next safe step automatically.
         </P>
         <P>
-          The safest first real run is Tokens for Good. Use the Command page to launch the task, use Runtime to supervise it, and treat the first pilot as validation that the loop can execute, recover, and stop cleanly.
+          If it cannot proceed, Runtime should tell you one clear blocker. If Launch says fetch failed, treat the local bridge as the first thing to inspect or restart.
         </P>
       </Section>
 
       <div className="text-center text-xs text-zinc-600 pt-8 border-t border-zinc-800/30">
-        Organism v2 manual - autonomous orchestration, recovery, and policy-controlled execution
+        Organism manual - simplified local-first workflow
       </div>
     </div>
   );
@@ -398,15 +350,6 @@ function Checklist({ items, tone = 'emerald' }: { items: string[]; tone?: 'emera
           <p className="text-sm leading-6 text-zinc-400">{item}</p>
         </div>
       ))}
-    </div>
-  );
-}
-
-function KeyValue({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 mb-2">
-      <div className="text-[11px] uppercase tracking-[0.18em] text-zinc-500">{label}</div>
-      <code className="mt-1 block text-xs text-emerald-300 break-all">{value}</code>
     </div>
   );
 }

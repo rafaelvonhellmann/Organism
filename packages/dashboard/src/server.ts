@@ -1,10 +1,12 @@
 import * as http from 'http';
 import * as fs from 'fs';
+import { statSync } from 'fs';
 import * as path from 'path';
 import { getSystemStatus } from '../../core/src/orchestrator.js';
 import { getSpendSummary, getSystemSpend, getTopCostAgents, getCostByLane, getHighestCostTasks, getBudgetOverruns } from '../../core/src/budget.js';
 import { getPendingTasks, getDeadLetterTasks, getDb } from '../../core/src/task-queue.js';
 import { readRecentForAgent } from '../../core/src/audit.js';
+import { decideProjectStart } from '../../core/src/start-continue.js';
 import { STATE_DIR } from '../../shared/src/state-dir.js';
 
 const PORT = parseInt(process.env.DASHBOARD_PORT ?? '7391');
@@ -148,7 +150,7 @@ function enqueueDashboardAction(body: unknown) {
     return { ok: false, status: 400, error: 'Missing action' };
   }
 
-  const projectRequired = action === 'command' || action === 'review';
+  const projectRequired = action === 'command' || action === 'review' || action === 'start';
   const project = payload && typeof payload === 'object' && 'project' in payload
     ? typeof (payload as { project?: unknown }).project === 'string'
       ? (payload as { project: string }).project.trim()
@@ -173,6 +175,10 @@ function enqueueDashboardAction(body: unknown) {
       id: Number(result.lastInsertRowid ?? 0),
     },
   };
+}
+
+function buildStartDecision(projectId: string) {
+  return decideProjectStart(projectId);
 }
 
 function buildLocalRuntimeBridge(projectFilter?: string) {
@@ -208,11 +214,13 @@ function buildLocalRuntimeBridge(projectFilter?: string) {
 
   const cutoff = Date.now() - 20 * 60 * 1000;
   const projectClause = projectFilter ? 'AND project_id = ?' : '';
+  const runProjectClause = projectFilter ? 'AND r.project_id = ?' : '';
   const projectArgs = projectFilter ? [projectFilter] : [];
+  const db = getDb();
   const activeRunsRow = getDb().prepare(`
     SELECT COUNT(*) AS count, MAX(updated_at) AS latest
     FROM run_sessions
-    WHERE status IN ('pending', 'running', 'paused', 'retry_scheduled')
+    WHERE status IN ('pending', 'running')
       AND updated_at >= ?
       ${projectClause}
   `).get(cutoff, ...projectArgs) as { count: number | null; latest: number | null } | undefined;
@@ -223,6 +231,159 @@ function buildLocalRuntimeBridge(projectFilter?: string) {
       AND updated_at >= ?
       ${projectClause}
   `).get(cutoff, ...projectArgs) as { count: number | null } | undefined;
+  const activeRunRows = db.prepare(`
+    SELECT
+      r.id,
+      r.goal_id,
+      r.project_id,
+      r.agent,
+      r.workflow_kind,
+      r.status,
+      r.retry_class,
+      r.retry_at,
+      r.provider_failure_kind,
+      r.created_at,
+      r.updated_at,
+      r.completed_at,
+      g.title,
+      g.description
+    FROM run_sessions r
+    LEFT JOIN goals g ON g.id = r.goal_id
+    WHERE r.status IN ('pending', 'running')
+      AND r.updated_at >= ?
+      ${runProjectClause}
+    ORDER BY r.updated_at DESC
+    LIMIT 8
+  `).all(cutoff, ...projectArgs) as Array<{
+    id: string;
+    goal_id: string;
+    project_id: string;
+    agent: string;
+    workflow_kind: string | null;
+    status: string;
+    retry_class: string | null;
+    retry_at: number | null;
+    provider_failure_kind: string | null;
+    created_at: number;
+    updated_at: number;
+    completed_at: number | null;
+    title: string | null;
+    description: string | null;
+  }>;
+  const activeRunIds = activeRunRows.map((row) => row.id);
+  const latestStepsByRun = new Map<string, {
+    id: string;
+    run_id: string;
+    name: string;
+    status: string;
+    detail: string | null;
+    created_at: number;
+    updated_at: number;
+    completed_at: number | null;
+  }>();
+
+  if (activeRunIds.length > 0) {
+    const placeholders = activeRunIds.map(() => '?').join(', ');
+    const latestStepRows = db.prepare(`
+      SELECT s.*
+      FROM run_steps s
+      INNER JOIN (
+        SELECT run_id, MAX(COALESCE(updated_at, created_at)) AS latest_ts
+        FROM run_steps
+        WHERE run_id IN (${placeholders})
+        GROUP BY run_id
+      ) latest
+        ON latest.run_id = s.run_id
+       AND COALESCE(s.updated_at, s.created_at) = latest.latest_ts
+      ORDER BY s.updated_at DESC
+    `).all(...activeRunIds) as Array<{
+      id: string;
+      run_id: string;
+      name: string;
+      status: string;
+      detail: string | null;
+      created_at: number;
+      updated_at: number;
+      completed_at: number | null;
+    }>;
+
+    for (const step of latestStepRows) {
+      if (!latestStepsByRun.has(step.run_id)) {
+        latestStepsByRun.set(step.run_id, step);
+      }
+    }
+  }
+
+  const blockerRows = db.prepare(`
+    SELECT id, goal_id, agent, status, workflow_kind, description, error, provider_failure_kind, retry_at
+    FROM tasks
+    WHERE status IN ('paused', 'retry_scheduled', 'awaiting_review')
+      ${projectFilter ? 'AND project_id = ?' : ''}
+    ORDER BY COALESCE(completed_at, started_at, created_at) DESC
+    LIMIT 24
+  `).all(...projectArgs) as Array<{
+    id: string;
+    goal_id: string | null;
+    agent: string;
+    status: string;
+    workflow_kind: string | null;
+    description: string;
+    error: string | null;
+    provider_failure_kind: string | null;
+    retry_at: number | null;
+  }>;
+
+  const isReviewLane = (row: { agent: string; workflow_kind: string | null }) =>
+    row.workflow_kind === 'review'
+    || row.workflow_kind === 'validate'
+    || ['quality-agent', 'quality-guardian', 'codex-review', 'grill-me', 'legal', 'security-audit'].includes(row.agent);
+
+  const retryingReview = blockerRows.filter((row) => row.status === 'retry_scheduled' && isReviewLane(row));
+  const pausedReview = blockerRows.filter((row) => row.status === 'paused' && isReviewLane(row));
+  const awaitingReview = blockerRows.filter((row) => row.status === 'awaiting_review');
+  const blockers: Array<{
+    kind: 'review_paused' | 'review_retry' | 'awaiting_review' | 'execution_paused';
+    severity: 'warning' | 'critical';
+    title: string;
+    detail: string;
+    count: number;
+    taskIds: string[];
+  }> = [];
+
+  if (pausedReview.length > 0) {
+    const latest = pausedReview[0];
+    blockers.push({
+      kind: 'review_paused',
+      severity: activeRunRows.length === 0 ? 'critical' : 'warning',
+      title: `${pausedReview.length} paused review task${pausedReview.length === 1 ? '' : 's'} blocking progress`,
+      detail: `The review lane is paused. Latest issue: ${latest?.error ?? latest?.provider_failure_kind ?? latest?.description ?? 'unknown'}.`,
+      count: pausedReview.length,
+      taskIds: pausedReview.map((row) => row.id),
+    });
+  }
+
+  if (retryingReview.length > 0) {
+    const latest = retryingReview[0];
+    blockers.push({
+      kind: 'review_retry',
+      severity: 'warning',
+      title: `${retryingReview.length} review task${retryingReview.length === 1 ? '' : 's'} scheduled to retry`,
+      detail: `Review auto-heal has already rescheduled these tasks. Next retry: ${latest?.retry_at ? new Date(latest.retry_at).toISOString() : 'soon'}.`,
+      count: retryingReview.length,
+      taskIds: retryingReview.map((row) => row.id),
+    });
+  }
+
+  if (awaitingReview.length > 0) {
+    blockers.push({
+      kind: 'awaiting_review',
+      severity: 'warning',
+      title: `${awaitingReview.length} task${awaitingReview.length === 1 ? '' : 's'} awaiting review`,
+      detail: 'Execution finished, but these tasks are still waiting in the review lane.',
+      count: awaitingReview.length,
+      taskIds: awaitingReview.map((row) => row.id),
+    });
+  }
 
   const updatedAt = typeof daemon?.updatedAt === 'string' ? daemon.updatedAt : null;
   const lockStartedAt = typeof daemonLock?.startedAt === 'string' ? daemonLock.startedAt : null;
@@ -246,7 +407,85 @@ function buildLocalRuntimeBridge(projectFilter?: string) {
     activeRuns: Number(activeRunsRow?.count ?? 0),
     pausedRuns: Number(pausedRunsRow?.count ?? 0),
     latestRunUpdatedAt: activeRunsRow?.latest ? new Date(Number(activeRunsRow.latest)).toISOString() : null,
+    runs: activeRunRows.map((row) => {
+      const latestStep = latestStepsByRun.get(row.id);
+      const elapsedMs = Math.max(0, (row.completed_at ?? Date.now()) - row.created_at);
+      return {
+        id: row.id,
+        goalId: row.goal_id,
+        projectId: row.project_id,
+        agent: row.agent,
+        workflowKind: row.workflow_kind ?? 'review',
+        status: row.status,
+        retryClass: row.retry_class ?? 'none',
+        retryAt: row.retry_at,
+        providerFailureKind: row.provider_failure_kind ?? 'none',
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        completedAt: row.completed_at,
+        title: row.title,
+        description: row.description,
+        steps: latestStep ? [{
+          id: latestStep.id,
+          runId: latestStep.run_id,
+          name: latestStep.name,
+          status: latestStep.status,
+          detail: latestStep.detail,
+          createdAt: latestStep.created_at,
+          updatedAt: latestStep.updated_at,
+          completedAt: latestStep.completed_at,
+        }] : [],
+        elapsedMs,
+        estimatedDurationMs: null,
+        etaMs: null,
+        progressPct: latestStep?.status === 'running' ? 45 : null,
+        progressBasis: latestStep?.status === 'running' ? 'local-heartbeat' : 'none',
+      };
+    }),
+    blockers,
   };
+}
+
+function buildLocalDaemonStatusBridge() {
+  const daemonStatusPath = path.join(STATE_DIR, 'daemon-status.json');
+  if (!fs.existsSync(daemonStatusPath)) {
+    return {
+      source: 'local-bridge',
+      observedAt: null,
+      updatedAt: null,
+      runtime: null,
+      readiness: [],
+      autonomy: [],
+      rateLimitStatus: null,
+      version: null,
+    };
+  }
+
+  try {
+    const stat = statSync(daemonStatusPath);
+    const raw = JSON.parse(fs.readFileSync(daemonStatusPath, 'utf8')) as Record<string, unknown>;
+    return {
+      source: 'local-bridge',
+      observedAt: Math.round(stat.mtimeMs),
+      updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date(Math.round(stat.mtimeMs)).toISOString(),
+      runtime: raw.runtime ?? null,
+      readiness: Array.isArray(raw.readiness) ? raw.readiness : [],
+      autonomy: Array.isArray(raw.autonomy) ? raw.autonomy : [],
+      rateLimitStatus: raw.rateLimitStatus ?? null,
+      version: typeof raw.version === 'string' ? raw.version : null,
+    };
+  } catch {
+    return {
+      source: 'local-bridge',
+      observedAt: null,
+      updatedAt: null,
+      runtime: null,
+      readiness: [],
+      autonomy: [],
+      rateLimitStatus: null,
+      version: null,
+    };
+  }
 }
 
 function buildLocalHealthBridge(projectFilter?: string) {
@@ -388,6 +627,25 @@ const server = http.createServer((req, res) => {
     const project = url.searchParams.get('project') ?? undefined;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(buildLocalHealthBridge(project)));
+    return;
+  }
+
+  if (req.url?.startsWith('/api/daemon-status')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(buildLocalDaemonStatusBridge()));
+    return;
+  }
+
+  if (req.url?.startsWith('/api/start-decision')) {
+    const url = new URL(req.url, `http://localhost:${PORT}`);
+    const project = url.searchParams.get('project')?.trim();
+    if (!project) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Project is required' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(buildStartDecision(project)));
     return;
   }
 

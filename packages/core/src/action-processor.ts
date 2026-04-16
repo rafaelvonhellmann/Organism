@@ -1,11 +1,151 @@
 import { getDb } from './task-queue.js';
 import { captureProjectLaunchBaseline } from './launch-baseline.js';
+import { captureProjectMemorySnapshot } from './project-memory.js';
+import { decideProjectStart } from './start-continue.js';
+import { WorkflowKind } from '../../shared/src/types.js';
 
 interface DashboardAction {
   id: number;
   action: string;
   payload: string | null;
   status: string;
+}
+
+interface LaunchContext {
+  baseline: ReturnType<typeof captureProjectLaunchBaseline>;
+  memory: ReturnType<typeof captureProjectMemorySnapshot>;
+}
+
+function captureLaunchContext(project: string, action: 'review' | 'command' | 'start', command: string | null): LaunchContext {
+  return {
+    baseline: captureProjectLaunchBaseline({
+      projectId: project,
+      action,
+      command,
+    }),
+    memory: captureProjectMemorySnapshot(project),
+  };
+}
+
+async function launchProjectReview(params: {
+  project: string;
+  sourceAction: 'review' | 'start';
+  commandText?: string;
+  startReason?: string;
+}): Promise<string> {
+  const { submitTask } = await import('./orchestrator.js');
+  const { dispatchPendingTasks } = await import('./agent-runner.js');
+  const { loadProjectPolicy } = await import('./project-policy.js');
+  const project = params.project.trim();
+  const policy = loadProjectPolicy(project);
+  const medicalReadOnlyReview = policy.autonomySurfaces.readOnlyCanary;
+  const launch = captureLaunchContext(project, params.sourceAction, params.commandText ?? 'review project');
+
+  await submitTask({
+    description: `Project review of ${project}`,
+    input: {
+      projectId: project,
+      triggeredBy: params.sourceAction === 'start' ? 'dashboard-start' : 'dashboard',
+      reviewScope: 'project',
+      medicalReadOnlyReview,
+      startReason: params.startReason,
+      followupPolicy: medicalReadOnlyReview
+        ? {
+            boundedLane: 'medical_read_only',
+            allowedWorkflows: policy.autonomySurfaces.readOnlyWorkflows,
+            maxFollowups: 2,
+            recursionDisabled: true,
+          }
+        : undefined,
+      launchBaselineId: launch.baseline.snapshot.id,
+      launchBaselinePath: launch.baseline.filePath,
+      projectMemoryId: launch.memory.snapshot.id,
+      projectMemoryPath: launch.memory.filePath,
+      projectMemorySummary: launch.memory.snapshot.workingSummary,
+    },
+    projectId: project,
+    workflowKind: 'review',
+    sourceKind: 'dashboard',
+  }, {
+    agent: 'quality-agent',
+    projectId: project,
+    workflowKind: 'review',
+    sourceKind: 'dashboard',
+  });
+
+  await dispatchPendingTasks();
+
+  return `Review submitted and dispatched for ${project}\nReason: ${params.startReason ?? 'project review requested'}\nBaseline snapshot: ${launch.baseline.filePath}\nProject memory: ${launch.memory.filePath}`;
+}
+
+async function launchProjectWorkflow(params: {
+  project: string;
+  workflowKind: WorkflowKind | undefined;
+  commandText: string;
+  sourceAction: 'command' | 'start';
+  innovationRadar?: boolean;
+  startReason?: string;
+}): Promise<string> {
+  const { submitTask } = await import('./orchestrator.js');
+  const { dispatchPendingTasks } = await import('./agent-runner.js');
+  const { loadProjectPolicy } = await import('./project-policy.js');
+
+  const project = params.project.trim();
+  const policy = loadProjectPolicy(project);
+  const cmd = params.commandText.trim();
+  const workflowKind = params.workflowKind;
+  const medicalReadOnlyReview = workflowKind === 'review' && policy.autonomySurfaces.readOnlyCanary;
+  const launch = captureLaunchContext(project, params.sourceAction, cmd);
+
+  await submitTask({
+    description: params.innovationRadar ? policy.innovationRadar.description : cmd,
+    input: {
+      projectId: project,
+      project,
+      triggeredBy: params.sourceAction === 'start' ? 'dashboard-start' : 'dashboard-command',
+      medicalReadOnlyReview,
+      innovationRadar: params.innovationRadar === true,
+      shadowMode: params.innovationRadar ? policy.innovationRadar.shadow : undefined,
+      focusAreas: params.innovationRadar ? policy.innovationRadar.focusAreas : undefined,
+      maxOpportunities: params.innovationRadar ? policy.innovationRadar.maxOpportunities : undefined,
+      startReason: params.startReason,
+      followupPolicy: medicalReadOnlyReview
+        ? {
+            boundedLane: 'medical_read_only',
+            allowedWorkflows: policy.autonomySurfaces.readOnlyWorkflows,
+            maxFollowups: 2,
+            recursionDisabled: true,
+          }
+        : undefined,
+      reviewScope: workflowKind === 'review' ? 'project' : undefined,
+      launchBaselineId: launch.baseline.snapshot.id,
+      launchBaselinePath: launch.baseline.filePath,
+      projectMemoryId: launch.memory.snapshot.id,
+      projectMemoryPath: launch.memory.filePath,
+      projectMemorySummary: launch.memory.snapshot.workingSummary,
+    },
+    projectId: project,
+    workflowKind,
+    sourceKind: 'dashboard',
+  }, params.innovationRadar
+    ? {
+        agent: policy.innovationRadar.agent,
+        projectId: project,
+        workflowKind,
+        sourceKind: 'dashboard',
+      }
+    : workflowKind === 'review'
+      ? {
+          agent: 'quality-agent',
+          projectId: project,
+          workflowKind,
+          sourceKind: 'dashboard',
+        }
+      : undefined);
+
+  await dispatchPendingTasks();
+
+  return `Command submitted and dispatched: ${cmd}\nReason: ${params.startReason ?? 'explicit workflow requested'}\nBaseline snapshot: ${launch.baseline.filePath}\nProject memory: ${launch.memory.filePath}`;
 }
 
 export function claimDashboardAction(actionId: number): boolean {
@@ -42,56 +182,49 @@ export async function processDashboardActions(): Promise<void> {
       let result: string;
 
       switch (action.action) {
-        case 'review': {
-          // Dynamic import to avoid circular deps
-          const { submitTask } = await import('./orchestrator.js');
+        case 'start': {
+          if (typeof payload.project !== 'string' || payload.project.trim().length === 0) {
+            throw new Error('Dashboard start action requires an explicit project.');
+          }
+
+          const project = payload.project.trim();
           const { dispatchPendingTasks } = await import('./agent-runner.js');
-          const { loadProjectPolicy } = await import('./project-policy.js');
+          const decision = decideProjectStart(project);
+
+          if (decision.mode === 'continue') {
+            await dispatchPendingTasks();
+            result = `Continuing current work for ${project}\nReason: ${decision.reason}`;
+            break;
+          }
+
+          if (decision.workflowKind === 'review') {
+            result = await launchProjectReview({
+              project,
+              sourceAction: 'start',
+              commandText: decision.command ?? 'review project',
+              startReason: decision.reason,
+            });
+            break;
+          }
+
+          result = await launchProjectWorkflow({
+            project,
+            workflowKind: decision.workflowKind,
+            commandText: decision.command ?? `review ${project}`,
+            sourceAction: 'start',
+            startReason: decision.reason,
+          });
+          break;
+        }
+        case 'review': {
           if (typeof payload.project !== 'string' || payload.project.trim().length === 0) {
             throw new Error('Dashboard review action requires an explicit project.');
           }
-          const project = payload.project.trim();
-          const policy = loadProjectPolicy(project);
-          const medicalReadOnlyCanary = payload.canaryPreset === true && policy.autonomySurfaces.readOnlyCanary;
-          const baseline = captureProjectLaunchBaseline({
-            projectId: project,
-            action: 'review',
-            command: payload.canaryPreset === true ? 'canary review project' : 'review project',
+          result = await launchProjectReview({
+            project: payload.project.trim(),
+            sourceAction: 'review',
+            commandText: 'review project',
           });
-          await submitTask({
-            description: payload.canaryPreset === true
-              ? `Canary review of ${project} repository`
-              : `Full review of ${project} repository`,
-            input: {
-              projectId: project,
-              triggeredBy: 'dashboard',
-              reviewScope: 'project',
-              canaryPreset: payload.canaryPreset === true,
-              medicalReadOnlyCanary,
-              followupPolicy: medicalReadOnlyCanary
-                ? {
-                    boundedLane: 'medical_read_only',
-                    allowedWorkflows: policy.autonomySurfaces.readOnlyWorkflows,
-                    maxFollowups: 2,
-                    recursionDisabled: true,
-                  }
-                : undefined,
-              launchBaselineId: baseline.snapshot.id,
-              launchBaselinePath: baseline.filePath,
-            },
-            projectId: project,
-            workflowKind: 'review',
-            sourceKind: 'dashboard',
-          }, {
-            agent: 'quality-agent',
-            projectId: project,
-            workflowKind: 'review',
-            sourceKind: 'dashboard',
-          });
-          await dispatchPendingTasks();
-          result = payload.canaryPreset === true
-            ? `Canary repo review submitted and dispatched for ${project}\nBaseline snapshot: ${baseline.filePath}`
-            : `Review submitted and dispatched for ${project}\nBaseline snapshot: ${baseline.filePath}`;
           break;
         }
         case 'execute': {
@@ -113,69 +246,22 @@ export async function processDashboardActions(): Promise<void> {
             throw new Error('Dashboard command action requires an explicit project.');
           }
           const project = payload.project.trim();
-          const { loadProjectPolicy } = await import('./project-policy.js');
-          const policy = loadProjectPolicy(project);
           const innovationRadarCommand = /^\s*(innovation\s+radar|radar)\b/i.test(cmd);
-          const inferredReview = /^\s*(canary\s+)?review\b/i.test(cmd);
-          const workflowKind = typeof payload.workflowKind === 'string'
+          const inferredReview = /^\s*(canary\s+)?review\b/i.test(cmd) || /^\s*(healthy\s+run|run\s+a\s+healthy\s+run)\b/i.test(cmd);
+          const workflowKind = (typeof payload.workflowKind === 'string'
             ? payload.workflowKind
             : innovationRadarCommand
               ? 'review'
-            : inferredReview
+              : inferredReview
               ? 'review'
-              : undefined;
-          const medicalReadOnlyCanary = payload.canaryPreset === true && workflowKind === 'review' && policy.autonomySurfaces.readOnlyCanary;
-          const baseline = captureProjectLaunchBaseline({
-            projectId: project,
-            action: 'command',
-            command: cmd,
-          });
-          const { submitTask } = await import('./orchestrator.js');
-          const { dispatchPendingTasks } = await import('./agent-runner.js');
-          await submitTask({
-            description: innovationRadarCommand ? policy.innovationRadar.description : cmd,
-            input: {
-              projectId: project,
-              project,
-              triggeredBy: 'dashboard-command',
-              canaryPreset: payload.canaryPreset === true,
-              medicalReadOnlyCanary,
-              innovationRadar: innovationRadarCommand,
-              shadowMode: innovationRadarCommand ? policy.innovationRadar.shadow : undefined,
-              focusAreas: innovationRadarCommand ? policy.innovationRadar.focusAreas : undefined,
-              maxOpportunities: innovationRadarCommand ? policy.innovationRadar.maxOpportunities : undefined,
-              followupPolicy: medicalReadOnlyCanary
-                ? {
-                    boundedLane: 'medical_read_only',
-                    allowedWorkflows: policy.autonomySurfaces.readOnlyWorkflows,
-                    maxFollowups: 2,
-                    recursionDisabled: true,
-                  }
-                : undefined,
-              reviewScope: workflowKind === 'review' ? 'project' : undefined,
-              launchBaselineId: baseline.snapshot.id,
-              launchBaselinePath: baseline.filePath,
-            },
-            projectId: project,
+              : undefined) as WorkflowKind | undefined;
+          result = await launchProjectWorkflow({
+            project,
             workflowKind,
-            sourceKind: 'dashboard',
-          }, innovationRadarCommand
-            ? {
-                agent: policy.innovationRadar.agent,
-                projectId: project,
-                workflowKind,
-                sourceKind: 'dashboard',
-              }
-            : workflowKind === 'review'
-            ? {
-                agent: 'quality-agent',
-                projectId: project,
-                workflowKind,
-                sourceKind: 'dashboard',
-              }
-            : undefined);
-          await dispatchPendingTasks();
-          result = `Command submitted and dispatched: ${cmd}\nBaseline snapshot: ${baseline.filePath}`;
+            commandText: cmd,
+            sourceAction: 'command',
+            innovationRadar: innovationRadarCommand,
+          });
           break;
         }
         default:

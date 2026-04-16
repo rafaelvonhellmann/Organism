@@ -8,7 +8,7 @@ import { STATE_DIR } from '../../shared/src/state-dir.js';
 export interface LaunchBaselineSnapshot {
   id: string;
   projectId: string;
-  action: 'command' | 'review';
+  action: 'command' | 'review' | 'start';
   command: string | null;
   createdAt: number;
   readiness: ReturnType<typeof getProjectLaunchReadiness>;
@@ -51,7 +51,7 @@ function readDaemonStatus(): unknown | null {
 
 export function captureProjectLaunchBaseline(params: {
   projectId: string;
-  action: 'command' | 'review';
+  action: 'command' | 'review' | 'start';
   command?: string | null;
 }): { snapshot: LaunchBaselineSnapshot; filePath: string } {
   const readiness = getProjectLaunchReadiness(params.projectId);

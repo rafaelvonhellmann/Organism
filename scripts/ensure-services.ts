@@ -15,6 +15,8 @@ import { STATE_DIR, DB_PATH, PIDS_DIR } from '../packages/shared/src/state-dir.j
 const ROOT = path.resolve(import.meta.dirname, '..');
 const DAEMON_STATUS_FILE = path.join(STATE_DIR, 'daemon-status.json');
 const DAEMON_STATUS_STALE_MS = 2 * 60 * 1000;
+const DASHBOARD_PORT = Number.parseInt(process.env.DASHBOARD_PORT ?? '7391', 10);
+const DASHBOARD_HEALTH_URL = `http://127.0.0.1:${DASHBOARD_PORT}/api/health`;
 const require = createRequire(import.meta.url);
 const TSX_PACKAGE_JSON = require.resolve('tsx/package.json');
 const TSX_CLI_PATH = path.resolve(path.dirname(TSX_PACKAGE_JSON), 'dist', 'cli.mjs');
@@ -161,6 +163,26 @@ function findWindowsPid(commandNeedle: string, processName?: string): number | n
       '  Sort-Object CreationDate -Descending |',
       '  Select-Object -First 1 -ExpandProperty ProcessId;',
       'if ($p) { $p }',
+    ].join(' ');
+    const out = execSync(`powershell -NoProfile -Command "${ps}"`, {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    }).trim();
+    const pid = Number.parseInt(out, 10);
+    return Number.isFinite(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function findWindowsPidListeningOnPort(port: number): number | null {
+  if (process.platform !== 'win32') return null;
+  try {
+    const ps = [
+      `$conn = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1;`,
+      'if ($conn) { $conn.OwningProcess }',
     ].join(' ');
     const out = execSync(`powershell -NoProfile -Command "${ps}"`, {
       cwd: ROOT,
@@ -344,9 +366,54 @@ export async function ensureDaemon(): Promise<void> {
 // --- Dashboard ---
 
 export async function ensureDashboard(): Promise<void> {
-  if (isPidAlive('dashboard')) {
+  if (await fetchHealth(DASHBOARD_HEALTH_URL)) {
+    const discoveredPid = readPid('dashboard') ?? findWindowsPid('packages/dashboard/src/server.ts', 'node.exe');
+    if (discoveredPid) {
+      writePid('dashboard', discoveredPid);
+    }
     console.log('  Dashboard already running.');
     return;
+  }
+
+  const pidFromFile = readPid('dashboard');
+  const discoveredPid = pidFromFile ?? findWindowsPid('packages/dashboard/src/server.ts', 'node.exe');
+  if (discoveredPid !== null && isProcessRunning(discoveredPid)) {
+    if (!pidFromFile) {
+      writePid('dashboard', discoveredPid);
+    }
+    console.log('  Dashboard process found but health check failed. Restarting it cleanly...');
+    if (process.platform === 'win32') {
+      try {
+        execSync(`taskkill /PID ${discoveredPid} /T /F`, { stdio: 'ignore' });
+      } catch {
+        // Best effort; a later health check will confirm whether a conflict remains.
+      }
+    } else {
+      try {
+        process.kill(discoveredPid, 'SIGTERM');
+      } catch {
+        // Best effort.
+      }
+    }
+    clearPid('dashboard');
+    await sleep(1500);
+  }
+
+  const portPid = findWindowsPidListeningOnPort(DASHBOARD_PORT);
+  if (portPid !== null) {
+    const signature = getServiceSignature('dashboard');
+    if (signature && matchesServiceSignature(portPid, signature)) {
+      console.log(`  Dashboard port ${DASHBOARD_PORT} is owned by a stale dashboard process. Reclaiming it...`);
+      try {
+        execSync(`taskkill /PID ${portPid} /T /F`, { stdio: 'ignore' });
+      } catch {
+        // Best effort; health polling below will reveal whether the conflict remains.
+      }
+      await sleep(1500);
+    } else {
+      console.log(`  Dashboard port ${DASHBOARD_PORT} is occupied by another process (PID ${portPid}).`);
+      return;
+    }
   }
 
   console.log('  Starting dashboard...');
@@ -359,10 +426,22 @@ export async function ensureDashboard(): Promise<void> {
 
   if (pid) {
     writePid('dashboard', pid);
+  } else {
+    const discoveredPid = findWindowsPid('packages/dashboard/src/server.ts', 'node.exe');
+    if (discoveredPid) {
+      writePid('dashboard', discoveredPid);
+    }
   }
 
-  await sleep(1000);
-  console.log('  Dashboard started on :7391');
+  for (let i = 0; i < 15; i++) {
+    await sleep(1000);
+    if (await fetchHealth(DASHBOARD_HEALTH_URL)) {
+      console.log(`  Dashboard started on :${DASHBOARD_PORT}`);
+      return;
+    }
+  }
+
+  console.log(`  Dashboard did not become healthy in time. Check ${logs.stdoutFile} and ${logs.stderrFile}.`);
 }
 
 // --- Kill helpers ---

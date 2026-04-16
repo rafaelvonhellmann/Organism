@@ -416,6 +416,27 @@ function ReviewQueueInner() {
   }, [project]);
 
   const effectiveHealth = localHealth ?? health ?? null;
+  const effectiveTaskCounts = effectiveHealth?.taskCounts ?? {};
+  const activeProjectTasks = (effectiveTaskCounts.in_progress ?? 0) + (effectiveTaskCounts.pending ?? 0);
+  const blockedProjectTasks = (effectiveTaskCounts.retry_scheduled ?? 0) + (effectiveTaskCounts.paused ?? 0);
+  const awaitingReviewTasks = effectiveTaskCounts.awaiting_review ?? 0;
+  const projectState = activeProjectTasks > 0
+    ? 'working'
+    : blockedProjectTasks > 0 || awaitingReviewTasks > 0
+      ? 'blocked'
+      : 'ready';
+  const projectStateTone = projectState === 'working'
+    ? 'text-emerald-400'
+    : projectState === 'blocked'
+      ? 'text-amber-300'
+      : 'text-sky-300';
+  const projectStateSummary = projectState === 'working'
+    ? `${activeProjectTasks} active task${activeProjectTasks === 1 ? '' : 's'} in flight`
+    : projectState === 'blocked'
+      ? blockedProjectTasks > 0
+        ? `${blockedProjectTasks} task${blockedProjectTasks === 1 ? '' : 's'} waiting on retry or recovery`
+        : `${awaitingReviewTasks} task${awaitingReviewTasks === 1 ? '' : 's'} waiting for review`
+      : 'Ready for the next safe step';
 
   // Browser notification tracking
   const prevQueueLenRef = useRef(0);
@@ -598,19 +619,11 @@ function ReviewQueueInner() {
       return;
     }
     try {
-      await submitDashboardAction({ action: 'review', payload: { project } });
+      await submitDashboardAction({ action: 'start', payload: { project } });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create review action');
+      setError(err instanceof Error ? err.message : 'Failed to start or continue project work');
     }
   }, [project]);
-
-  const handleDispatch = useCallback(async () => {
-    try {
-      await submitDashboardAction({ action: 'execute' });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create execute action');
-    }
-  }, []);
 
   async function handleBatchApprove() {
     const routineItems = queue.filter(t => t.lane !== 'HIGH');
@@ -707,7 +720,7 @@ function ReviewQueueInner() {
   return (
     <>
       <Header
-        title={perspectiveFilter ? `Queue: ${perspectiveFilter}` : 'Review Queue'}
+        title={perspectiveFilter ? `Review: ${perspectiveFilter}` : 'Review'}
         project={project}
         onProjectChange={setProject}
         lastUpdated={lastUpdated}
@@ -722,6 +735,10 @@ function ReviewQueueInner() {
                 <span className={`w-2 h-2 rounded-full ${effectiveHealth.daemonAlive ? 'bg-green-500' : 'bg-red-500'}`} />
                 <span className="text-zinc-400">{effectiveHealth.daemonAlive ? 'Daemon active' : 'Daemon inactive'}</span>
               </div>
+              <span className={`${projectStateTone}`}>
+                Project state: <span className="capitalize">{projectState}</span>
+              </span>
+              <span className="text-zinc-600">{projectStateSummary}</span>
               {effectiveHealth.lastActivity && (
                 <span className="text-zinc-600">
                   Last activity: {effectiveHealth.minutesSinceActivity < 1 ? 'just now' : `${effectiveHealth.minutesSinceActivity}m ago`}
@@ -733,14 +750,14 @@ function ReviewQueueInner() {
                   onClick={handleRunReview}
                   className="px-2.5 py-1 rounded bg-emerald-600/20 text-emerald-400 border border-emerald-600/30 hover:bg-emerald-600/30 transition-colors"
                 >
-                  Run Review
+                  Start / Continue
                 </button>
-                <button
-                  onClick={handleDispatch}
-                  className="px-2.5 py-1 rounded bg-blue-600/20 text-blue-400 border border-blue-600/30 hover:bg-blue-600/30 transition-colors"
+                <Link
+                  href="/command"
+                  className="px-2.5 py-1 rounded border border-zinc-700 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
                 >
-                  Execute Tasks
-                </button>
+                  Manual override
+                </Link>
               </div>
             </div>
           </div>
@@ -803,7 +820,7 @@ function ReviewQueueInner() {
             {loading && (
               <div className="text-center py-16">
                 <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse mx-auto mb-3" />
-                <p className="text-sm text-zinc-500">Loading review queue...</p>
+                <p className="text-sm text-zinc-500">Loading review work...</p>
               </div>
             )}
 
@@ -824,7 +841,10 @@ function ReviewQueueInner() {
                     </p>
                   </div>
                 ) : (
-                  <p className="text-sm text-zinc-500">No items pending review right now.</p>
+                  <div className="space-y-1 text-sm text-zinc-500">
+                    <p>No items need your review right now.</p>
+                    <p>Organism should keep choosing the next safe step automatically in the background.</p>
+                  </div>
                 )}
                 <Link
                   href="/history"
