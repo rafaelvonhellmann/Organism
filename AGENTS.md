@@ -36,3 +36,4 @@ All new agents start as `status: 'shadow'` in `knowledge/capability-registry.jso
 - Commits prefixed `[agent]`
 - No force push, no hard reset, no amend
 - PRs only — cannot merge
+
