@@ -5,5 +5,6 @@
     "outDir": "dist"
   },
   "include": ["packages/**/*.ts", "agents/**/*.ts", "scripts/**/*.ts"],
-  "exclude": ["node_modules", "dist", "**/*.spec.ts"]
+  "exclude": ["node_modules", "dist", "packages/dashboard-v2/**", "**/*.spec.ts"]
 }
+
