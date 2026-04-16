@@ -1,18 +1,18 @@
 /**
- * MCP Client — shared model access for Organism agents.
+ * MCP Client — shared Anthropic model access for Organism agents.
  *
- * Organism keeps its internal model discipline (Haiku/Sonnet/Opus) as abstract
- * capability tiers, but normal runtime execution is now OpenAI-first:
+ * Organism keeps its model discipline (Haiku/Sonnet/Opus), but the runtime
+ * backend is configurable so the company can be launched smoothly from either
+ * Claude Code or Codex:
  *
- * - `codex-cli`: primary backend for CLI-native OpenAI execution
- * - `openai-api`: secondary backend when direct API access is needed
- * - `claude-cli` / `anthropic-api`: explicit legacy backends only
+ * - `claude-cli`: use the local Claude CLI (`claude -p`)
+ * - `anthropic-api`: use the Anthropic SDK with `ANTHROPIC_API_KEY`
+ * - `auto` (default): prefer Codex CLI first to consume ChatGPT/Codex CLI
+ *   capacity, then fall back to Claude CLI, OpenAI API, and finally the
+ *   Anthropic API
  *
- * In `auto` mode, Organism prefers OpenAI-backed execution and only considers
- * Anthropic backends when `ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK=true`.
- *
- * Legacy compatibility: `USE_API_DIRECT=true` now maps to
- * `ORGANISM_MODEL_BACKEND=openai-api`.
+ * Legacy compatibility: `USE_API_DIRECT=true` still maps to
+ * `ORGANISM_MODEL_BACKEND=anthropic-api`.
  */
 
 import { spawn, spawnSync } from 'child_process';
@@ -52,32 +52,28 @@ export interface ModelBackendStatus {
   capabilities: ModelBackendCapabilities;
 }
 
-type BackendFailureClass = 'rate_limit' | 'credit' | 'transport' | 'auth' | 'generic';
-
-const BACKEND_HEALTH_PATH = join(homedir(), '.organism', 'state', 'model-backend-health.json');
-const backendCooldownUntil = new Map<ModelBackendKind, number>();
-
-function allowLegacyAnthropicFallback(): boolean {
-  return /^(1|true|yes)$/i.test(process.env.ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK ?? '');
-}
-
 interface OpenAiModelSpec {
   cliModel: string;
   apiModel: string;
   reasoningEffort: 'low' | 'medium' | 'high';
 }
 
+type BackendFailureClass = 'rate_limit' | 'credit' | 'transport' | 'auth' | 'generic';
+
+const BACKEND_HEALTH_PATH = join(homedir(), '.organism', 'state', 'model-backend-health.json');
+const backendCooldownUntil = new Map<ModelBackendKind, number>();
+
 export function resolveOpenAiModelSpec(model: SupportedModelProfile): OpenAiModelSpec {
   const routerModel = process.env.ORGANISM_OPENAI_ROUTER_MODEL
     ?? process.env.ORGANISM_OPENAI_SMALL_MODEL
-    ?? 'gpt-4o';
+    ?? 'gpt-5.4';
   const defaultModel = process.env.ORGANISM_OPENAI_DEFAULT_MODEL
     ?? process.env.ORGANISM_OPENAI_FALLBACK_MODEL
     ?? 'gpt-5.4';
   const deepModel = process.env.ORGANISM_OPENAI_DEEP_MODEL
     ?? defaultModel
     ?? 'gpt-5.4';
-  const reviewModel = process.env.ORGANISM_OPENAI_REVIEW_MODEL ?? 'gpt-4o';
+  const reviewModel = process.env.ORGANISM_OPENAI_REVIEW_MODEL ?? 'gpt-5.4';
   const reviewCliModel = process.env.ORGANISM_OPENAI_REVIEW_CLI_MODEL
     ?? process.env.ORGANISM_OPENAI_DEFAULT_MODEL
     ?? 'gpt-5.4';
@@ -241,7 +237,7 @@ function resolveBackendPreference(preference?: ModelBackendPreference): ModelBac
     return envPreference;
   }
 
-  if (process.env.USE_API_DIRECT === 'true') return 'openai-api';
+  if (process.env.USE_API_DIRECT === 'true') return 'anthropic-api';
   return 'auto';
 }
 
@@ -308,6 +304,15 @@ export function resolveModelBackend(
     };
   }
 
+  if (available.claudeCli && !backendOnCooldown('claude-cli')) {
+    return {
+      preferred: 'auto',
+      selected: 'claude-cli',
+      available,
+      capabilities: { webSearch: true, cliRateLimits: true },
+    };
+  }
+
   if (available.openaiApi && !backendOnCooldown('openai-api')) {
     return {
       preferred: 'auto',
@@ -317,24 +322,13 @@ export function resolveModelBackend(
     };
   }
 
-  if (allowLegacyAnthropicFallback()) {
-    if (available.claudeCli && !backendOnCooldown('claude-cli')) {
-      return {
-        preferred: 'auto',
-        selected: 'claude-cli',
-        available,
-        capabilities: { webSearch: true, cliRateLimits: true },
-      };
-    }
-
-    if (available.anthropicApi && !backendOnCooldown('anthropic-api')) {
-      return {
-        preferred: 'auto',
-        selected: 'anthropic-api',
-        available,
-        capabilities: { webSearch: false, cliRateLimits: false },
-      };
-    }
+  if (available.anthropicApi && !backendOnCooldown('anthropic-api')) {
+    return {
+      preferred: 'auto',
+      selected: 'anthropic-api',
+      available,
+      capabilities: { webSearch: false, cliRateLimits: false },
+    };
   }
 
   if (available.codexCli) {
@@ -343,6 +337,15 @@ export function resolveModelBackend(
       selected: 'codex-cli',
       available,
       capabilities: { webSearch: false, cliRateLimits: false },
+    };
+  }
+
+  if (available.claudeCli) {
+    return {
+      preferred: 'auto',
+      selected: 'claude-cli',
+      available,
+      capabilities: { webSearch: true, cliRateLimits: true },
     };
   }
 
@@ -355,30 +358,17 @@ export function resolveModelBackend(
     };
   }
 
-  if (allowLegacyAnthropicFallback()) {
-    if (available.claudeCli) {
-      return {
-        preferred: 'auto',
-        selected: 'claude-cli',
-        available,
-        capabilities: { webSearch: true, cliRateLimits: true },
-      };
-    }
-
-    if (available.anthropicApi) {
-      return {
-        preferred: 'auto',
-        selected: 'anthropic-api',
-        available,
-        capabilities: { webSearch: false, cliRateLimits: false },
-      };
-    }
+  if (available.anthropicApi) {
+    return {
+      preferred: 'auto',
+      selected: 'anthropic-api',
+      available,
+      capabilities: { webSearch: false, cliRateLimits: false },
+    };
   }
 
   throw new Error(
-    allowLegacyAnthropicFallback()
-      ? 'No supported model backend found. Install Codex CLI, set OPENAI_API_KEY, or explicitly enable a legacy Anthropic backend.'
-      : 'No supported OpenAI backend found. Install Codex CLI or set OPENAI_API_KEY. Legacy Anthropic fallback is disabled.',
+    'No supported model backend found. Install Claude Code or Codex CLI, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.',
   );
 }
 
@@ -771,23 +761,57 @@ function callCodexCli(
 
 async function callApiDirect(
   prompt: string,
-  model: SupportedModelProfile,
+  model: string,
   systemPrompt?: string,
   maxTokens = 8192,
 ): Promise<ModelCallResult> {
+  interface AnthropicTextBlock {
+    type: string;
+    text?: string;
+  }
+
+  interface AnthropicMessageResponse {
+    content: AnthropicTextBlock[];
+    usage: {
+      input_tokens: number;
+      output_tokens: number;
+    };
+  }
+
+  interface AnthropicMessagesApi {
+    create(args: {
+      model: string;
+      max_tokens: number;
+      system?: string;
+      messages: Array<{ role: 'user'; content: string }>;
+    }): Promise<AnthropicMessageResponse>;
+  }
+
+  interface AnthropicClient {
+    messages: AnthropicMessagesApi;
+  }
+
+  interface AnthropicModule {
+    default: new (options: { apiKey: string }) => AnthropicClient;
+  }
+
   const MODEL_IDS: Record<string, string> = {
     haiku: 'claude-haiku-4-5-20251001',
     sonnet: 'claude-sonnet-4-6',
     opus: 'claude-opus-4-6',
   };
 
-  const { default: Anthropic } = await import('@anthropic-ai/sdk');
+  const importAnthropic = new Function('specifier', 'return import(specifier)') as (
+    specifier: string,
+  ) => Promise<AnthropicModule>;
+  const { default: Anthropic } = await importAnthropic('@anthropic-ai/sdk').catch((error) => {
+    throw new Error(
+      `Selected model backend "anthropic-api" is unavailable in this environment: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
   const apiKey = getSecretOrNull('ANTHROPIC_API_KEY');
   if (!apiKey) {
     throw new Error('Selected model backend "anthropic-api" requires ANTHROPIC_API_KEY');
-  }
-  if (!(model in MODEL_IDS)) {
-    throw new Error(`Anthropic backend does not support the OpenAI-only model profile "${model}"`);
   }
 
   const client = new Anthropic({ apiKey });
@@ -804,8 +828,8 @@ async function callApiDirect(
   );
 
   const text = response.content
-    .filter((block) => block.type === 'text')
-    .map((block) => (block as { text: string }).text)
+    .filter((block): block is AnthropicTextBlock & { text: string } => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
     .join('');
 
   return {
@@ -878,9 +902,12 @@ async function callOpenAiDirect(
 }
 
 function autoFallbackOrder(status: ModelBackendStatus): ModelBackendKind[] {
-  const candidates: ModelBackendKind[] = allowLegacyAnthropicFallback()
-    ? ['codex-cli', 'openai-api', 'claude-cli', 'anthropic-api']
-    : ['codex-cli', 'openai-api'];
+  const candidates: ModelBackendKind[] = [
+    'codex-cli',
+    'claude-cli',
+    'openai-api',
+    'anthropic-api',
+  ];
 
   const prioritized = candidates.filter((backend) => {
     switch (backend) {
@@ -981,7 +1008,7 @@ async function callSelectedBackend(
 
 export async function callModel(
   prompt: string,
-  model: LogicalModelProfile,
+  model: 'haiku' | 'sonnet' | 'opus',
   systemPrompt?: string,
 ): Promise<ModelCallResult> {
   return callSelectedBackend(prompt, model, systemPrompt, 2048);
@@ -989,7 +1016,7 @@ export async function callModel(
 
 export async function callModelLong(
   prompt: string,
-  model: LogicalModelProfile,
+  model: 'haiku' | 'sonnet' | 'opus',
   systemPrompt?: string,
   maxTokens = 4096,
 ): Promise<ModelCallResult> {
@@ -998,7 +1025,7 @@ export async function callModelLong(
 
 export async function callModelUltra(
   prompt: string,
-  model: LogicalModelProfile,
+  model: 'haiku' | 'sonnet' | 'opus',
   systemPrompt?: string,
 ): Promise<ModelCallResult> {
   return callSelectedBackend(prompt, model, systemPrompt, 8192);

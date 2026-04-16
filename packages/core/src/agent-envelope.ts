@@ -3,12 +3,13 @@ import { AgentEnvelope, AgentEnvelopeKind, HandoffRequest, Task, TypedFinding } 
 function extractText(output: unknown): string {
   if (!output) return '';
   if (typeof output === 'string') return output;
-  if (typeof output === 'object') {
+  if (output && typeof output === 'object') {
     const record = output as Record<string, unknown>;
     const keys = ['summary', 'text', 'report', 'review', 'implementation', 'analysis', 'plan', 'brief'];
     for (const key of keys) {
-      if (typeof record[key] === 'string' && record[key].trim().length > 0) {
-        return record[key].trim();
+      const candidate = record[key];
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
       }
     }
     for (const value of Object.values(record)) {

@@ -9,6 +9,7 @@ import { INNOVATION_RADAR_REVIEW_OPTIONS, composeInnovationRadarReason, type Inn
 import { getInitialSelectedProject } from '@/lib/selected-project';
 import { submitDashboardAction } from '@/lib/dashboard-action-client';
 import { loadLocalHealthBridge, type LocalHealthBridgeSnapshot } from '@/lib/local-bridge-client';
+import { loadLocalRuntimeBridge, type LocalRuntimeBridgeSnapshot } from '@/lib/runtime-bridge-client';
 import { usePolling } from '@/hooks/use-polling';
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard';
 import Link from 'next/link';
@@ -38,6 +39,21 @@ interface QueueResponse {
   total: number;
   reviewed: number;
   pending: number;
+}
+
+interface ActivityRun {
+  id: string;
+  agent: string;
+  workflowKind: string;
+  status: string;
+  updatedAt: number;
+  retryAt: number | null;
+  steps: Array<{
+    id: string;
+    status: string;
+    detail: string | null;
+    updatedAt: number;
+  }>;
 }
 
 // ── Agent role mapping ─────────────────────────────────────────
@@ -334,6 +350,34 @@ function formatTimestamp(ms: number | null): string {
   });
 }
 
+function formatActivityTime(ms: number | null | undefined): string {
+  if (!ms) return 'unknown time';
+  return new Date(ms).toLocaleString('en-AU', {
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function workflowLabel(workflowKind: string): string {
+  switch (workflowKind) {
+    case 'review':
+      return 'review';
+    case 'implement':
+      return 'implementation';
+    case 'validate':
+      return 'validation';
+    case 'recover':
+      return 'recovery';
+    case 'plan':
+      return 'planning';
+    default:
+      return workflowKind;
+  }
+}
+
 function isInnovationRadarTask(task: QueueTask | null): boolean {
   return task?.agent === 'competitive-intel';
 }
@@ -400,12 +444,18 @@ function ReviewQueueInner() {
     pendingActions: number;
   }>('/api/health');
   const [localHealth, setLocalHealth] = useState<LocalHealthBridgeSnapshot | null>(null);
+  const [localRuntime, setLocalRuntime] = useState<LocalRuntimeBridgeSnapshot | null>(null);
 
   useEffect(() => {
     let mounted = true;
     const poll = async () => {
-      const snapshot = await loadLocalHealthBridge(project || undefined);
-      if (mounted) setLocalHealth(snapshot);
+      const [healthSnapshot, runtimeSnapshot] = await Promise.all([
+        loadLocalHealthBridge(project || undefined),
+        loadLocalRuntimeBridge(project || undefined),
+      ]);
+      if (!mounted) return;
+      setLocalHealth(healthSnapshot);
+      setLocalRuntime(runtimeSnapshot);
     };
     void poll();
     const id = setInterval(() => { void poll(); }, 10_000);
@@ -416,6 +466,12 @@ function ReviewQueueInner() {
   }, [project]);
 
   const effectiveHealth = localHealth ?? health ?? null;
+  const activeProjectRuns = useMemo<ActivityRun[]>(() => {
+    if (!localRuntime?.runs?.length) return [];
+    return localRuntime.runs
+      .filter((run) => run.status !== 'completed' && run.status !== 'failed' && run.status !== 'cancelled')
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+  }, [localRuntime]);
   const effectiveTaskCounts = effectiveHealth?.taskCounts ?? {};
   const activeProjectTasks = (effectiveTaskCounts.in_progress ?? 0) + (effectiveTaskCounts.pending ?? 0);
   const blockedProjectTasks = (effectiveTaskCounts.retry_scheduled ?? 0) + (effectiveTaskCounts.paused ?? 0);
@@ -824,11 +880,49 @@ function ReviewQueueInner() {
               </div>
             )}
 
+            {activeProjectRuns.length > 0 && (
+              <section className="mb-6 rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-zinc-100">Current project work</h2>
+                    <p className="mt-1 text-xs text-zinc-500">Live local daemon work for this project, even when the review inbox is empty.</p>
+                  </div>
+                  <span className="text-xs text-emerald-400">{activeProjectRuns.length} active</span>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {activeProjectRuns.map((run) => {
+                    const latestStep = [...run.steps].reverse().find((step) => step.status === 'running') ?? [...run.steps].reverse()[0] ?? null;
+                    return (
+                      <div key={run.id} className="rounded-lg border border-zinc-800 bg-zinc-950/70 px-4 py-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-medium text-zinc-100">
+                              {agentRole(run.agent)} running {workflowLabel(run.workflowKind)}
+                            </div>
+                            <div className="mt-1 text-xs text-zinc-500">
+                              Updated {formatActivityTime(run.updatedAt)}
+                              {run.retryAt ? ` · retry at ${formatActivityTime(run.retryAt)}` : ''}
+                            </div>
+                          </div>
+                          <StatusBadge status={run.status} />
+                        </div>
+                        <p className="mt-2 text-sm text-zinc-300">
+                          {latestStep?.detail ?? 'Still working through the current step.'}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
             {/* Empty state */}
             {queueEmpty && (
               <div className="text-center py-16">
                 <div className="text-4xl mb-4">&#10003;</div>
-                <h2 className="text-xl font-semibold text-zinc-100 mb-2">All caught up</h2>
+                <h2 className="text-xl font-semibold text-zinc-100 mb-2">
+                  {activeProjectRuns.length > 0 ? 'Review inbox is clear' : 'All caught up'}
+                </h2>
                 {sessionTotal > 0 ? (
                   <div className="text-sm text-zinc-400 space-y-1">
                     <p>You reviewed {sessionTotal} item{sessionTotal !== 1 ? 's' : ''} this session</p>
@@ -842,8 +936,16 @@ function ReviewQueueInner() {
                   </div>
                 ) : (
                   <div className="space-y-1 text-sm text-zinc-500">
-                    <p>No items need your review right now.</p>
-                    <p>Organism should keep choosing the next safe step automatically in the background.</p>
+                    <p>
+                      {activeProjectRuns.length > 0
+                        ? 'No items need your decision right now, but Organism is still actively working on this project.'
+                        : 'No items need your review right now.'}
+                    </p>
+                    <p>
+                      {activeProjectRuns.length > 0
+                        ? 'The live work is surfaced above under Current project work.'
+                        : 'Organism should keep choosing the next safe step automatically in the background.'}
+                    </p>
                   </div>
                 )}
                 <Link
