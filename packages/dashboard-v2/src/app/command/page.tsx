@@ -79,43 +79,23 @@ function canLaunchWorkflow(readiness: LaunchReadiness | null, workflow: string):
 
 function buildFallbackStartDecision(project: string | null, readiness: LaunchReadiness | null): LocalStartDecisionSnapshot | null {
   if (!project) return null;
-  if (!readiness || readiness.initialWorkflowGuardActive) {
-    return {
-      projectId: project,
-      mode: 'review',
-      workflowKind: 'review',
-      label: 'Start safe review',
-      summary: 'Inspect the project and let Organism choose the next safe work.',
-      reason: readiness?.initialWorkflowGuardActive
-        ? `The early launch guard still allows only ${readiness.initialAllowedWorkflows.join(', ')}.`
-        : 'No fresh local controller decision is available yet.',
-      command: 'review project',
-      state: {
-        activeTasks: 0,
-        activeRuns: 0,
-        blockedTasks: 0,
-        awaitingReview: 0,
-        latestCompletedWorkflow: null,
-        initialWorkflowGuardActive: readiness?.initialWorkflowGuardActive ?? false,
-      },
-    };
-  }
-
   return {
     projectId: project,
-    mode: 'implement',
-    workflowKind: 'implement',
-    label: 'Continue with the next task',
-    summary: 'Let Organism choose the next bounded task and keep the project moving.',
-    reason: 'No fresh local controller decision is available yet.',
-    command: `implement the next safest useful task for ${project}`,
+    mode: 'review',
+    workflowKind: 'review',
+    label: 'Start safe review',
+    summary: 'Inspect the project and let Organism choose the next safe work.',
+    reason: readiness?.initialWorkflowGuardActive
+      ? `The early launch guard still allows only ${readiness.initialAllowedWorkflows.join(', ')}.`
+      : 'No fresh local controller decision is available yet, so Start / Continue defaults to review.',
+    command: 'review project',
     state: {
       activeTasks: 0,
       activeRuns: 0,
       blockedTasks: 0,
       awaitingReview: 0,
       latestCompletedWorkflow: null,
-      initialWorkflowGuardActive: readiness.initialWorkflowGuardActive,
+      initialWorkflowGuardActive: readiness?.initialWorkflowGuardActive ?? false,
     },
   };
 }
@@ -367,6 +347,8 @@ export default function CommandPage() {
   ], [project]);
 
   const recentActions = actions.slice(0, 6);
+  const bridgeUnavailable = error?.toLowerCase().includes('local daemon bridge is unavailable') ?? false;
+  const localLaunchUrl = `http://127.0.0.1:7391/command${project ? `?project=${encodeURIComponent(project)}` : ''}`;
 
   return (
     <>
@@ -391,7 +373,27 @@ export default function CommandPage() {
 
         {error && (
           <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
-            {error}
+            <div>{error}</div>
+            {bridgeUnavailable && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <a
+                  href={localLaunchUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-lg border border-red-300/30 bg-red-950/40 px-3 py-1.5 text-xs text-red-100 hover:bg-red-900/50"
+                >
+                  Open local launch page
+                </a>
+                <button
+                  type="button"
+                  onClick={sendStartContinue}
+                  disabled={sending || !project}
+                  className="rounded-lg border border-red-300/30 bg-red-950/40 px-3 py-1.5 text-xs text-red-100 hover:bg-red-900/50 disabled:opacity-50"
+                >
+                  Retry start
+                </button>
+              </div>
+            )}
           </div>
         )}
 

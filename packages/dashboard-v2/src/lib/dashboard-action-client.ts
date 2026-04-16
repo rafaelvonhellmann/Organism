@@ -75,15 +75,25 @@ export async function submitDashboardAction(request: DashboardActionRequest): Pr
     remoteError = error instanceof Error ? error.message : String(error);
   }
 
-  const local = await fetch(`${LOCAL_DASHBOARD_ORIGIN}/api/actions`, {
-    method: 'POST',
-    mode: 'cors',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Organism-Bridge': '1',
-    },
-    body: JSON.stringify(request),
-  });
+  let local: Response;
+  try {
+    local = await fetch(`${LOCAL_DASHBOARD_ORIGIN}/api/actions`, {
+      method: 'POST',
+      mode: 'cors',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Organism-Bridge': '1',
+      },
+      body: JSON.stringify(request),
+    });
+  } catch (error) {
+    const localBridgeError = 'Local daemon bridge is unavailable on 127.0.0.1:7391. Start or restart Organism locally, then open http://127.0.0.1:7391/command and launch from there.';
+    const remoteContext = remoteError && remoteError !== 'Failed to fetch'
+      ? `${remoteError}. `
+      : '';
+    throw new Error(`${remoteContext}${localBridgeError}`);
+  }
+
   const localBody = await readJson<{ ok?: boolean; action?: string; error?: string }>(local);
   if (!local.ok || !localBody?.ok) {
     throw new Error(localBody?.error ?? remoteError ?? 'Failed to create action');
