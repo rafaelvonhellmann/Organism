@@ -18,8 +18,7 @@ const DAEMON_STATUS_STALE_MS = 2 * 60 * 1000;
 const DASHBOARD_PORT = Number.parseInt(process.env.DASHBOARD_PORT ?? '7391', 10);
 const DASHBOARD_HEALTH_URL = `http://127.0.0.1:${DASHBOARD_PORT}/api/health`;
 const require = createRequire(import.meta.url);
-const TSX_PACKAGE_JSON = require.resolve('tsx/package.json');
-const TSX_CLI_PATH = path.resolve(path.dirname(TSX_PACKAGE_JSON), 'dist', 'cli.mjs');
+const TSX_CLI_PATH = require.resolve('tsx/cli');
 
 interface ServiceSignature {
   processName?: string;

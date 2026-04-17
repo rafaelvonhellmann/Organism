@@ -61,6 +61,10 @@ export interface LocalDaemonStatusSnapshot {
   source: string;
   observedAt: number | null;
   updatedAt: string | null;
+  syncStatus: {
+    status?: 'ok' | 'failed' | 'blocked';
+    reason?: string | null;
+  } | null;
   runtime: {
     modelBackend?: string | null;
     codeExecutor?: string | null;

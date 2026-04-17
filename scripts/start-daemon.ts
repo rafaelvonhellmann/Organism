@@ -39,8 +39,7 @@ let dashboardServer: unknown = null;
 bootstrapRuntimeEnv();
 const VERSION = '0.2.0';
 const require = createRequire(import.meta.url);
-const TSX_PACKAGE_JSON = require.resolve('tsx/package.json');
-const TSX_CLI_PATH = path.resolve(path.dirname(TSX_PACKAGE_JSON), 'dist', 'cli.mjs');
+const TSX_CLI_PATH = require.resolve('tsx/cli');
 const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? '7391');
 const DAEMON_POLL_MS = 10_000;   // 10 seconds — agent runner polling interval
 const SCHEDULER_TICK_MS = 60_000; // 60 seconds — scheduler tick interval

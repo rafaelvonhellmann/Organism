@@ -299,8 +299,11 @@ export default function CommandPage() {
   const remoteObservedAt = runtime?.daemon?.observedAt ?? null;
   const localObservedAt = localDaemonStatus?.observedAt ?? null;
   const remoteLooksStale = remoteObservedAt != null && (Date.now() - remoteObservedAt) > 90_000;
+  const localSyncBlocked = localDaemonStatus?.syncStatus?.status === 'blocked';
   const preferLocalDaemonStatus = !!localDaemonStatus && (
-    remoteObservedAt == null
+    localSyncBlocked
+    || !runtime?.daemon
+    || remoteObservedAt == null
     || remoteLooksStale
     || (localObservedAt ?? 0) > (remoteObservedAt ?? 0)
   );
@@ -441,7 +444,7 @@ export default function CommandPage() {
                 </span>
                 {preferLocalDaemonStatus && (
                   <span className="rounded-full border border-amber-500/20 bg-amber-500/5 px-2.5 py-1 text-amber-300">
-                    local daemon truth
+                    {localSyncBlocked ? 'local daemon truth (remote sync blocked)' : 'local daemon truth'}
                   </span>
                 )}
               </div>

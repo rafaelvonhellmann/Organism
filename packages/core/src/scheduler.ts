@@ -16,6 +16,7 @@ import { processDashboardActions } from './action-processor.js';
 import { listProjectPolicies } from './project-policy.js';
 import { seedIdleAutonomyCycles } from './autonomy-loop.js';
 import { AgentCapability, GoalSourceKind, ProjectPolicy, WorkflowKind } from '../../shared/src/types.js';
+import { OrganismError } from '../../shared/src/error-taxonomy.js';
 
 function schedulerSyncEnabled(): boolean {
   return process.env.ORGANISM_DISABLE_SCHEDULER_SYNC !== '1';
@@ -104,6 +105,13 @@ const DEFAULT_PROJECT_SCHEDULE: ScheduledProjectRun[] = [
 ];
 
 const scheduledProjectRunLastPeriod = new Map<string, string>();
+
+function isTaskCollisionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(OrganismError.TASK_CHECKOUT_CONFLICT)
+    || /Duplicate task detected/i.test(message)
+    || /Active goal task already exists/i.test(message);
+}
 
 export function buildScheduledProjectRuns(policies: ProjectPolicy[] = listProjectPolicies()): ScheduledProjectRun[] {
   const scheduled = [...DEFAULT_PROJECT_SCHEDULE];
@@ -368,7 +376,6 @@ async function schedulerTick(): Promise<void> {
     const lastRunPeriod = scheduledProjectRunLastPeriod.get(schedule.id) ?? null;
     if (!isScheduledProjectRunDue(schedule, now, lastRunPeriod)) continue;
 
-    scheduledProjectRunLastPeriod.set(schedule.id, periodKey);
     try {
       const { submitTask } = await import('./orchestrator.js');
       await submitTask({
@@ -388,8 +395,14 @@ async function schedulerTick(): Promise<void> {
         workflowKind: schedule.workflowKind,
         sourceKind: schedule.sourceKind,
       });
+      scheduledProjectRunLastPeriod.set(schedule.id, periodKey);
       console.log(`[Scheduler] Triggered ${schedule.kind.replace('_', ' ')} for ${schedule.projectId}`);
     } catch (err) {
+      if (isTaskCollisionError(err)) {
+        scheduledProjectRunLastPeriod.set(schedule.id, periodKey);
+        console.log(`[Scheduler] ${schedule.kind.replace('_', ' ')} for ${schedule.projectId} is already queued for this period — skipping duplicate trigger`);
+        continue;
+      }
       console.warn(`[Scheduler] Failed to trigger ${schedule.kind} for ${schedule.projectId}:`, (err as Error).message);
     }
   }

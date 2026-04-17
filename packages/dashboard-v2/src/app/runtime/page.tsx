@@ -407,9 +407,11 @@ export default function RuntimePage() {
   const localBridgeLooksFresh = (localBridge?.daemon.observedAt ?? 0) > 0
     && Date.now() - (localBridge?.daemon.observedAt ?? 0) <= 90_000;
   const localDaemonAlive = localBridge?.daemon.alive === true;
+  const localSyncBlocked = localDaemonStatus?.syncStatus?.status === 'blocked';
   const preferLocalBridge = !!localBridge
     && (
-      daemonLooksStale
+      localSyncBlocked
+      || daemonLooksStale
       || !snapshot?.daemon
       || (localBridge.daemon.observedAt ?? 0) > (snapshot.daemon.observedAt ?? 0)
     );
@@ -527,8 +529,12 @@ export default function RuntimePage() {
       : selectedAutonomy?.rolloutReady
         ? 'The project is clean enough for Organism to keep choosing the next safe step automatically.'
         : 'No active task is visible right now. Organism is waiting for the next safe review or cooldown window.';
-  const projectStateSource = preferLocalBridge ? 'local daemon truth' : 'synced hosted state';
-  const suppressHostedHistory = preferLocalBridge && effectiveDaemonLooksStale;
+  const projectStateSource = preferLocalBridge
+    ? localSyncBlocked
+      ? 'local daemon truth (remote sync blocked)'
+      : 'local daemon truth'
+    : 'synced hosted state';
+  const suppressHostedHistory = preferLocalBridge && (effectiveDaemonLooksStale || localSyncBlocked);
 
   return (
     <>
@@ -602,7 +608,9 @@ export default function RuntimePage() {
           </div>
           {preferLocalBridge && (
             <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
-              Local daemon truth is overriding stale hosted runtime state for this view.
+              {localSyncBlocked
+                ? 'Remote sync is blocked, so local daemon truth is authoritative for this view.'
+                : 'Local daemon truth is overriding stale hosted runtime state for this view.'}
             </div>
           )}
           {(effectiveDaemonUpdatedAt || effectiveDaemonSource || effectiveDaemonAgeMs != null) && (
