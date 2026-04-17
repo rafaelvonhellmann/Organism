@@ -111,6 +111,48 @@ function commandExists(command: string): boolean {
   return result.status === 0;
 }
 
+function resolveCommandPath(command: string): string {
+  const locator = process.platform === 'win32' ? 'where.exe' : 'which';
+  const result = spawnSync(locator, [command], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (result.status !== 0) {
+    throw new Error(`Command "${command}" is not available on PATH`);
+  }
+  const candidates = String(result.stdout ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (candidates.length === 0) {
+    throw new Error(`Unable to resolve command path for "${command}"`);
+  }
+  if (process.platform === 'win32') {
+    const preferred = candidates.find((candidate) => /\.(cmd|bat|exe)$/i.test(candidate));
+    if (preferred) return preferred;
+  }
+  return candidates[0]!;
+}
+
+function spawnCliCommand(command: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv) {
+  const resolved = resolveCommandPath(command);
+  const isWindowsCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolved);
+  if (isWindowsCmd) {
+    return spawn('cmd.exe', ['/d', '/s', '/c', resolved, ...args], {
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      shell: false,
+      env,
+    });
+  }
+
+  return spawn(resolved, args, {
+    cwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    shell: false,
+    env,
+  });
+}
+
 function availableModelBackends(): ModelBackendAvailability {
   return {
     claudeCli: commandExists('claude'),
@@ -595,11 +637,7 @@ function callClaude(
 
     const fullPrompt = buildPrompt(prompt, systemPrompt);
 
-    const child = spawn('claude', args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-      shell: true,
-    });
+    const child = spawnCliCommand('claude', args, process.cwd(), { ...process.env });
 
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
@@ -703,13 +741,7 @@ function callCodexCli(
       '-',
     ];
 
-    const child = spawn('codex', args, {
-      cwd: process.cwd(),
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-      shell: true,
-      env: { ...process.env },
-    });
+    const child = spawnCliCommand('codex', args, process.cwd(), { ...process.env });
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
