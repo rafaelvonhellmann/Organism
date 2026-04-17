@@ -2,7 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AutonomyMode, MiniMaxCommand, ProjectAction, ProjectConfig, ProjectPolicy, RiskLane, WorkflowKind, WorkspaceMode } from '../../shared/src/types.js';
 
-const PROJECTS_DIR = path.resolve(process.cwd(), 'knowledge', 'projects');
+function getProjectsDir(): string {
+  return path.resolve(process.cwd(), 'knowledge', 'projects');
+}
 
 const DEFAULT_ALLOWED_ACTIONS: ProjectAction[] = [
   'edit_code',
@@ -201,7 +203,7 @@ function normalizeInnovationRadar(raw: unknown, projectId: string): ProjectPolic
 }
 
 function configPath(projectId: string): string {
-  return path.join(PROJECTS_DIR, projectId, 'config.json');
+  return path.join(getProjectsDir(), projectId, 'config.json');
 }
 
 export function normalizePolicyCommand(command: string | null | undefined): string | null {
@@ -331,8 +333,9 @@ export function loadProjectPolicy(projectId: string): ProjectPolicy {
 }
 
 export function listProjectPolicies(): ProjectPolicy[] {
-  if (!fs.existsSync(PROJECTS_DIR)) return [];
-  return fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
+  const projectsDir = getProjectsDir();
+  if (!fs.existsSync(projectsDir)) return [];
+  return fs.readdirSync(projectsDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => loadProjectPolicy(entry.name));
 }

@@ -34,8 +34,7 @@ import { isRateLimited, getRateLimitStatus, resolveModelBackend } from '../agent
 import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
 import { bootstrapRuntimeEnv } from '../packages/shared/src/runtime-env.js';
 import { getSecretOrNull } from '../packages/shared/src/secrets.js';
-// Dashboard import is conditional — skip if port is already in use (started by ensure-services)
-let dashboardServer: unknown = null;
+import { ensureDashboard } from './ensure-services.js';
 bootstrapRuntimeEnv();
 const VERSION = '0.2.0';
 const require = createRequire(import.meta.url);
@@ -698,24 +697,10 @@ async function main(): Promise<void> {
   // 2. Startup banner
   printBanner();
 
-  // 3. Dashboard — only start if port is free (ensure-services may have started it already)
-  try {
-    const net = await import('net');
-    const portFree = await new Promise<boolean>((resolve) => {
-      const s = net.createServer();
-      s.once('error', () => resolve(false));
-      s.once('listening', () => { s.close(); resolve(true); });
-      s.listen(DASHBOARD_PORT);
-    });
-    if (portFree) {
-      dashboardServer = await import('../packages/dashboard/src/server.js');
-      console.log(`[Daemon] Dashboard started on port ${DASHBOARD_PORT}`);
-    } else {
-      console.log(`[Daemon] Dashboard already running on port ${DASHBOARD_PORT}`);
-    }
-  } catch {
-    console.log(`[Daemon] Dashboard already running on port ${DASHBOARD_PORT}`);
-  }
+  // 3. Dashboard bridge — run it as a separate process so HTTP stays responsive
+  // even while the daemon is busy with agent work.
+  await ensureDashboard();
+  console.log(`[Daemon] Dashboard bridge ensured on port ${DASHBOARD_PORT}`);
 
   // 4. Migrations already run inside getDb() (called during health check above).
   console.log('[Daemon] Database migrations OK');
@@ -762,11 +747,6 @@ async function main(): Promise<void> {
     clearInterval(dashboardActionHandle);
     persistStatus(); // Write final status before exit
     releaseDaemonLock();
-    if (dashboardServer && typeof (dashboardServer as any).close === 'function') {
-      (dashboardServer as any).close(() => {
-        console.log('[Daemon] Dashboard closed.');
-      });
-    }
     console.log('[Daemon] Organism stopped. Goodbye.');
     process.exit(0);
   }

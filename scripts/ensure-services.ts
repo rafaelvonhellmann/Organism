@@ -258,6 +258,18 @@ async function fetchHealth(url: string, timeoutMs = 2000): Promise<boolean> {
   }
 }
 
+async function waitForStableDashboardHealth(expectedPid: number | null, checks = 2): Promise<boolean> {
+  for (let index = 0; index < checks; index++) {
+    const healthy = await fetchHealth(DASHBOARD_HEALTH_URL);
+    if (!healthy) return false;
+    if (expectedPid !== null && !isProcessRunning(expectedPid)) return false;
+    if (index < checks - 1) {
+      await sleep(500);
+    }
+  }
+  return true;
+}
+
 export async function ensureStixDB(): Promise<boolean> {
   // Already running?
   if (await fetchHealth('http://localhost:4020/health')) return true;
@@ -434,7 +446,8 @@ export async function ensureDashboard(): Promise<void> {
 
   for (let i = 0; i < 15; i++) {
     await sleep(1000);
-    if (await fetchHealth(DASHBOARD_HEALTH_URL)) {
+    const expectedPid = readPid('dashboard');
+    if (await waitForStableDashboardHealth(expectedPid)) {
       console.log(`  Dashboard started on :${DASHBOARD_PORT}`);
       return;
     }

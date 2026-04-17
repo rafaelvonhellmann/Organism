@@ -7,9 +7,11 @@ import { getSpendSummary, getSystemSpend, getTopCostAgents, getCostByLane, getHi
 import { getPendingTasks, getDeadLetterTasks, getDb } from '../../core/src/task-queue.js';
 import { readRecentForAgent } from '../../core/src/audit.js';
 import { decideProjectStart } from '../../core/src/start-continue.js';
+import { getProjectLaunchAudit } from '../../core/src/launch-audit.js';
 import { STATE_DIR } from '../../shared/src/state-dir.js';
 
 const PORT = parseInt(process.env.DASHBOARD_PORT ?? '7391');
+const HOSTED_DASHBOARD_URL = process.env.ORGANISM_DASHBOARD_URL ?? 'https://organism-hq.vercel.app';
 const ALLOWED_ORIGINS = new Set([
   'http://localhost:3000',
   'http://127.0.0.1:3000',
@@ -107,6 +109,13 @@ function setCorsHeaders(req: http.IncomingMessage, res: http.ServerResponse): vo
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Organism-Bridge');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   }
+}
+
+function redirectToHostedUi(req: http.IncomingMessage, res: http.ServerResponse): void {
+  const requestUrl = new URL(req.url ?? '/', `http://localhost:${PORT}`);
+  const target = new URL(requestUrl.pathname + requestUrl.search, HOSTED_DASHBOARD_URL);
+  res.writeHead(302, { Location: target.toString() });
+  res.end();
 }
 
 function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
@@ -627,6 +636,13 @@ function buildLocalHistoryBridge(projectFilter?: string, decisionFilter?: string
   };
 }
 
+function buildLocalLaunchReadinessBridge(projectId?: string) {
+  if (!projectId) {
+    return { error: 'project is required' };
+  }
+  return getProjectLaunchAudit(projectId);
+}
+
 const server = http.createServer((req, res) => {
   setCorsHeaders(req, res);
   if (req.method === 'OPTIONS') {
@@ -675,6 +691,19 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(buildStartDecision(project)));
+    return;
+  }
+
+  if (req.url?.startsWith('/api/launch-readiness')) {
+    const url = new URL(req.url, `http://localhost:${PORT}`);
+    const project = url.searchParams.get('project')?.trim();
+    if (!project) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'project is required' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(buildLocalLaunchReadinessBridge(project)));
     return;
   }
 
@@ -743,8 +772,17 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.url && !req.url.startsWith('/api/')) {
+    redirectToHostedUi(req, res);
+    return;
+  }
+
   res.writeHead(404);
   res.end('Not found');
+});
+
+server.on('error', (error) => {
+  console.error('[Dashboard] Server error:', error);
 });
 
 server.listen(PORT, () => {
@@ -771,5 +809,33 @@ setInterval(() => {
     }
   }
 }, 30_000);
+
+process.on('uncaughtException', (error) => {
+  console.error('[Dashboard] Uncaught exception:', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Dashboard] Unhandled rejection:', reason);
+});
+
+process.on('SIGTERM', () => {
+  console.log('[Dashboard] SIGTERM received, closing server...');
+  server.close(() => {
+    console.log('[Dashboard] Server closed after SIGTERM.');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('[Dashboard] SIGINT received, closing server...');
+  server.close(() => {
+    console.log('[Dashboard] Server closed after SIGINT.');
+    process.exit(0);
+  });
+});
+
+process.on('exit', (code) => {
+  console.log(`[Dashboard] Process exiting with code ${code}`);
+});
 
 export default server;

@@ -126,6 +126,27 @@ export interface LocalStartDecisionSnapshot {
   };
 }
 
+export interface LocalLaunchAuditItem {
+  id: string;
+  label: string;
+  status: 'pass' | 'warn' | 'fail' | 'na';
+  summary: string;
+  evidence: string[];
+}
+
+export interface LocalLaunchAuditSnapshot {
+  projectId: string;
+  generatedAt: number;
+  summary: {
+    pass: number;
+    warn: number;
+    fail: number;
+    na: number;
+  };
+  blockers: string[];
+  items: LocalLaunchAuditItem[];
+}
+
 function buildQuery(project?: string): string {
   if (!project) return '';
   return `?project=${encodeURIComponent(project)}`;
@@ -169,6 +190,21 @@ export async function loadLocalStartDecision(project?: string): Promise<LocalSta
     });
     if (!response.ok) return null;
     return await response.json() as LocalStartDecisionSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+export async function loadLocalLaunchAudit(project?: string): Promise<LocalLaunchAuditSnapshot | null> {
+  if (!project) return null;
+  try {
+    const response = await fetch(`${LOCAL_DASHBOARD_ORIGIN}/api/launch-readiness${buildQuery(project)}`, {
+      cache: 'no-store',
+      mode: 'cors',
+      headers: { 'X-Organism-Bridge': '1' },
+    });
+    if (!response.ok) return null;
+    return await response.json() as LocalLaunchAuditSnapshot;
   } catch {
     return null;
   }

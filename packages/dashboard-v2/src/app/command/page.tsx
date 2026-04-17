@@ -5,7 +5,14 @@ import { Header } from '@/components/header';
 import { cleanForDisplay } from '@/lib/markdown';
 import { getInitialSelectedProject } from '@/lib/selected-project';
 import { loadDashboardActions, submitDashboardAction } from '@/lib/dashboard-action-client';
-import { loadLocalDaemonStatus, loadLocalStartDecision, type LocalDaemonStatusSnapshot, type LocalStartDecisionSnapshot } from '@/lib/runtime-bridge-client';
+import {
+  loadLocalDaemonStatus,
+  loadLocalLaunchAudit,
+  loadLocalStartDecision,
+  type LocalDaemonStatusSnapshot,
+  type LocalLaunchAuditSnapshot,
+  type LocalStartDecisionSnapshot,
+} from '@/lib/runtime-bridge-client';
 
 interface Action {
   id: number;
@@ -176,6 +183,7 @@ export default function CommandPage() {
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
   const [localDaemonStatus, setLocalDaemonStatus] = useState<LocalDaemonStatusSnapshot | null>(null);
   const [startDecision, setStartDecision] = useState<LocalStartDecisionSnapshot | null>(null);
+  const [launchAudit, setLaunchAudit] = useState<LocalLaunchAuditSnapshot | null>(null);
   const [showManual, setShowManual] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -224,6 +232,34 @@ export default function CommandPage() {
     };
     fetchDecision().catch(() => {});
     const id = setInterval(() => { fetchDecision().catch(() => {}); }, 10_000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, [project]);
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchLaunchAudit = async () => {
+      if (!project) {
+        if (mounted) setLaunchAudit(null);
+        return;
+      }
+      try {
+        const local = await loadLocalLaunchAudit(project);
+        if (local) {
+          if (mounted) setLaunchAudit(local);
+          return;
+        }
+        const res = await fetch(`/api/launch-readiness?project=${encodeURIComponent(project)}`, { cache: 'no-store' });
+        const data = res.ok ? await res.json() : null;
+        if (mounted) setLaunchAudit(data);
+      } catch {
+        if (mounted) setLaunchAudit(null);
+      }
+    };
+    void fetchLaunchAudit();
+    const id = setInterval(() => { void fetchLaunchAudit(); }, 60_000);
     return () => {
       mounted = false;
       clearInterval(id);
@@ -388,6 +424,11 @@ export default function CommandPage() {
   const recentActions = useMemo(() => buildRecentLaunches(actions), [actions]);
   const bridgeUnavailable = error?.toLowerCase().includes('local daemon bridge is unavailable') ?? false;
   const localLaunchUrl = `http://127.0.0.1:7391/command${project ? `?project=${encodeURIComponent(project)}` : ''}`;
+  const launchAuditTone = launchAudit?.summary.fail
+    ? 'border-red-500/20 bg-red-500/5'
+    : launchAudit?.summary.warn
+      ? 'border-amber-500/20 bg-amber-500/5'
+      : 'border-emerald-500/20 bg-emerald-500/5';
 
   return (
     <>
@@ -508,6 +549,72 @@ export default function CommandPage() {
             </div>
           ) : null}
         </section>
+
+        {launchAudit && (
+          <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-base font-semibold text-zinc-100">Launch Readiness</h2>
+                <p className="mt-1 text-sm text-zinc-500">
+                  A concrete checklist for launch blockers, safety gaps, and production basics.
+                </p>
+              </div>
+              <div className="rounded-lg bg-zinc-950/70 px-3 py-2 text-xs text-zinc-300">
+                {launchAudit.summary.pass} pass · {launchAudit.summary.warn} warn · {launchAudit.summary.fail} fail
+              </div>
+            </div>
+
+            <div className={`mt-4 rounded-xl border p-4 ${launchAuditTone}`}>
+              <div className="text-sm font-semibold text-zinc-100">
+                {launchAudit.summary.fail > 0
+                  ? `${launchAudit.summary.fail} launch blocker${launchAudit.summary.fail === 1 ? '' : 's'} need fixing`
+                  : launchAudit.summary.warn > 0
+                    ? `${launchAudit.summary.warn} launch warning${launchAudit.summary.warn === 1 ? '' : 's'} still worth tightening`
+                    : 'Core launch checklist looks clean'}
+              </div>
+              <p className="mt-2 text-xs text-zinc-400">
+                This checklist is heuristic, but it gives us one place to track things like sanitisation, secret handling, sessions, Stripe safety, CORS, indexing, logging, and backups.
+              </p>
+              {launchAudit.blockers.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {launchAudit.blockers.slice(0, 6).map((blocker) => (
+                    <span key={blocker} className="rounded-full border border-red-500/20 bg-red-950/40 px-2.5 py-1 text-[11px] text-red-200">
+                      {blocker}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              {launchAudit.items.slice(0, 10).map((item) => {
+                const tone = item.status === 'fail'
+                  ? 'text-red-300 border-red-500/20 bg-red-950/30'
+                  : item.status === 'warn'
+                    ? 'text-amber-200 border-amber-500/20 bg-amber-950/20'
+                    : item.status === 'pass'
+                      ? 'text-emerald-200 border-emerald-500/20 bg-emerald-950/20'
+                      : 'text-zinc-400 border-zinc-800 bg-zinc-950/40';
+                return (
+                  <div key={item.id} className={`rounded-lg border p-4 ${tone}`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold">{item.label}</div>
+                      <span className="text-[11px] uppercase tracking-wider">{item.status}</span>
+                    </div>
+                    <p className="mt-2 text-xs leading-5">{item.summary}</p>
+                    {item.evidence.length > 0 && (
+                      <div className="mt-3 space-y-1">
+                        {item.evidence.slice(0, 2).map((evidence) => (
+                          <div key={evidence} className="text-[11px] opacity-80">{evidence}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
           <button
