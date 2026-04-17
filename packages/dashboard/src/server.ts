@@ -341,6 +341,8 @@ function buildLocalRuntimeBridge(projectFilter?: string) {
   const retryingReview = blockerRows.filter((row) => row.status === 'retry_scheduled' && isReviewLane(row));
   const pausedReview = blockerRows.filter((row) => row.status === 'paused' && isReviewLane(row));
   const awaitingReview = blockerRows.filter((row) => row.status === 'awaiting_review');
+  const retryingExecution = blockerRows.filter((row) => row.status === 'retry_scheduled' && !isReviewLane(row));
+  const pausedExecution = blockerRows.filter((row) => row.status === 'paused' && !isReviewLane(row));
   const blockers: Array<{
     kind: 'review_paused' | 'review_retry' | 'awaiting_review' | 'execution_paused';
     severity: 'warning' | 'critical';
@@ -382,6 +384,30 @@ function buildLocalRuntimeBridge(projectFilter?: string) {
       detail: 'Execution finished, but these tasks are still waiting in the review lane.',
       count: awaitingReview.length,
       taskIds: awaitingReview.map((row) => row.id),
+    });
+  }
+
+  if (pausedExecution.length > 0) {
+    const latest = pausedExecution[0];
+    blockers.push({
+      kind: 'execution_paused',
+      severity: 'critical',
+      title: `${pausedExecution.length} work item${pausedExecution.length === 1 ? '' : 's'} paused during execution`,
+      detail: `Latest execution issue: ${latest?.error ?? latest?.provider_failure_kind ?? latest?.description ?? 'unknown'}.`,
+      count: pausedExecution.length,
+      taskIds: pausedExecution.map((row) => row.id),
+    });
+  }
+
+  if (retryingExecution.length > 0) {
+    const latest = retryingExecution[0];
+    blockers.push({
+      kind: 'execution_paused',
+      severity: 'warning',
+      title: `${retryingExecution.length} work item${retryingExecution.length === 1 ? '' : 's'} scheduled to retry`,
+      detail: `Execution recovery has queued another attempt. Next retry: ${latest?.retry_at ? new Date(latest.retry_at).toISOString() : 'soon'}. Latest issue: ${latest?.error ?? latest?.provider_failure_kind ?? latest?.description ?? 'unknown'}.`,
+      count: retryingExecution.length,
+      taskIds: retryingExecution.map((row) => row.id),
     });
   }
 

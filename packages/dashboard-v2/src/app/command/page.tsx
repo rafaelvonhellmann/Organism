@@ -71,6 +71,42 @@ function parsePayload(raw: string): Record<string, unknown> {
   }
 }
 
+function actionProject(action: Action): string | null {
+  const payload = parsePayload(action.payload);
+  return typeof payload.project === 'string' && payload.project.trim().length > 0
+    ? payload.project.trim()
+    : null;
+}
+
+function buildRecentLaunches(actions: Action[]): Action[] {
+  const latestCompletedStartByProject = new Map<string, number>();
+
+  for (const action of actions) {
+    if (action.action !== 'start' || action.status !== 'completed') continue;
+    const project = actionProject(action);
+    if (!project) continue;
+    const current = latestCompletedStartByProject.get(project) ?? 0;
+    if (action.created_at > current) {
+      latestCompletedStartByProject.set(project, action.created_at);
+    }
+  }
+
+  return actions.filter((action) => {
+    if (action.result?.startsWith('Superseded by later ')) {
+      return false;
+    }
+
+    if (action.action !== 'start') return true;
+
+    const project = actionProject(action);
+    if (!project) return true;
+    const latestCompleted = latestCompletedStartByProject.get(project) ?? 0;
+    if (latestCompleted <= action.created_at) return true;
+
+    return action.status === 'completed';
+  }).slice(0, 6);
+}
+
 function canLaunchWorkflow(readiness: LaunchReadiness | null, workflow: string): boolean {
   if (!readiness) return false;
   if (!readiness.initialWorkflowGuardActive) return true;
@@ -349,7 +385,7 @@ export default function CommandPage() {
     },
   ], [project]);
 
-  const recentActions = actions.slice(0, 6);
+  const recentActions = useMemo(() => buildRecentLaunches(actions), [actions]);
   const bridgeUnavailable = error?.toLowerCase().includes('local daemon bridge is unavailable') ?? false;
   const localLaunchUrl = `http://127.0.0.1:7391/command${project ? `?project=${encodeURIComponent(project)}` : ''}`;
 

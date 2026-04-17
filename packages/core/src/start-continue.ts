@@ -1,6 +1,8 @@
 import { getDb } from './task-queue.js';
 import { getProjectLaunchReadiness } from './project-readiness.js';
 import { getProjectAutonomyHealth } from './autonomy-governor.js';
+import { captureProjectMemorySnapshot } from './project-memory.js';
+import { loadProjectPolicy } from './project-policy.js';
 
 export type StartDecisionMode = 'continue' | 'review' | 'implement' | 'validate';
 
@@ -20,6 +22,43 @@ export interface StartDecision {
     latestCompletedWorkflow: string | null;
     initialWorkflowGuardActive: boolean;
   };
+}
+
+function matchesKeyword(text: string, keyword: string): boolean {
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (escaped.includes('\\ ')) {
+    return new RegExp(escaped, 'i').test(text);
+  }
+  return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+}
+
+function findSafeImplementationFocus(projectId: string): { keyword: string; evidence: string } | null {
+  const policy = loadProjectPolicy(projectId);
+  if (!policy.autonomySurfaces.readOnlyCanary || policy.autonomySurfaces.safeTaskKeywords.length === 0) {
+    return null;
+  }
+
+  const memory = captureProjectMemorySnapshot(projectId).snapshot;
+  const candidates = [
+    ...memory.recentOutputs.map((output) => ({
+      text: `${output.description}\n${output.summary ?? ''}`,
+      evidence: output.summary ?? output.description,
+    })),
+    ...memory.workingSummary.map((line) => ({
+      text: line,
+      evidence: line,
+    })),
+  ];
+
+  for (const candidate of candidates) {
+    for (const keyword of policy.autonomySurfaces.safeTaskKeywords) {
+      if (matchesKeyword(candidate.text.toLowerCase(), keyword.toLowerCase())) {
+        return { keyword, evidence: candidate.evidence };
+      }
+    }
+  }
+
+  return null;
 }
 
 function countTasks(projectId: string, statuses: string[], workflows?: string[]): number {
@@ -66,6 +105,7 @@ function getLatestCompletedWorkflow(projectId: string): string | null {
 }
 
 export function decideProjectStart(projectId: string): StartDecision {
+  const policy = loadProjectPolicy(projectId);
   const readiness = getProjectLaunchReadiness(projectId);
   const autonomy = getProjectAutonomyHealth(projectId);
 
@@ -180,6 +220,47 @@ export function decideProjectStart(projectId: string): StartDecision {
   }
 
   if (latestCompletedWorkflow === 'review' || latestCompletedWorkflow === 'plan' || latestCompletedWorkflow === 'validate') {
+    if (policy.autonomySurfaces.readOnlyCanary) {
+      const safeImplementation = findSafeImplementationFocus(projectId);
+      if (!safeImplementation) {
+        return {
+          projectId,
+          mode: 'review',
+          workflowKind: 'review',
+          label: 'Review next safe task',
+          summary: 'This project is still safety-constrained, so Organism should only implement when the next task is clearly on an approved safe surface.',
+          reason: 'The latest work found real issues, but no explicitly safe implementation target has been identified yet.',
+          command: `review ${projectId} and propose one safe bounded implementation task`,
+          state: {
+            activeTasks,
+            activeRuns,
+            blockedTasks,
+            awaitingReview,
+            latestCompletedWorkflow,
+            initialWorkflowGuardActive: readiness.initialWorkflowGuardActive,
+          },
+        };
+      }
+
+      return {
+        projectId,
+        mode: 'implement',
+        workflowKind: 'implement',
+        label: 'Implement safe bounded task',
+        summary: 'The project already has enough context to act, and the next step stays inside an explicitly safe Synapse surface.',
+        reason: `Recent project memory points to the safe surface "${safeImplementation.keyword}".`,
+        command: `implement the next bounded ${safeImplementation.keyword} task for ${projectId}`,
+        state: {
+          activeTasks,
+          activeRuns,
+          blockedTasks,
+          awaitingReview,
+          latestCompletedWorkflow,
+          initialWorkflowGuardActive: readiness.initialWorkflowGuardActive,
+        },
+      };
+    }
+
     return {
       projectId,
       mode: 'implement',

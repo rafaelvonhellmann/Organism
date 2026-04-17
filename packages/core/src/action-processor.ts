@@ -9,11 +9,87 @@ interface DashboardAction {
   action: string;
   payload: string | null;
   status: string;
+  result?: string | null;
+  created_at?: number;
 }
 
 interface LaunchContext {
   baseline: ReturnType<typeof captureProjectLaunchBaseline>;
   memory: ReturnType<typeof captureProjectMemorySnapshot>;
+}
+
+async function triggerDispatchInBackground(): Promise<void> {
+  const { dispatchPendingTasks } = await import('./agent-runner.js');
+  void dispatchPendingTasks().catch((error) => {
+    console.error('[actions] Background dispatch failed:', error);
+  });
+}
+
+function parseActionPayload(payload: string | null): Record<string, unknown> {
+  if (!payload) return {};
+  try {
+    return JSON.parse(payload) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function projectFromPayload(payload: string | null): string | null {
+  const parsed = parseActionPayload(payload);
+  return typeof parsed.project === 'string' && parsed.project.trim().length > 0
+    ? parsed.project.trim()
+    : null;
+}
+
+export function reconcileDashboardActionStates(now = Date.now()): number {
+  const db = getDb();
+  const staleCutoff = now - (5 * 60 * 1000);
+  const staleActions = db.prepare(`
+    SELECT id, action, payload, status, result, created_at
+    FROM dashboard_actions
+    WHERE status = 'in_progress' AND created_at <= ?
+    ORDER BY created_at ASC
+  `).all(staleCutoff) as unknown as DashboardAction[];
+
+  let reconciled = 0;
+
+  for (const action of staleActions) {
+    const project = projectFromPayload(action.payload);
+    const newerTerminalActions = db.prepare(`
+      SELECT id, status, result
+      FROM dashboard_actions
+      WHERE action = ?
+        AND status IN ('completed', 'failed')
+        AND created_at > ?
+      ORDER BY created_at DESC
+      LIMIT 20
+    `).all(action.action, action.created_at ?? 0) as Array<{
+      id: number;
+      status: string;
+      result: string | null;
+    }>;
+
+    const matchingTerminalAction = newerTerminalActions.find((candidate) => {
+      if (!project) return true;
+      const candidateProject = projectFromPayload(
+        db.prepare('SELECT payload FROM dashboard_actions WHERE id = ?').get(candidate.id)?.payload as string | null ?? null,
+      );
+      return candidateProject === project;
+    });
+
+    if (!matchingTerminalAction) continue;
+
+    const projectSuffix = project ? ` for ${project}` : '';
+    const result = `Superseded by later ${action.action}${projectSuffix} (action #${matchingTerminalAction.id}).`;
+    db.prepare(`
+      UPDATE dashboard_actions
+      SET status = 'completed', result = ?, completed_at = ?
+      WHERE id = ?
+    `).run(result, now, action.id);
+    reconciled += 1;
+  }
+
+  return reconciled;
 }
 
 function captureLaunchContext(project: string, action: 'review' | 'command' | 'start', command: string | null): LaunchContext {
@@ -34,7 +110,6 @@ async function launchProjectReview(params: {
   startReason?: string;
 }): Promise<string> {
   const { submitTask } = await import('./orchestrator.js');
-  const { dispatchPendingTasks } = await import('./agent-runner.js');
   const { loadProjectPolicy } = await import('./project-policy.js');
   const project = params.project.trim();
   const policy = loadProjectPolicy(project);
@@ -73,9 +148,9 @@ async function launchProjectReview(params: {
     sourceKind: 'dashboard',
   });
 
-  await dispatchPendingTasks();
+  await triggerDispatchInBackground();
 
-  return `Review submitted and dispatched for ${project}\nReason: ${params.startReason ?? 'project review requested'}\nBaseline snapshot: ${launch.baseline.filePath}\nProject memory: ${launch.memory.filePath}`;
+  return `Review submitted for ${project}\nReason: ${params.startReason ?? 'project review requested'}\nBaseline snapshot: ${launch.baseline.filePath}\nProject memory: ${launch.memory.filePath}`;
 }
 
 async function launchProjectWorkflow(params: {
@@ -87,7 +162,6 @@ async function launchProjectWorkflow(params: {
   startReason?: string;
 }): Promise<string> {
   const { submitTask } = await import('./orchestrator.js');
-  const { dispatchPendingTasks } = await import('./agent-runner.js');
   const { loadProjectPolicy } = await import('./project-policy.js');
 
   const project = params.project.trim();
@@ -143,9 +217,9 @@ async function launchProjectWorkflow(params: {
         }
       : undefined);
 
-  await dispatchPendingTasks();
+  await triggerDispatchInBackground();
 
-  return `Command submitted and dispatched: ${cmd}\nReason: ${params.startReason ?? 'explicit workflow requested'}\nBaseline snapshot: ${launch.baseline.filePath}\nProject memory: ${launch.memory.filePath}`;
+  return `Command submitted: ${cmd}\nReason: ${params.startReason ?? 'explicit workflow requested'}\nBaseline snapshot: ${launch.baseline.filePath}\nProject memory: ${launch.memory.filePath}`;
 }
 
 export function claimDashboardAction(actionId: number): boolean {
@@ -163,6 +237,8 @@ export function claimDashboardAction(actionId: number): boolean {
  * Called by the scheduler each tick.
  */
 export async function processDashboardActions(): Promise<void> {
+  reconcileDashboardActionStates();
+
   // Check local DB for pending actions (synced from Turso)
   const pending = getDb().prepare(
     "SELECT id, action, payload, status FROM dashboard_actions WHERE status = 'pending'"
@@ -188,11 +264,10 @@ export async function processDashboardActions(): Promise<void> {
           }
 
           const project = payload.project.trim();
-          const { dispatchPendingTasks } = await import('./agent-runner.js');
           const decision = decideProjectStart(project);
 
           if (decision.mode === 'continue') {
-            await dispatchPendingTasks();
+            await triggerDispatchInBackground();
             result = `Continuing current work for ${project}\nReason: ${decision.reason}`;
             break;
           }

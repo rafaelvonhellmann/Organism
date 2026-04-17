@@ -42,6 +42,35 @@ function insertCompletedGoal(projectId: string, workflowKind: string, updatedAt:
   );
 }
 
+function insertCompletedTask(params: {
+  projectId: string;
+  workflowKind: string;
+  description: string;
+  summary?: string;
+  completedAt: number;
+}) {
+  const db = getDb();
+  const output = params.summary
+    ? JSON.stringify({ kind: 'report', summary: params.summary })
+    : JSON.stringify({ kind: 'report', summary: params.description });
+
+  db.prepare(`
+    INSERT INTO tasks (
+      id, agent, status, lane, description, input, input_hash, output, project_id, created_at, workflow_kind, completed_at
+    ) VALUES (?, ?, 'completed', 'MEDIUM', ?, '{}', ?, ?, ?, ?, ?, ?)
+  `).run(
+    crypto.randomUUID(),
+    'quality-agent',
+    params.description,
+    crypto.randomUUID(),
+    output,
+    params.projectId,
+    params.completedAt - 1_000,
+    params.workflowKind,
+    params.completedAt,
+  );
+}
+
 describe('start-continue', () => {
   beforeEach(() => {
     resetState();
@@ -100,5 +129,45 @@ describe('start-continue', () => {
     const decision = decideProjectStart('tokens-for-good');
     assert.equal(decision.workflowKind, 'validate');
     assert.equal(decision.mode, 'validate');
+  });
+
+  it('keeps Synapse in review when no clearly safe implementation surface is identified', () => {
+    const now = Date.now();
+
+    insertCompletedGoal('synapse', 'review', now - 180_000);
+    insertCompletedGoal('synapse', 'plan', now - 120_000);
+    insertCompletedGoal('synapse', 'validate', now);
+    insertCompletedTask({
+      projectId: 'synapse',
+      workflowKind: 'validate',
+      description: 'validate synapse current state',
+      summary: 'Current Synapse state is not launch-safe because access control has been reopened in two places.',
+      completedAt: now,
+    });
+
+    const decision = decideProjectStart('synapse');
+    assert.equal(decision.mode, 'review');
+    assert.equal(decision.workflowKind, 'review');
+    assert.match(decision.reason, /no explicitly safe implementation target/i);
+  });
+
+  it('allows Synapse to implement when project memory points to a safe surface', () => {
+    const now = Date.now();
+
+    insertCompletedGoal('synapse', 'review', now - 180_000);
+    insertCompletedGoal('synapse', 'plan', now - 120_000);
+    insertCompletedGoal('synapse', 'validate', now);
+    insertCompletedTask({
+      projectId: 'synapse',
+      workflowKind: 'validate',
+      description: 'validate synapse admin dashboard state',
+      summary: 'The admin dashboard and observability wiring are the next safe bounded surfaces to improve.',
+      completedAt: now,
+    });
+
+    const decision = decideProjectStart('synapse');
+    assert.equal(decision.mode, 'implement');
+    assert.equal(decision.workflowKind, 'implement');
+    assert.match(decision.command ?? '', /admin dashboard|observability/i);
   });
 });
