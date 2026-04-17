@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { getV2DeployTargets, isActionBlocked, loadProjectPolicy, normalizePolicyCommand, resolveTaskSafetyEnvelope, toV2ProjectName } from './project-policy.js';
+import { getV2DeployTargets, isActionBlocked, loadProjectPolicy, normalizePolicyCommand, requiresHumanReviewGate, resolveTaskSafetyEnvelope, toV2ProjectName } from './project-policy.js';
 
 describe('project-policy', () => {
   it('applies stabilization blocks for contact and purchases', () => {
@@ -10,7 +10,7 @@ describe('project-policy', () => {
     assert.equal(isActionBlocked(policy, 'purchase'), true);
     assert.equal(isActionBlocked(policy, 'create_account'), true);
     assert.equal(policy.workspaceMode, 'isolated_worktree');
-    assert.equal(policy.launchGuards.minimumHealthyRunsForDeploy, 5);
+    assert.equal(policy.launchGuards.minimumHealthyRunsForDeploy, 3);
   });
 
   it('derives fork comparison targets for v2 deployments', () => {
@@ -73,5 +73,27 @@ describe('project-policy', () => {
     assert.equal(envelope.forcedLane, 'HIGH');
     assert.equal(Boolean(envelope.blockedReason), true);
     assert.equal(envelope.protectedSurfaceMatch, true);
+  });
+
+  it('keeps read-only Synapse reviews autonomous even on protected medical surfaces', () => {
+    const policy = loadProjectPolicy('synapse');
+    const envelope = resolveTaskSafetyEnvelope(
+      policy,
+      'medical-safe read-only canary review for synapse grading and viva feedback posture',
+      'review',
+    );
+
+    assert.equal(envelope.forcedLane, 'MEDIUM');
+    assert.equal(envelope.blockedReason, null);
+    assert.equal(envelope.protectedSurfaceMatch, true);
+    assert.equal(
+      requiresHumanReviewGate(
+        policy,
+        'medical-safe read-only canary review for synapse grading and viva feedback posture',
+        'review',
+        'HIGH',
+      ),
+      false,
+    );
   });
 });

@@ -15,6 +15,7 @@ import { canAgentExecute, loadRegistry } from '../../packages/core/src/registry.
 import { normalizeAgentEnvelope, extractEnvelopeText } from '../../packages/core/src/agent-envelope.js';
 import { createArtifact, createRunSession, getLatestRunForGoal, mapProviderFailure, updateRunStatus, createRunStep, updateRunStep } from '../../packages/core/src/run-state.js';
 import { readRunMemory } from '../../packages/core/src/run-memory.js';
+import { loadProjectPolicy, requiresHumanReviewGate } from '../../packages/core/src/project-policy.js';
 
 // Tasklist candidates — checked in order, first found wins
 const TASKLIST_CANDIDATES = [
@@ -461,7 +462,15 @@ export abstract class BaseAgent {
         'legal', 'security-audit',
       ];
       const isPipelineInternal = PIPELINE_INTERNAL_AGENTS.includes(this.name);
-      if (task.lane === 'HIGH' && !isPipelineInternal && !taskShadowMode) {
+      const policy = loadProjectPolicy(task.projectId ?? 'organism');
+      const needsHumanReviewGate = requiresHumanReviewGate(
+        policy,
+        task.description,
+        task.workflowKind ?? 'implement',
+        task.lane,
+      );
+
+      if (needsHumanReviewGate && !isPipelineInternal && !taskShadowMode) {
         // Queue the HIGH-lane review pipeline with TRIGGER DISCIPLINE:
         // Not all reviewers fire for every task. Match reviewers to task content.
         const outputSummary = extractEnvelopeText(envelope).slice(0, 3000);

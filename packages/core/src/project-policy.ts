@@ -374,8 +374,10 @@ export function resolveTaskSafetyEnvelope(
   ])];
   const protectedSurfaceMatch = matchAnyKeyword(text, protectedKeywords);
   const safeSurfaceMatch = matchAnyKeyword(text, policy.autonomySurfaces.safeTaskKeywords);
+  const readOnlyMedicalReview = policy.autonomySurfaces.readOnlyCanary
+    && policy.autonomySurfaces.readOnlyWorkflows.includes(workflowKind);
   const forcedLane = protectedSurfaceMatch
-    ? 'HIGH'
+    ? (readOnlyMedicalReview ? 'MEDIUM' : 'HIGH')
     : policy.riskOverrides.defaultLane;
 
   let blockedReason: string | null = null;
@@ -402,6 +404,25 @@ export function resolveTaskSafetyEnvelope(
     safeSurfaceMatch,
     protectedSurfaceMatch,
   };
+}
+
+export function resolveEffectiveRiskLane(
+  policy: ProjectPolicy,
+  description: string,
+  workflowKind: WorkflowKind,
+  currentLane: RiskLane,
+): RiskLane {
+  const envelope = resolveTaskSafetyEnvelope(policy, description, workflowKind);
+  return envelope.forcedLane ?? currentLane;
+}
+
+export function requiresHumanReviewGate(
+  policy: ProjectPolicy,
+  description: string,
+  workflowKind: WorkflowKind,
+  currentLane: RiskLane,
+): boolean {
+  return resolveEffectiveRiskLane(policy, description, workflowKind, currentLane) === 'HIGH';
 }
 
 export function requiresApproval(policy: ProjectPolicy, action: ProjectAction): boolean {

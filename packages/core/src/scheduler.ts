@@ -13,10 +13,11 @@ import { getDb, getPendingTasks } from './task-queue.js';
 import { enforceDormancy } from './perspectives.js';
 import { syncToTurso } from './turso-sync.js';
 import { processDashboardActions } from './action-processor.js';
-import { listProjectPolicies } from './project-policy.js';
+import { listProjectPolicies, loadProjectPolicy, requiresHumanReviewGate, resolveEffectiveRiskLane } from './project-policy.js';
 import { seedIdleAutonomyCycles } from './autonomy-loop.js';
 import { AgentCapability, GoalSourceKind, ProjectPolicy, WorkflowKind } from '../../shared/src/types.js';
 import { OrganismError } from '../../shared/src/error-taxonomy.js';
+import { getLatestRunForGoal, updateRunStatus } from './run-state.js';
 
 function schedulerSyncEnabled(): boolean {
   return process.env.ORGANISM_DISABLE_SCHEDULER_SYNC !== '1';
@@ -175,6 +176,53 @@ export function buildScheduledProjectRuns(policies: ProjectPolicy[] = listProjec
   }
 
   return scheduled;
+}
+
+export function autoCompleteEligibleAwaitingReviewTasks(now = Date.now()): number {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT id, project_id, lane, description, workflow_kind, goal_id
+    FROM tasks
+    WHERE status = 'awaiting_review'
+  `).all() as Array<{
+    id: string;
+    project_id: string;
+    lane: 'LOW' | 'MEDIUM' | 'HIGH';
+    description: string;
+    workflow_kind: WorkflowKind | null;
+    goal_id: string | null;
+  }>;
+
+  let completed = 0;
+
+  for (const row of rows) {
+    const projectId = row.project_id || 'organism';
+    const workflowKind = row.workflow_kind ?? 'implement';
+    const policy = loadProjectPolicy(projectId);
+    if (requiresHumanReviewGate(policy, row.description, workflowKind, row.lane)) continue;
+
+    const effectiveLane = resolveEffectiveRiskLane(policy, row.description, workflowKind, row.lane);
+    db.prepare(`
+      UPDATE tasks
+      SET status = 'completed', lane = ?, completed_at = COALESCE(completed_at, ?)
+      WHERE id = ? AND status = 'awaiting_review'
+    `).run(effectiveLane, now, row.id);
+
+    if (row.goal_id) {
+      const run = getLatestRunForGoal(row.goal_id);
+      if (run && (run.status === 'paused' || run.status === 'retry_scheduled')) {
+        updateRunStatus({
+          runId: run.id,
+          status: 'completed',
+          summary: 'Auto-completed after the review gate reclassified this task as autonomous-safe.',
+        });
+      }
+    }
+
+    completed += 1;
+  }
+
+  return completed;
 }
 
 export function getSchedulePeriodKey(schedule: ScheduledProjectRun, now = new Date()): string {
@@ -519,6 +567,13 @@ async function schedulerTick(): Promise<void> {
   try {
     const { processCascades } = await import('./cascade.js');
     processCascades();
+  } catch { /* non-critical */ }
+
+  try {
+    const completed = autoCompleteEligibleAwaitingReviewTasks();
+    if (completed > 0) {
+      console.log(`[Scheduler] Auto-completed ${completed} awaiting-review task(s) after policy reclassification`);
+    }
   } catch { /* non-critical */ }
 
   // Auto-complete LOW tasks that have been awaiting_review for >1 hour with no critical issues
