@@ -101,9 +101,9 @@ function buildRecentLaunches(actions: Action[]): Action[] {
     const project = actionProject(action);
     if (!project) return true;
     const latestCompleted = latestCompletedStartByProject.get(project) ?? 0;
-    if (latestCompleted <= action.created_at) return true;
+    if (latestCompleted === 0) return true;
 
-    return action.status === 'completed';
+    return action.created_at >= latestCompleted;
   }).slice(0, 6);
 }
 
