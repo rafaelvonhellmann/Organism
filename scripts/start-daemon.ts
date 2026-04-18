@@ -145,6 +145,11 @@ const daemonState = {
   reviewsRun: 0,
   lastSyncStatus: 'idle' as 'idle' | 'ok' | 'blocked' | 'skipped' | 'error',
   lastSyncReason: null as string | null,
+  // Sync backoff: once Turso reports writes blocked (quota exceeded), retrying
+  // every 30s wastes bandwidth and floods logs. Back off to once per 10 min
+  // until writes work again. Rafael fixes it by upgrading Turso or pruning data.
+  consecutiveBlockedSyncs: 0,
+  nextSyncEarliestMs: 0,
 };
 
 let syncCycleInFlight: Promise<void> | null = null;
@@ -565,6 +570,12 @@ async function runSyncCycle(force = false): Promise<void> {
   const elapsed = isFirstCycle ? Infinity : now - daemonState.lastSyncCycleMs;
   if (!force && !isFirstCycle && elapsed < DAEMON_CONFIG.syncIntervalMs) return;
 
+  // Turso write-blocked backoff: once quota is exhausted, waiting until nextSyncEarliestMs.
+  if (!force && daemonState.nextSyncEarliestMs > 0 && now < daemonState.nextSyncEarliestMs) {
+    daemonState.lastSyncCycleMs = now;
+    return;
+  }
+
   console.log(`[Lifecycle] Sync cycle starting at ${new Date().toISOString()}`);
 
   const tursoEnv = loadTursoEnv();
@@ -589,9 +600,16 @@ async function runSyncCycle(force = false): Promise<void> {
     daemonState.lastSyncReason = result.reason;
     if (result.status === 'ok') {
       daemonState.itemsSynced += 1;
+      daemonState.consecutiveBlockedSyncs = 0;
+      daemonState.nextSyncEarliestMs = 0;
       console.log('[Lifecycle] Sync cycle complete — Turso sync finished');
     } else if (result.status === 'blocked') {
-      console.warn('[Lifecycle] Sync cycle in degraded mode — remote writes are blocked, localhost bridge remains authoritative');
+      daemonState.consecutiveBlockedSyncs += 1;
+      // Back off to 10 min between sync attempts while Turso writes are blocked.
+      daemonState.nextSyncEarliestMs = Date.now() + 10 * 60 * 1000;
+      if (daemonState.consecutiveBlockedSyncs === 1 || daemonState.consecutiveBlockedSyncs % 20 === 0) {
+        console.warn('[Lifecycle] Turso writes blocked (plan quota likely exhausted). Backing off remote sync to 10min intervals. Localhost :7391 remains authoritative. To fix: upgrade Turso plan or prune data — https://app.turso.tech/');
+      }
     } else {
       console.log('[Lifecycle] Sync cycle skipped — Turso not configured');
     }

@@ -17,8 +17,11 @@ const DAEMON_STATUS_FILE = path.join(STATE_DIR, 'daemon-status.json');
 const DAEMON_STATUS_STALE_MS = 2 * 60 * 1000;
 const DASHBOARD_PORT = Number.parseInt(process.env.DASHBOARD_PORT ?? '7391', 10);
 const DASHBOARD_HEALTH_URL = `http://127.0.0.1:${DASHBOARD_PORT}/api/health`;
-const DASHBOARD_RESTART_MIN_GAP_MS = 60_000;
-const DASHBOARD_FAIL_THRESHOLD = 3;
+// Dashboard flap control: dashboard was being killed during transient SQLite
+// WAL contention + slow health queries. Relax both the fail threshold and the
+// restart gap so short blockages pass without killing a healthy process.
+const DASHBOARD_RESTART_MIN_GAP_MS = 180_000; // 3 minutes
+const DASHBOARD_FAIL_THRESHOLD = 6;           // ~90s of failures before considering restart
 const require = createRequire(import.meta.url);
 const TSX_CLI_PATH = require.resolve('tsx/cli');
 
@@ -383,7 +386,7 @@ export async function ensureDaemon(): Promise<void> {
 // --- Dashboard ---
 
 export async function ensureDashboard(): Promise<void> {
-  if (await fetchHealth(DASHBOARD_HEALTH_URL, 5000)) {
+  if (await fetchHealth(DASHBOARD_HEALTH_URL, 10_000)) {
     dashboardConsecutiveFails = 0;
     const discoveredPid = readPid('dashboard') ?? findWindowsPid('packages/dashboard/src/server.ts', 'node.exe');
     if (discoveredPid) {
@@ -401,7 +404,12 @@ export async function ensureDashboard(): Promise<void> {
   const processAlive = discoveredPid !== null && isProcessRunning(discoveredPid);
 
   if (processAlive && (dashboardConsecutiveFails < DASHBOARD_FAIL_THRESHOLD || sinceLastRestart < DASHBOARD_RESTART_MIN_GAP_MS)) {
-    console.log(`  Dashboard health check failed (${dashboardConsecutiveFails}/${DASHBOARD_FAIL_THRESHOLD}), process still alive. Holding restart (${Math.max(0, DASHBOARD_RESTART_MIN_GAP_MS - sinceLastRestart) / 1000}s until next restart allowed).`);
+    // Log sparsely: only first fail and every 3rd after that, to avoid log spam
+    // during transient SQLite contention.
+    if (dashboardConsecutiveFails === 1 || dashboardConsecutiveFails % 3 === 0) {
+      const gapLeft = Math.max(0, (DASHBOARD_RESTART_MIN_GAP_MS - sinceLastRestart) / 1000).toFixed(0);
+      console.log(`  Dashboard health check failed (${dashboardConsecutiveFails}/${DASHBOARD_FAIL_THRESHOLD}), process still alive. Holding restart (${gapLeft}s until next restart allowed).`);
+    }
     return;
   }
 
