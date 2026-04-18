@@ -453,7 +453,7 @@ Apply the autoresearch method: generate 3 alternative approaches, score the actu
     const policy = loadProjectPolicy(projectId);
     const repoBrief = buildRepoReviewBrief(projectId);
     const selfAudit = input.selfAudit === true;
-    const medicalReadOnlyCanary = input.medicalReadOnlyCanary === true;
+    const medicalReadOnlyCanary = input.medicalReadOnlyReview === true || input.medicalReadOnlyCanary === true;
     const autonomyCycle = input.autonomyCycle === true && !selfAudit;
     const reviewSystem = selfAudit
       ? SELF_AUDIT_REVIEW_SYSTEM
@@ -465,10 +465,10 @@ Apply the autoresearch method: generate 3 alternative approaches, score the actu
     const reviewLabel = selfAudit
       ? 'bounded self-audit review'
       : medicalReadOnlyCanary
-        ? 'medical-safe read-only canary review'
+        ? 'medical-safe read-only review'
       : autonomyCycle
-        ? 'bounded autonomy-cycle review'
-        : 'first-canary review';
+        ? 'bounded project review'
+        : 'project review';
 
     const prompt = `Run a ${reviewLabel} for the project "${projectId}".
 
@@ -495,7 +495,7 @@ ${JSON.stringify(repoBrief, null, 2)}
 Additional dashboard/task context:
 ${JSON.stringify(input, null, 2)}
 
-Review what matters most for a safe first autonomous canary.
+Review what matters most for the next safe autonomous cycle.
 Cover:
 - repo clarity and readiness
 - biggest technical or operational blockers
@@ -534,17 +534,17 @@ ${selfAudit
                 reason: selfAudit
                   ? 'Approved self-audit should turn into concrete validation work automatically.'
                   : medicalReadOnlyCanary
-                    ? 'Approved medical-safe canary should turn into read-only validation work automatically.'
+                    ? 'Approved medical-safe review should turn into read-only validation work automatically.'
                   : autonomyCycle
-                    ? 'Approved autonomy-cycle review should turn into concrete repo validation automatically.'
-                  : 'Approved canary review should turn into concrete repo validation automatically.',
+                    ? 'Approved project review should turn into concrete repo validation automatically.'
+                  : 'Approved review should turn into concrete repo validation automatically.',
                 summary: selfAudit
                   ? `Run bounded self-audit validation for ${projectId} and capture the next safe implementation blockers.`
                   : medicalReadOnlyCanary
                     ? `Run medical-safe bounded validation for ${projectId} and capture only review or validation blockers on protected surfaces.`
                   : autonomyCycle
-                    ? `Run bounded autonomy-cycle validation for ${projectId} and capture the next safe implementation blockers.`
-                  : `Run bounded canary validation for ${projectId} and capture the next safe implementation blockers.`,
+                    ? `Run bounded project validation for ${projectId} and capture the next safe implementation blockers.`
+                  : `Run bounded validation for ${projectId} and capture the next safe implementation blockers.`,
                 execution: true,
               },
             ]
@@ -552,7 +552,7 @@ ${selfAudit
         artifacts: [
           {
             kind: 'report' as const,
-            title: `${selfAudit ? 'Self-audit review' : medicalReadOnlyCanary ? 'Medical-safe canary review' : autonomyCycle ? 'Autonomy cycle review' : 'Canary review'}: ${projectId}`,
+            title: `${selfAudit ? 'Self-audit review' : medicalReadOnlyCanary ? 'Medical-safe review' : autonomyCycle ? 'Project review' : 'Review'}: ${projectId}`,
             content: parsed.review + nextStepsMarkdown,
           },
         ],

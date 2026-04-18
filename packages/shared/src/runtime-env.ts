@@ -9,6 +9,11 @@ export interface RuntimeEnvBootstrapResult {
 
 let cachedResult: RuntimeEnvBootstrapResult | null = null;
 
+const RUNTIME_DEFAULTS: Record<string, string> = {
+  ORGANISM_MODEL_BACKEND: 'codex-first',
+  ORGANISM_CODE_EXECUTOR: 'codex-first',
+};
+
 function candidatePaths(root: string): string[] {
   return [
     path.resolve(root, '.secrets.json'),
@@ -37,6 +42,11 @@ export function bootstrapRuntimeEnv(root = process.cwd()): RuntimeEnvBootstrapRe
         source: 'secrets-json',
         keysLoaded,
       };
+      for (const [key, value] of Object.entries(RUNTIME_DEFAULTS)) {
+        if (!process.env[key] || process.env[key] === 'auto') {
+          process.env[key] = value;
+        }
+      }
       return cachedResult;
     } catch {
       cachedResult = {
@@ -53,5 +63,10 @@ export function bootstrapRuntimeEnv(root = process.cwd()): RuntimeEnvBootstrapRe
     source: 'environment',
     keysLoaded: [],
   };
+  for (const [key, value] of Object.entries(RUNTIME_DEFAULTS)) {
+    if (!process.env[key] || process.env[key] === 'auto') {
+      process.env[key] = value;
+    }
+  }
   return cachedResult;
 }

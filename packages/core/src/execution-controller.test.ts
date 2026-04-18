@@ -27,7 +27,7 @@ function buildPolicy(overrides: Partial<ProjectPolicy> = {}): ProjectPolicy {
     envRequirements: [],
     workspaceMode: 'clean_required',
     launchGuards: {
-      minimumHealthyRunsForDeploy: 5,
+      minimumHealthyRunsForDeploy: 3,
       initialWorkflowLimit: 0,
       initialAllowedWorkflows: [],
     },
@@ -168,6 +168,6 @@ describe('execution-controller', () => {
     rmSync(workspaceDir, { recursive: true, force: true });
 
     assert.equal(gate.locked, true);
-    assert.match(gate.reason ?? '', /consecutive healthy runs/i);
+    assert.match(gate.reason ?? '', /consecutive healthy goals/i);
   });
 });

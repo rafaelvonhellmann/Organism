@@ -31,15 +31,70 @@ export function getDb(): DatabaseSync {
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   _db = new DatabaseSync(dbPath);
+  configureConnection(_db);
   runMigrations(_db);
   return _db;
 }
 
-function runMigrations(db: DatabaseSync) {
-  db.exec(`
-    PRAGMA journal_mode = WAL;
+export function resetDbForTests(): void {
+  if (!_db) return;
+  try {
+    _db.close();
+  } catch {
+    // Best-effort test cleanup.
+  }
+  _db = null;
+}
 
-    CREATE TABLE IF NOT EXISTS tasks (
+function configureConnection(db: DatabaseSync) {
+  db.exec(`
+    PRAGMA busy_timeout = 5000;
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
+function isDatabaseLockedError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /database is locked/i.test(error.message);
+}
+
+function tableHasColumns(db: DatabaseSync, tableName: string, requiredColumns: string[]): boolean {
+  try {
+    const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>;
+    const columns = new Set(rows.map((row) => String(row.name ?? '')));
+    return requiredColumns.every((column) => columns.has(column));
+  } catch {
+    return false;
+  }
+}
+
+function hasRequiredSchema(db: DatabaseSync): boolean {
+  const requiredTables = new Map<string, string[]>([
+    ['tasks', ['id', 'agent', 'status', 'project_id', 'goal_id', 'workflow_kind', 'retry_at', 'provider_failure_kind', 'created_at', 'started_at', 'completed_at', 'error']],
+    ['goals', ['id', 'project_id', 'status', 'workflow_kind', 'updated_at']],
+    ['run_sessions', ['id', 'goal_id', 'project_id', 'agent', 'workflow_kind', 'status', 'retry_class', 'retry_at', 'provider_failure_kind', 'created_at', 'updated_at', 'completed_at']],
+    ['run_steps', ['id', 'run_id', 'name', 'status', 'detail', 'created_at', 'updated_at', 'completed_at']],
+    ['dashboard_actions', ['id', 'action', 'payload', 'status', 'result', 'created_at', 'completed_at']],
+    ['audit_log', ['id', 'ts', 'agent', 'task_id', 'action', 'payload', 'outcome', 'error_code']],
+  ]);
+
+  return Array.from(requiredTables.entries()).every(([tableName, requiredColumns]) =>
+    tableHasColumns(db, tableName, requiredColumns),
+  );
+}
+
+function runMigrations(db: DatabaseSync) {
+  try {
+    db.exec(`PRAGMA journal_mode = WAL;`);
+  } catch (error) {
+    if (!isDatabaseLockedError(error)) {
+      throw error;
+    }
+  }
+
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
       agent TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
@@ -214,7 +269,13 @@ function runMigrations(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_runtime_events_run ON runtime_events(run_id, id);
     CREATE INDEX IF NOT EXISTS idx_innovation_feedback_project ON innovation_radar_feedback(project_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_innovation_feedback_task ON innovation_radar_feedback(task_id);
-  `);
+    `);
+  } catch (error) {
+    if (!(isDatabaseLockedError(error) && hasRequiredSchema(db))) {
+      throw error;
+    }
+    return;
+  }
 
   // Additive migrations for existing databases — safe to re-run (errors caught and ignored)
   const additiveMigrations = [
@@ -627,7 +688,7 @@ export function updateTaskRuntimeState(params: {
   );
 }
 
-const REVIEW_RETRY_AGENT_SQL = `'quality-agent','quality-guardian','codex-review','grill-me','legal','security-audit'`;
+const REVIEW_RETRY_AGENT_SQL = `'quality-agent','quality-guardian','codex-review','domain-model','grill-me','legal','security-audit'`;
 
 export function releaseRetryScheduledTasks(now = Date.now(), maxAttempts = 5, reviewMaxAttempts = 8): { released: number; paused: number } {
   const db = getDb();

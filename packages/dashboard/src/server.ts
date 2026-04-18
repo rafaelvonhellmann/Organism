@@ -9,6 +9,7 @@ import { readRecentForAgent } from '../../core/src/audit.js';
 import { decideProjectStart } from '../../core/src/start-continue.js';
 import { getProjectLaunchAudit } from '../../core/src/launch-audit.js';
 import { STATE_DIR } from '../../shared/src/state-dir.js';
+import { ensureDaemon } from '../../../scripts/ensure-services.js';
 
 const PORT = parseInt(process.env.DASHBOARD_PORT ?? '7391');
 const HOSTED_DASHBOARD_URL = process.env.ORGANISM_DASHBOARD_URL ?? 'https://organism-hq.vercel.app';
@@ -20,6 +21,22 @@ const ALLOWED_ORIGINS = new Set([
   'https://organism-hq.vercel.app',
   'https://organism-hq-v2.vercel.app',
 ]);
+
+let daemonWakePromise: Promise<void> | null = null;
+
+function wakeDaemonInBackground(reason: string): void {
+  if (daemonWakePromise) return;
+  daemonWakePromise = ensureDaemon()
+    .then(() => {
+      console.log(`[Dashboard] Ensured daemon for ${reason}`);
+    })
+    .catch((error) => {
+      console.error(`[Dashboard] Failed to ensure daemon for ${reason}:`, error);
+    })
+    .finally(() => {
+      daemonWakePromise = null;
+    });
+}
 
 // Dashboard HTML — single-page auto-refreshing status board
 const HTML = `<!DOCTYPE html>
@@ -345,7 +362,7 @@ function buildLocalRuntimeBridge(projectFilter?: string) {
   const isReviewLane = (row: { agent: string; workflow_kind: string | null }) =>
     row.workflow_kind === 'review'
     || row.workflow_kind === 'validate'
-    || ['quality-agent', 'quality-guardian', 'codex-review', 'grill-me', 'legal', 'security-audit'].includes(row.agent);
+    || ['quality-agent', 'quality-guardian', 'codex-review', 'domain-model', 'grill-me', 'legal', 'security-audit'].includes(row.agent);
 
   const retryingReview = blockerRows.filter((row) => row.status === 'retry_scheduled' && isReviewLane(row));
   const pausedReview = blockerRows.filter((row) => row.status === 'paused' && isReviewLane(row));
@@ -587,7 +604,7 @@ function buildLocalHealthBridge(projectFilter?: string) {
 
 function buildLocalHistoryBridge(projectFilter?: string, decisionFilter?: string, agentFilter?: string) {
   const db = getDb();
-  const conditions = ["t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent')"];
+  const conditions = ["t.agent NOT IN ('domain-model', 'grill-me', 'codex-review', 'quality-agent')"];
   const args: Array<string | number> = [];
 
   if (projectFilter) {
@@ -670,8 +687,9 @@ const server = http.createServer((req, res) => {
   if (req.url?.startsWith('/api/health')) {
     const url = new URL(req.url, `http://localhost:${PORT}`);
     const project = url.searchParams.get('project') ?? undefined;
+    const health = buildLocalHealthBridge(project);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(buildLocalHealthBridge(project)));
+    res.end(JSON.stringify(health));
     return;
   }
 
@@ -735,6 +753,10 @@ const server = http.createServer((req, res) => {
             res.end(JSON.stringify({ error: result.error }));
             return;
           }
+          const queuedProject = typeof (body as { payload?: { project?: unknown } })?.payload?.project === 'string'
+            ? String((body as { payload?: { project?: unknown } }).payload?.project)
+            : null;
+          wakeDaemonInBackground(`dashboard action${queuedProject ? ` for ${queuedProject}` : ''}`);
           res.writeHead(result.status, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(result.body));
         })

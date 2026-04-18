@@ -4,7 +4,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Header } from '@/components/header';
 import { cleanForDisplay } from '@/lib/markdown';
 import { getInitialSelectedProject } from '@/lib/selected-project';
-import { loadDashboardActions, submitDashboardAction } from '@/lib/dashboard-action-client';
+import {
+  flushQueuedDashboardActions,
+  getQueuedDashboardActionCount,
+  loadDashboardActions,
+  submitDashboardAction,
+} from '@/lib/dashboard-action-client';
 import {
   loadLocalDaemonStatus,
   loadLocalLaunchAudit,
@@ -180,6 +185,7 @@ export default function CommandPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [queuedRetryCount, setQueuedRetryCount] = useState(0);
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
   const [localDaemonStatus, setLocalDaemonStatus] = useState<LocalDaemonStatusSnapshot | null>(null);
   const [startDecision, setStartDecision] = useState<LocalStartDecisionSnapshot | null>(null);
@@ -194,11 +200,28 @@ export default function CommandPage() {
     } catch {}
   }, [project]);
 
+  const flushQueuedActions = useCallback(async () => {
+    const flushed = await flushQueuedDashboardActions();
+    const remaining = getQueuedDashboardActionCount();
+    setQueuedRetryCount(remaining);
+    if (flushed > 0) {
+      setNotice(`Recovered ${flushed} queued launch${flushed === 1 ? '' : 'es'} through the local bridge.`);
+      void fetchActions();
+    }
+  }, [fetchActions]);
+
   useEffect(() => {
     fetchActions();
     const id = setInterval(fetchActions, 5000);
     return () => clearInterval(id);
   }, [fetchActions]);
+
+  useEffect(() => {
+    setQueuedRetryCount(getQueuedDashboardActionCount());
+    void flushQueuedActions();
+    const id = setInterval(() => { void flushQueuedActions(); }, 15000);
+    return () => clearInterval(id);
+  }, [flushQueuedActions]);
 
   useEffect(() => {
     if (!project) {
@@ -274,12 +297,17 @@ export default function CommandPage() {
         action,
         payload: JSON.stringify(payload),
         status: 'pending',
-        result: result.via === 'local' ? 'Queued via local daemon bridge' : null,
+        result: result.via === 'local'
+          ? 'Queued via local daemon bridge'
+          : result.via === 'queued'
+            ? 'Saved for automatic retry while Organism wakes locally'
+            : null,
         created_at: Date.now(),
         completed_at: null,
       },
       ...current,
     ]);
+    setQueuedRetryCount(getQueuedDashboardActionCount());
     setTimeout(fetchActions, 1500);
     return result;
   }, [fetchActions]);
@@ -293,8 +321,10 @@ export default function CommandPage() {
     setError(null);
     setNotice(null);
     try {
-      await submitAction('review', { project });
-      setNotice('Review submitted. Organism is picking it up now.');
+      const result = await submitAction('review', { project });
+      setNotice(result.via === 'queued'
+        ? 'Review saved for automatic local retry. Organism will submit it once the bridge wakes up.'
+        : 'Review submitted. Organism is picking it up now.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit review');
     } finally {
@@ -311,8 +341,10 @@ export default function CommandPage() {
     setError(null);
     setNotice(null);
     try {
-      await submitAction('start', { project });
-      setNotice('Start / Continue submitted. Organism is choosing the next safe step now.');
+      const result = await submitAction('start', { project });
+      setNotice(result.via === 'queued'
+        ? 'Start / Continue was queued locally. Organism will submit it automatically once the bridge wakes up.'
+        : 'Start / Continue submitted. Organism is choosing the next safe step now.');
       setTimeout(() => fetchActions(), 1200);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit start request');
@@ -331,13 +363,15 @@ export default function CommandPage() {
     setError(null);
     setNotice(null);
     try {
-      await submitAction('command', {
+      const result = await submitAction('command', {
         command: cmd.trim(),
         project,
         workflowKind,
       });
       setCommand('');
-      setNotice(`${workflowKind[0].toUpperCase()}${workflowKind.slice(1)} submitted. Organism is picking it up now.`);
+      setNotice(result.via === 'queued'
+        ? `${workflowKind[0].toUpperCase()}${workflowKind.slice(1)} was queued locally and will retry automatically.`
+        : `${workflowKind[0].toUpperCase()}${workflowKind.slice(1)} submitted. Organism is picking it up now.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit command');
     } finally {
@@ -355,12 +389,14 @@ export default function CommandPage() {
     setError(null);
     setNotice(null);
     try {
-      await submitAction('command', {
+      const result = await submitAction('command', {
         command: command.trim(),
         project,
       });
       setCommand('');
-      setNotice('Command submitted. Organism is picking it up now.');
+      setNotice(result.via === 'queued'
+        ? 'Command queued locally and will retry automatically.'
+        : 'Command submitted. Organism is picking it up now.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit command');
     } finally {
@@ -480,6 +516,12 @@ export default function CommandPage() {
         {notice && (
           <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm text-emerald-200">
             {notice}
+          </div>
+        )}
+
+        {queuedRetryCount > 0 && (
+          <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-200">
+            {queuedRetryCount} queued launch{queuedRetryCount === 1 ? '' : 'es'} waiting for the local bridge. This page will retry them automatically.
           </div>
         )}
 

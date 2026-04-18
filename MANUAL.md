@@ -830,7 +830,7 @@ The `palate-wiki` agent (currently in shadow mode) writes domain-level wiki page
 | Tier | Agent | Model | When it fires | Cost/run |
 |---|---|---|---|---|
 | 1 | Quality Agent | Sonnet | All tasks in pipeline | ~$0.54 |
-| 2 | Grill-Me | Sonnet | MEDIUM + HIGH lanes | ~$0.27 |
+| 2 | Domain Model | Sonnet | MEDIUM + HIGH lanes | ~$0.27 |
 | 3 | Quality Guardian | Opus | HIGH lane + Saturday deep audit | ~$8-20 |
 
 ### The three lanes
@@ -841,11 +841,11 @@ LOW (50% of tasks)
   Examples: internal docs, notes, research summaries
 
 MEDIUM (35% of tasks)
-  → Grill-Me → Quality Agent → Codex Review → auto-ship
+→ Domain Model → Quality Agent → Codex Review → auto-ship
   Examples: code changes, marketing content, PRDs
 
 HIGH (15% of tasks)
-  → Grill-Me → Quality Agent → Copyright → Legal → Security
+→ Domain Model → Quality Agent → Copyright → Legal → Security
   → Quality Guardian → Codex Review → G4 Gate (your Telegram)
   Examples: production deploys, pricing changes, auth changes,
             any medical grading content (Synapse)
@@ -1035,7 +1035,7 @@ console.table(getSpendSummary());
 | Haiku 4.5 | $0.80/M | $4.00/M | Risk classification, routing only |
 | Sonnet 4.6 | $3.00/M | $15.00/M | All agent work (default) |
 | Opus 4.6 | $15.00/M | $75.00/M | Quality Guardian only |
-| GPT-4o | $2.50/M | $10.00/M | Codex Review (single API call) |
+| GPT-5.4 | $2.50/M | $10.00/M | Codex Review |
 
 ### Budget by phase (expected daily spend)
 
@@ -1075,9 +1075,9 @@ console.table(getSpendSummary());
 | Week | Add these agents | Cumulative | What to verify |
 |---|---|---|---|
 | 1 | CEO, Product Manager, Quality Agent | 3 | Smoke test passes. LOW lane works. |
-| 2 | Engineering, Grill-Me | 5 | MEDIUM lane works. Feature branch created. PR created. |
+| 2 | Engineering, Domain Model | 5 | MEDIUM lane works. Feature branch created. PR created. |
 | 3 | Marketing Strategist, SEO | 7 | First campaign brief produced. Keyword research done. |
-| 4 | Design, Codex Review (GPT-4o) | 9 | Full MEDIUM pipeline including Codex Review. |
+| 4 | Design, Codex Review (GPT-5.4) | 9 | Full MEDIUM pipeline including Codex Review. |
 | 5 | Marketing Executor, Sales | 11 | Guardian in SHADOW MODE. First revenue-related tasks. |
 | 6 | CFO, DevOps/SRE | 13 | Financial reporting works. Deployment automation works. |
 | 7 | Quality Guardian (PRODUCTION), Copyright | 15 | First real Guardian report. G4 gate wired to Telegram. |
@@ -1166,7 +1166,7 @@ If dead letters > 0: do not add new agents. Fix first.
 | Risk Classifier | Haiku | Always | All | Active |
 | Marketing Strategist | Sonnet | MEDIUM | All | Shadow |
 | Engineering | Sonnet | MEDIUM | All | Shadow |
-| Grill-Me | Sonnet | On-demand | All | Shadow |
+| Domain Model | Sonnet | On-demand | All | Shadow |
 | Quality Guardian | Opus | HIGH only | All | Shadow (activate Week 5) |
 
 ### The non-negotiables

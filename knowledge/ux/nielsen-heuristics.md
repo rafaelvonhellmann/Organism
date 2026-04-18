@@ -89,7 +89,7 @@ Every extra element competes with relevant elements and diminishes their visibil
 - Use whitespace as a design element
 - Information density should match the task
 
-**Dashboard rule:** Hide pipeline internals (grill-me, codex-review) by default. Show only what Rafael needs to decide on. No raw JSON. No task IDs unless requested.
+**Dashboard rule:** Hide pipeline internals (domain-model, codex-review) by default. Show only what Rafael needs to decide on. No raw JSON. No task IDs unless requested.
 
 ## 9. Help Users Recognize, Diagnose, and Recover from Errors
 Error messages in plain language. Precisely indicate the problem. Constructively suggest a solution.

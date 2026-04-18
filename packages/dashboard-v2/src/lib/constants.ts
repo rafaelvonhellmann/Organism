@@ -25,6 +25,7 @@ export const AGENT_CAPS: Record<string, number> = {
   'security-knowledge': 0.50,
   'medical-content-reviewer': 1.00,
   'quality-agent': 3.00,
+  'domain-model': 2.00,
   'grill-me': 2.00,
   'codex-review': 2.00,
   'quality-guardian': 5.00,

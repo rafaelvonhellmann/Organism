@@ -8,7 +8,7 @@ Paperclip (`packages/core/`) is the only orchestrator. PraisonAI (`packages/mcp-
 
 All output goes through the risk-based review pipeline:
 - LOW: Quality Agent → auto-ship
-- MEDIUM: Grill-Me → Quality Agent → Codex Review → auto-ship
+- MEDIUM: Domain Model → Quality Agent → Codex Review → auto-ship
 - HIGH: full pipeline → G4 Board Gate (Rafael approves)
 
 ## Model Discipline

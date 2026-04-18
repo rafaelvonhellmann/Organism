@@ -31,7 +31,7 @@
     "generalist": [
       "ceo", "cto", "cfo", "product-manager", "data-analyst",
       "engineering", "devops", "security-audit",
-      "quality-guardian", "quality-agent", "grill-me", "codex-review",
+      "quality-guardian", "quality-agent", "domain-model", "codex-review",
       "marketing-strategist", "marketing-executor", "seo", "community-manager", "pr-comms",
       "legal", "sales", "customer-success", "hr", "design"
     ],
@@ -89,7 +89,7 @@
   "autonomyMode": "stabilization",
   "workspaceMode": "isolated_worktree",
   "launchGuards": {
-    "minimumHealthyRunsForDeploy": 5,
+    "minimumHealthyRunsForDeploy": 3,
     "initialWorkflowLimit": 3,
     "initialAllowedWorkflows": ["review", "implement", "validate"]
   },

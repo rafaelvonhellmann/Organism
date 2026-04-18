@@ -3,7 +3,7 @@ import { callNativeModel } from '../../_base/mcp-client.js';
 import { Task } from '../../../packages/shared/src/types.js';
 import { getTask } from '../../../packages/core/src/task-queue.js';
 
-const CODEX_REVIEW_MODEL = 'gpt4o';
+const CODEX_REVIEW_MODEL = 'gpt5.4';
 const CODEX_REVIEW_MAX_COMPLETION_TOKENS = 1600;
 
 const CODEX_REVIEW_SYSTEM = `You are a senior engineering reviewer on Organism's dedicated OpenAI review lane. You review code and agent outputs from a different perspective to catch what the primary implementation pass missed.
@@ -64,7 +64,7 @@ export default class CodexReviewAgent extends BaseAgent {
   constructor() {
     super({
       name: 'codex-review',
-      model: 'gpt4o',
+      model: 'gpt5.4',
       capability: {
         id: 'quality.codex_review',
         owner: 'codex-review',
@@ -72,7 +72,7 @@ export default class CodexReviewAgent extends BaseAgent {
         reviewerLane: 'MEDIUM',
         description: 'OpenAI review lane for logic, security, edge cases, and performance blind-spot coverage',
         status: 'shadow',
-        model: 'gpt4o',
+        model: 'gpt5.4',
         frequencyTier: 'on-demand',
         projectScope: 'all',
       },

@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { resolveOpenAiModelSpec } from '../../../agents/_base/mcp-client.js';
 
@@ -134,10 +134,55 @@ function resolveCommandPath(command: string): string {
   return candidates[0]!;
 }
 
+function resolveWindowsShimCommand(resolved: string, args: string[]): { command: string; args: string[] } | null {
+  if (process.platform !== 'win32' || !/\.(cmd|bat)$/i.test(resolved)) return null;
+
+  try {
+    const shim = readFileSync(resolved, 'utf8');
+    const relativeTargets = [...shim.matchAll(/"%dp0%\\([^"]+)"/gi)]
+      .map((match) => match[1]?.trim())
+      .filter((target): target is string => Boolean(target));
+    const target = relativeTargets.at(-1);
+    if (!target) return null;
+
+    const absoluteTarget = join(dirname(resolved), ...target.split('\\'));
+    if (!existsSync(absoluteTarget)) return null;
+
+    if (/\.js$/i.test(absoluteTarget)) {
+      return {
+        command: process.execPath,
+        args: [absoluteTarget, ...args],
+      };
+    }
+
+    if (/\.(exe|cmd|bat)$/i.test(absoluteTarget)) {
+      return {
+        command: absoluteTarget,
+        args,
+      };
+    }
+  } catch {
+    // Fall back to the cmd.exe wrapper if the shim is not a recognizable npm launcher.
+  }
+
+  return null;
+}
+
 function spawnResolved(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) {
   const resolved = resolveCommandPath(command);
   const isWindowsCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolved);
   if (isWindowsCmd) {
+    const shimTarget = resolveWindowsShimCommand(resolved, args);
+    if (shimTarget) {
+      return spawn(shimTarget.command, shimTarget.args, {
+        cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+        shell: false,
+        env,
+      });
+    }
+
     return spawn('cmd.exe', ['/d', '/s', '/c', resolved, ...args], {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],

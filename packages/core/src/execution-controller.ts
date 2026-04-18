@@ -659,7 +659,7 @@ export function getDeployGate(projectId: string, policy: ProjectPolicy): { locke
 
   return {
     locked: true,
-    reason: `Deploy remains canary-gated until ${minimumHealthyRuns} consecutive healthy runs. Current streak: ${autonomy.consecutiveHealthyRuns}.`,
+      reason: `Deploy remains rollout-gated until ${minimumHealthyRuns} consecutive healthy goals. Current streak: ${autonomy.consecutiveHealthyRuns}.`,
   };
 }
 
@@ -678,7 +678,7 @@ async function executeOrQueueAction(params: {
   if (params.action === 'deploy') {
     const gate = getDeployGate(params.workspace.projectId, params.workspace.policy);
     if (gate.locked) {
-      const reason = gate.reason ?? 'Deploy is gated during canary rollout.';
+  const reason = gate.reason ?? 'Deploy is still gated during the early rollout.';
       return {
         actionResult: null,
         proposal: {
@@ -690,7 +690,7 @@ async function executeOrQueueAction(params: {
           params.task,
           params.action,
           reason,
-          `Deploy is still gated for ${params.workspace.projectId} during canary rollout.`,
+      `Deploy is still gated for ${params.workspace.projectId} during the early rollout.`,
         ),
       };
     }

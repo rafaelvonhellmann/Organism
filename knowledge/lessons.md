@@ -39,15 +39,15 @@ Issues hit during bootstrap:
 
 ---
 
-## Week 2 — MEDIUM Lane + Engineering + Grill-Me
+## Week 2 — MEDIUM Lane + Engineering + Domain Model
 
 **2026-04-04: MEDIUM lane test PASSED**
 
-Full pipeline: submit → Grill-Me (Socratic interrogation) → primary agent → Quality Agent review. Cost: $0.0284.
+Full pipeline: submit → Domain Model (DDD-style interrogation) → primary agent → Quality Agent review. Cost: $0.0284.
 
 Key decisions:
-- **Grill-Me runs pre-execution, not post**: interrogates task description/approach before the primary agent touches anything. Produces a scrutiny report attached to the real task's input.
-- **MEDIUM tasks route to Grill-Me at orchestrator level**: the orchestrator wraps the real task into a Grill-Me task with `intendedAgent` in the input. Grill-Me creates the real agent task after interrogation.
+- **Domain Model runs pre-execution, not post**: interrogates task description/approach before the primary agent touches anything. Produces a shaping review attached to the real task's input.
+- **MEDIUM tasks route to Domain Model at orchestrator level**: the orchestrator wraps the real task into a domain-model task with `intendedAgent` in the input. Domain Model creates the real agent task after the review.
 - **G1 gate wired into BaseAgent**: runs automatically after every task completion. Records gate result to SQLite. `testsPassed` defaults to true until a test runner is wired (Week 3).
 - **Engineering in shadow mode**: `resolveOwner` only returns active agents, so engineering tasks fall back to CEO until engineering is promoted via `scripts/shadow-promote.ts`. This is intentional — shadow mode means proven before trusted.
 

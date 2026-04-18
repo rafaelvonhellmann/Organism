@@ -125,7 +125,7 @@ The Organism dashboard is Rafael's **G4 gate** — the interface where a solo fo
 - Render as **markdown**: headers, bullets, tables, code blocks, bold/italic
 - Strip escaped `\n` → real newlines
 - Nested JSON → recursive field extraction
-- Grill-Me scrutiny → render as structured interrogation (not raw JSON)
+- Domain Model review → render as structured interrogation (not raw JSON)
 - Code blocks with syntax highlighting
 - Tables properly formatted
 
@@ -156,7 +156,7 @@ The Organism dashboard is Rafael's **G4 gate** — the interface where a solo fo
 - By project: tokens-for-good / synapse / all
 - By risk: HIGH only (default) / all
 - By perspective domain
-- "Show pipeline tasks" toggle (off by default) — reveals grill-me, codex-review, quality-agent
+- "Show pipeline tasks" toggle (off by default) — reveals domain-model, codex-review, quality-agent
 
 ## Design Tokens
 

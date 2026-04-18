@@ -283,7 +283,7 @@ async function submitSynapseReviews() {
     const { getTask: getTaskForSynthesis, getCompletedTasksForProject, createTask: createSynthesisTask } = await import('../packages/core/src/task-queue.js');
     const completedTasks = getCompletedTasksForProject('synapse', 2 * 60 * 60 * 1000);
     const agentOutputs = completedTasks
-      .filter(t => t.agent !== 'synthesis' && t.agent !== 'grill-me' && t.agent !== 'codex-review' && t.agent !== 'quality-agent')
+    .filter(t => t.agent !== 'synthesis' && t.agent !== 'domain-model' && t.agent !== 'grill-me' && t.agent !== 'codex-review' && t.agent !== 'quality-agent')
       .map(t => {
         const out = t.output as Record<string, unknown> | null;
         const text = out

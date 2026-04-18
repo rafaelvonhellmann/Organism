@@ -72,7 +72,7 @@ export async function GET(req: NextRequest) {
     await client.execute(`
       UPDATE tasks SET status = 'completed', completed_at = ${Date.now()}
       WHERE status = 'awaiting_review' AND lane != 'HIGH'
-        AND agent NOT IN ('grill-me', 'codex-review', 'quality-agent')
+      AND agent NOT IN ('domain-model', 'grill-me', 'codex-review', 'quality-agent')
     `);
   } catch { /* best effort */ }
 
@@ -83,7 +83,7 @@ export async function GET(req: NextRequest) {
                    t.completed_at, t.error, t.parent_task_id, t.project_id,
                    t.created_at
             FROM tasks t
-            WHERE t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent')
+    WHERE t.agent NOT IN ('domain-model', 'grill-me', 'codex-review', 'quality-agent')
               AND (
                 (t.status = 'awaiting_review' AND t.lane = 'HIGH')
                 OR (t.status = 'completed' AND t.lane = 'HIGH')
@@ -112,7 +112,7 @@ export async function GET(req: NextRequest) {
     client.execute({
       sql: `SELECT COUNT(DISTINCT t.id) as c
             FROM tasks t
-            WHERE t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent')
+    WHERE t.agent NOT IN ('domain-model', 'grill-me', 'codex-review', 'quality-agent')
               AND t.status IN ('awaiting_review', 'completed')${projectFilter}
               AND (
                 EXISTS (

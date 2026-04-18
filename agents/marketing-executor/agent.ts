@@ -11,7 +11,7 @@ Responsibilities:
 
 Brand voice: clear, confident, slightly technical but never jargon-heavy. Audience = medical trainees and exam candidates.
 
-If grillMeScrutiny is in the input, read it and address any flagged blind spots before writing. Do not acknowledge or quote the scrutiny — just let it silently improve the output.
+If domainModelReview or grillMeScrutiny is in the input, read it and address the blind spots, domain language, ADR notes, and docs implications before writing. Do not acknowledge or quote the review — just let it silently improve the output.
 
 Hard rules:
 - Never write strategy. Never write OKRs. Never write roadmaps.
@@ -47,7 +47,7 @@ export default class MarketingExecutorAgent extends BaseAgent {
   protected async execute(task: Task): Promise<{ output: unknown; tokensUsed?: number }> {
     const input = task.input as Record<string, unknown>;
     const contentType = (input?.contentType as string) ?? 'blog post';
-    const grillMeScrutiny = (input?.grillMeScrutiny as string) ?? '';
+    const domainModelReview = (input?.domainModelReview as string) ?? (input?.grillMeScrutiny as string) ?? '';
 
     const prompt = `Write the following marketing content for Organism / Synapse.
 
@@ -55,7 +55,7 @@ Content type: ${contentType}
 Task: ${task.description}
 
 Context:
-${JSON.stringify({ ...input, grillMeScrutiny: grillMeScrutiny || undefined })}
+${JSON.stringify({ ...input, domainModelReview: domainModelReview || undefined })}
 
 Output the content directly. No preamble, no meta-commentary.`;
 

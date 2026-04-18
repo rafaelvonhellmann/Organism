@@ -87,13 +87,13 @@
       "projectScope": "all"
     },
     {
-      "id": "quality.interrogation",
-      "owner": "grill-me",
+      "id": "quality.domain_model",
+      "owner": "domain-model",
       "collaborators": [],
       "reviewerLane": "LOW",
-      "description": "Socratic interrogation of decisions — challenges assumptions and blind spots",
+      "description": "Domain-model review — challenges assumptions, adds DDD framing, and proposes ADR/docs updates before execution",
       "status": "active",
-      "model": "gpt4o",
+      "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": "all"
     },
@@ -104,7 +104,7 @@
       "reviewerLane": "LOW",
       "description": "OpenAI review lane for logic, security, edge cases, and performance blind-spot coverage",
       "status": "active",
-      "model": "gpt4o",
+      "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": "all"
     },
@@ -113,7 +113,7 @@
       "owner": "quality-guardian",
       "collaborators": [
         "quality-agent",
-        "grill-me"
+        "domain-model"
       ],
       "reviewerLane": "HIGH",
       "description": "Full 6-phase quality audit with Playwright browser verification. Fires on HIGH-risk tasks and Saturday deep audit.",

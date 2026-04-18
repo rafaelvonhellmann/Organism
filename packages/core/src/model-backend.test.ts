@@ -13,7 +13,6 @@ import {
 
 const ORIGINAL_MODEL_BACKEND = process.env.ORGANISM_MODEL_BACKEND;
 const ORIGINAL_USE_API_DIRECT = process.env.USE_API_DIRECT;
-const ORIGINAL_LEGACY_FALLBACK = process.env.ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK;
 const BACKEND_HEALTH_PATH = join(homedir(), '.organism', 'state', 'model-backend-health.json');
 
 afterEach(() => {
@@ -27,12 +26,6 @@ afterEach(() => {
     delete process.env.USE_API_DIRECT;
   } else {
     process.env.USE_API_DIRECT = ORIGINAL_USE_API_DIRECT;
-  }
-
-  if (ORIGINAL_LEGACY_FALLBACK === undefined) {
-    delete process.env.ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK;
-  } else {
-    process.env.ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK = ORIGINAL_LEGACY_FALLBACK;
   }
 
   if (existsSync(BACKEND_HEALTH_PATH)) {
@@ -51,7 +44,7 @@ describe('model backend resolution', () => {
     assert.equal(result.selected, 'anthropic-api');
   });
 
-  it('prefers codex-cli first in auto mode', () => {
+  it('prefers codex-cli first in auto mode when all backends are available', () => {
     const result = resolveModelBackend('auto', {
       claudeCli: true,
       anthropicApi: true,
@@ -62,35 +55,35 @@ describe('model backend resolution', () => {
     assert.equal(result.capabilities.webSearch, false);
   });
 
-  it('uses openai-api automatically when codex cli is unavailable', () => {
+  it('uses claude-cli automatically when codex cli is unavailable', () => {
     const result = resolveModelBackend('auto', {
       claudeCli: true,
       anthropicApi: true,
       codexCli: false,
       openaiApi: true,
     });
-    assert.equal(result.selected, 'openai-api');
-    assert.equal(result.capabilities.webSearch, false);
+    assert.equal(result.selected, 'claude-cli');
+    assert.equal(result.capabilities.webSearch, true);
   });
 
-  it('does not auto-fall back to Anthropic unless legacy fallback is enabled', () => {
-    assert.throws(() => resolveModelBackend('auto', {
-      claudeCli: true,
+  it('uses openai-api automatically when both CLIs are unavailable', () => {
+    const result = resolveModelBackend('auto', {
+      claudeCli: false,
       anthropicApi: true,
       codexCli: false,
-      openaiApi: false,
-    }), /No supported OpenAI backend found/);
+      openaiApi: true,
+    });
+    assert.equal(result.selected, 'openai-api');
   });
 
-  it('uses legacy Anthropic backends in auto mode only when explicitly enabled', () => {
-    process.env.ORGANISM_ALLOW_LEGACY_ANTHROPIC_FALLBACK = 'true';
+  it('uses anthropic-api automatically when OpenAI backends are unavailable', () => {
     const result = resolveModelBackend('auto', {
-      claudeCli: true,
+      claudeCli: false,
       anthropicApi: true,
       codexCli: false,
       openaiApi: false,
     });
-    assert.equal(result.selected, 'claude-cli');
+    assert.equal(result.selected, 'anthropic-api');
   });
 
   it('honors ORGANISM_MODEL_BACKEND from the environment', () => {
@@ -104,7 +97,19 @@ describe('model backend resolution', () => {
     assert.equal(result.selected, 'anthropic-api');
   });
 
-  it('maps legacy USE_API_DIRECT to openai-api', () => {
+  it('supports codex-first as an explicit environment preference', () => {
+    process.env.ORGANISM_MODEL_BACKEND = 'codex-first';
+    const result = resolveModelBackend(undefined, {
+      claudeCli: true,
+      anthropicApi: true,
+      codexCli: true,
+      openaiApi: true,
+    });
+    assert.equal(result.preferred, 'codex-first');
+    assert.equal(result.selected, 'codex-cli');
+  });
+
+  it('maps legacy USE_API_DIRECT to anthropic-api', () => {
     delete process.env.ORGANISM_MODEL_BACKEND;
     process.env.USE_API_DIRECT = 'true';
     const result = resolveModelBackend(undefined, {
@@ -113,7 +118,7 @@ describe('model backend resolution', () => {
       codexCli: true,
       openaiApi: true,
     });
-    assert.equal(result.selected, 'openai-api');
+    assert.equal(result.selected, 'anthropic-api');
   });
 
   it('auto-falls back to the Anthropic API for exhausted claude-cli credit', () => {

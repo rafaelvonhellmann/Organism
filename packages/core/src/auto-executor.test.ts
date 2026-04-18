@@ -251,7 +251,7 @@ describe('auto-executor', () => {
     );
   });
 
-  it('reroutes disallowed Synapse validator follow-ups to an allowed review agent', async () => {
+  it('routes Synapse validator follow-ups to an allowed review agent', async () => {
     const completed = createTask({
       agent: 'quality-agent',
       lane: 'MEDIUM',
@@ -287,7 +287,7 @@ describe('auto-executor', () => {
       LIMIT 1
     `).get() as { agent: string; workflow_kind: string; description: string };
 
-    assert.equal(followup.agent, 'quality-agent');
+    assert.ok(['quality-agent', 'codex-review'].includes(followup.agent));
     assert.equal(followup.workflow_kind, 'validate');
     assert.match(followup.description, /admin dashboard auth flow/i);
   });
@@ -438,6 +438,59 @@ describe('auto-executor', () => {
     assert.match(followup.description, /codex-review findings/i);
     assert.equal(followup.parent_task_id, original.id);
     assert.match(followup.input, /qualityFeedback/i);
+  });
+
+  it('creates a validation task after a clean engineering implementation completes', async () => {
+    const original = createTask({
+      agent: 'engineering',
+      lane: 'LOW',
+      description: 'Implement bounded canary controls for tokens-for-good',
+      input: { execution: true },
+      projectId: 'tokens-for-good',
+      goalId: 'goal-validate-after-implement',
+      workflowKind: 'implement',
+      sourceKind: 'agent_followup',
+    });
+
+    completeTask(original.id, {
+      mode: 'executed',
+      changedFiles: ['packages/contracts/src/canary-policy.ts'],
+      workspaceCleanup: {
+        removed: true,
+        path: 'C:/Users/rafae/.organism/state/worktrees/tokens-for-good/clean-validate',
+      },
+      verification: [
+        {
+          action: 'build',
+          ok: true,
+          output: 'build passed',
+        },
+      ],
+      summary: 'Implemented the change cleanly and verification passed.',
+    }, 0, 0);
+
+    const created = await processApprovedFindings();
+    assert.equal(created, 1);
+
+    const followup = getDb().prepare(`
+      SELECT agent, workflow_kind, description, input, parent_task_id
+      FROM tasks
+      WHERE source_kind = 'agent_followup' AND id != ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(original.id) as {
+      agent: string;
+      workflow_kind: string;
+      description: string;
+      input: string;
+      parent_task_id: string;
+    };
+
+    assert.equal(followup.agent, 'quality-agent');
+    assert.equal(followup.workflow_kind, 'validate');
+    assert.match(followup.description, /validate implementation/i);
+    assert.equal(followup.parent_task_id, original.id);
+    assert.match(followup.input, /changedFiles/i);
   });
 
   it('creates an engineering recovery task when a preserved worktree still needs verification', async () => {

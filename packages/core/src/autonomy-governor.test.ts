@@ -26,7 +26,7 @@ describe('autonomy-governor', () => {
   });
 
   it('tracks consecutive healthy runs for a project', () => {
-    for (let index = 0; index < 3; index++) {
+    for (let index = 0; index < 1; index++) {
       const goal = ensureGoal({
         projectId: 'organism',
         title: `Ship the controller ${index + 1}`,
@@ -45,12 +45,50 @@ describe('autonomy-governor', () => {
     }
 
     const health = getProjectAutonomyHealth('organism');
-    assert.equal(health.consecutiveHealthyRuns, 3);
+    assert.equal(health.consecutiveHealthyRuns, 1);
     assert.equal(health.rolloutReady, false);
     assert.equal(health.rolloutStage, 'bounded');
     assert.equal(health.nextRolloutStage, 'deploy_ready');
-    assert.equal(health.nextRolloutThreshold, 5);
+    assert.equal(health.nextRolloutThreshold, 2);
     assert.ok(health.blockers.some((blocker) => blocker.includes('low-risk deploys')));
+  });
+
+  it('counts one healthy goal once even when multiple agents complete work inside it', () => {
+    const goal = ensureGoal({
+      projectId: 'organism',
+      title: 'Medical-safe canary',
+      description: 'Review, validate, and synthesize one canary mission',
+      sourceKind: 'system',
+      workflowKind: 'review',
+    });
+
+    const reviewRun = createRunSession({
+      goalId: goal.id,
+      projectId: 'organism',
+      agent: 'quality-agent',
+      workflowKind: 'review',
+    });
+    updateRunStatus({
+      runId: reviewRun.id,
+      status: 'completed',
+      summary: 'Quality review completed',
+    });
+
+    const validationRun = createRunSession({
+      goalId: goal.id,
+      projectId: 'organism',
+      agent: 'codex-review',
+      workflowKind: 'validate',
+    });
+    updateRunStatus({
+      runId: validationRun.id,
+      status: 'completed',
+      summary: 'Validation completed',
+    });
+
+    const health = getProjectAutonomyHealth('organism');
+    assert.equal(health.consecutiveHealthyRuns, 1);
+    assert.equal(health.recentCompletedRuns, 1);
   });
 
   it('ignores superseded provider failures once the latest run for the same goal and agent completes cleanly', () => {
@@ -167,6 +205,6 @@ describe('autonomy-governor', () => {
 
     const health = getProjectAutonomyHealth('organism');
     assert.equal(health.consecutiveHealthyRuns, 0);
-    assert.ok(health.blockers.some((blocker) => blocker.includes('healthy runs')));
+    assert.ok(health.blockers.some((blocker) => blocker.includes('healthy goals')));
   });
 });

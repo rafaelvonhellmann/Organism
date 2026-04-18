@@ -185,7 +185,7 @@ export default function ProgressPage() {
       const normalizeVisibleTasks = (tasks: TaskSummary[]) =>
         shouldShowPipelineTasks
           ? tasks
-          : tasks.filter(t => !['grill-me', 'codex-review', 'quality-agent', 'risk-classifier'].includes(t.agent));
+          : tasks.filter(t => !['domain-model', 'grill-me', 'codex-review', 'quality-agent', 'risk-classifier'].includes(t.agent));
       const groupedTasks = (tasks: TaskSummary[]) => mergeEquivalentTasks(normalizeVisibleTasks(tasks));
 
       setData({

@@ -1,6 +1,7 @@
 'use client';
 
 const LOCAL_DASHBOARD_ORIGIN = 'http://127.0.0.1:7391';
+const LOCAL_RETRY_QUEUE_KEY = 'organism.pendingLocalActions';
 
 export interface DashboardActionRequest {
   action: string;
@@ -10,7 +11,7 @@ export interface DashboardActionRequest {
 export interface DashboardActionResponse {
   ok: boolean;
   action?: string;
-  via: 'remote' | 'local';
+  via: 'remote' | 'local' | 'queued';
 }
 
 export interface DashboardActionRecord {
@@ -21,6 +22,12 @@ export interface DashboardActionRecord {
   result: string | null;
   created_at: number;
   completed_at: number | null;
+}
+
+interface QueuedDashboardAction {
+  id: string;
+  request: DashboardActionRequest;
+  createdAt: number;
 }
 
 function buildQuery(project?: string): string {
@@ -49,6 +56,95 @@ async function readJson<T>(response: Response): Promise<T | null> {
   }
 }
 
+function canUseLocalStorage(): boolean {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+}
+
+function readQueuedActions(): QueuedDashboardAction[] {
+  if (!canUseLocalStorage()) return [];
+  try {
+    const raw = window.localStorage.getItem(LOCAL_RETRY_QUEUE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is QueuedDashboardAction => {
+      if (!item || typeof item !== 'object') return false;
+      const candidate = item as Partial<QueuedDashboardAction>;
+      return typeof candidate.id === 'string'
+        && typeof candidate.createdAt === 'number'
+        && !!candidate.request
+        && typeof candidate.request.action === 'string';
+    }) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeQueuedActions(actions: QueuedDashboardAction[]): void {
+  if (!canUseLocalStorage()) return;
+  if (actions.length === 0) {
+    window.localStorage.removeItem(LOCAL_RETRY_QUEUE_KEY);
+    return;
+  }
+  window.localStorage.setItem(LOCAL_RETRY_QUEUE_KEY, JSON.stringify(actions));
+}
+
+function queueDashboardAction(request: DashboardActionRequest): void {
+  const queued = readQueuedActions();
+  const payloadJson = JSON.stringify(request.payload ?? {});
+  const exists = queued.some((item) =>
+    item.request.action === request.action && JSON.stringify(item.request.payload ?? {}) === payloadJson,
+  );
+  if (exists) return;
+  queued.unshift({
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    request,
+    createdAt: Date.now(),
+  });
+  writeQueuedActions(queued.slice(0, 20));
+}
+
+export function getQueuedDashboardActionCount(): number {
+  return readQueuedActions().length;
+}
+
+async function submitToLocalBridge(request: DashboardActionRequest): Promise<DashboardActionResponse> {
+  const local = await fetch(`${LOCAL_DASHBOARD_ORIGIN}/api/actions`, {
+    method: 'POST',
+    mode: 'cors',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Organism-Bridge': '1',
+    },
+    body: JSON.stringify(request),
+  });
+
+  const localBody = await readJson<{ ok?: boolean; action?: string; error?: string }>(local);
+  if (!local.ok || !localBody?.ok) {
+    throw new Error(localBody?.error ?? 'Failed to create action');
+  }
+  return { ok: true, action: localBody.action ?? request.action, via: 'local' };
+}
+
+export async function flushQueuedDashboardActions(): Promise<number> {
+  const queued = readQueuedActions();
+  if (queued.length === 0) return 0;
+
+  const remaining: QueuedDashboardAction[] = [];
+  let flushed = 0;
+
+  for (const item of queued.reverse()) {
+    try {
+      await submitToLocalBridge(item.request);
+      flushed += 1;
+    } catch {
+      remaining.unshift(item);
+    }
+  }
+
+  writeQueuedActions(remaining);
+  return flushed;
+}
+
 export async function submitDashboardAction(request: DashboardActionRequest): Promise<DashboardActionResponse> {
   let remoteError: string | null = null;
   let remoteStatus = 0;
@@ -75,30 +171,16 @@ export async function submitDashboardAction(request: DashboardActionRequest): Pr
     remoteError = error instanceof Error ? error.message : String(error);
   }
 
-  let local: Response;
   try {
-    local = await fetch(`${LOCAL_DASHBOARD_ORIGIN}/api/actions`, {
-      method: 'POST',
-      mode: 'cors',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Organism-Bridge': '1',
-      },
-      body: JSON.stringify(request),
-    });
+    return await submitToLocalBridge(request);
   } catch (error) {
-    const localBridgeError = 'Local daemon bridge is unavailable on 127.0.0.1:7391. Start or restart Organism locally, then open http://127.0.0.1:7391/command and launch from there.';
-    const remoteContext = remoteError && remoteError !== 'Failed to fetch'
-      ? `${remoteError}. `
-      : '';
-    throw new Error(`${remoteContext}${localBridgeError}`);
+    queueDashboardAction(request);
+    return {
+      ok: true,
+      action: request.action,
+      via: 'queued',
+    };
   }
-
-  const localBody = await readJson<{ ok?: boolean; action?: string; error?: string }>(local);
-  if (!local.ok || !localBody?.ok) {
-    throw new Error(localBody?.error ?? remoteError ?? 'Failed to create action');
-  }
-  return { ok: true, action: localBody.action ?? request.action, via: 'local' };
 }
 
 export async function loadDashboardActions(project?: string): Promise<DashboardActionRecord[]> {

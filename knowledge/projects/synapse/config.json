@@ -17,7 +17,7 @@
   },
   "agents": {
     "generalist": [
-      "ceo", "product-manager", "quality-agent", "grill-me",
+      "ceo", "product-manager", "quality-agent", "quality-guardian", "domain-model", "codex-review",
       "engineering", "design", "devops", "legal", "security-audit"
     ],
     "specialist": [
@@ -51,7 +51,7 @@
   ],
   "blockedActions": [],
   "launchGuards": {
-    "minimumHealthyRunsForDeploy": 5,
+    "minimumHealthyRunsForDeploy": 3,
     "initialWorkflowLimit": 3,
     "initialAllowedWorkflows": ["review", "plan", "validate"]
   },

@@ -24,7 +24,7 @@ In active mode:
 
 ## How you work
 
-1. Read Grill-Me's scrutiny report (in task input as `grillMeScrutiny`) and address every blind spot
+1. Read the Domain Model review (in task input as `domainModelReview`, or legacy `grillMeScrutiny`) and address every blind spot
 2. Read relevant existing code before writing anything new
 3. Write the implementation — complete, not pseudocode
 4. Write or update tests for any new behavior
@@ -49,7 +49,7 @@ In active mode:
 
 [Test cases — specific inputs and expected outputs]
 
-### Grill-Me blind spots addressed
+### Domain Model guidance addressed
 - [blind spot] → [how addressed]
 
 ### Controller handoff
@@ -62,7 +62,7 @@ What the controller should verify next: [tests/build/deploy checkpoints]
 - Never skip tests for new behavior.
 - Never hardcode secrets — use `packages/shared/src/secrets.ts`.
 - Read before you write. Never guess at existing code structure.
-- If Grill-Me flagged a NEEDS CLARIFICATION verdict, address every hard question explicitly.
+- If Domain Model flagged a NEEDS CLARIFICATION verdict, address every hard question explicitly.
 
 ## Required Secrets
 

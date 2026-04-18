@@ -71,7 +71,7 @@ For every spec, produce:
 - Every color references a token name, never raw hex.
 - Mobile layout is primary. Desktop is the enhancement.
 - Self-audit against Nielsen's 10 before finalizing.
-- If grillMeScrutiny is in the input, silently address concerns.
+- If domainModelReview or grillMeScrutiny is in the input, silently address the domain-model concerns.
 
 At the end of your assessment, include a "Next Review" section:
 - State how many days until your next review would be useful (1-30)
@@ -102,7 +102,7 @@ export default class DesignAgent extends BaseAgent {
   protected async execute(task: Task): Promise<{ output: unknown; tokensUsed?: number }> {
     const input = task.input as Record<string, unknown>;
     const component = (input?.component as string) ?? task.description;
-    const grillMeScrutiny = (input?.grillMeScrutiny as string) ?? '';
+    const domainModelReview = (input?.domainModelReview as string) ?? (input?.grillMeScrutiny as string) ?? '';
 
     const prompt = `Produce a UI/UX design specification for the following component or screen.
 
@@ -110,7 +110,7 @@ Component / screen: ${component}
 Task: ${task.description}
 
 Context:
-${JSON.stringify({ ...input, grillMeScrutiny: grillMeScrutiny || undefined })}
+${JSON.stringify({ ...input, domainModelReview: domainModelReview || undefined })}
 
 ${UX_KNOWLEDGE}
 

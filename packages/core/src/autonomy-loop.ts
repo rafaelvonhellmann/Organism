@@ -6,7 +6,7 @@ import { writeAudit } from './audit.js';
 import { ProjectPolicy } from '../../shared/src/types.js';
 
 const PROJECTS_DIR = path.resolve(process.cwd(), 'knowledge', 'projects');
-const REVIEW_AGENTS = ['quality-agent', 'quality-guardian', 'codex-review', 'grill-me', 'legal', 'security-audit'];
+const REVIEW_AGENTS = ['quality-agent', 'quality-guardian', 'codex-review', 'domain-model', 'grill-me', 'legal', 'security-audit'];
 const AUTONOMY_CYCLE_COOLDOWN_MS = 60 * 1000;
 const AUTONOMY_PERIOD_BUCKET_MINUTES = 1;
 const STALE_ORPHAN_REVIEW_MS = 15 * 60 * 1000;

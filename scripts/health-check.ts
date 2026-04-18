@@ -13,6 +13,7 @@ import { getDb } from '../packages/core/src/task-queue.js';
 import { STATE_DIR } from '../packages/shared/src/state-dir.js';
 import { bootstrapRuntimeEnv } from '../packages/shared/src/runtime-env.js';
 import { getSecretOrNull } from '../packages/shared/src/secrets.js';
+import { getProjectLaunchAudit } from '../packages/core/src/launch-audit.js';
 
 bootstrapRuntimeEnv();
 
@@ -99,10 +100,14 @@ async function healthCheck() {
   console.log('\nProject launch readiness:');
   for (const policy of listProjectPolicies()) {
     const readiness = getProjectLaunchReadiness(policy.projectId);
+    const audit = getProjectLaunchAudit(policy.projectId);
     const blockerLabel = readiness.blockers.length === 0 ? 'ready' : `blocked (${readiness.blockers.length})`;
-    console.log(`- ${policy.projectId}: ${blockerLabel}, clean=${readiness.cleanWorktree}, deployUnlocked=${readiness.deployUnlocked}, minimax=${readiness.minimax.ready ? 'ready' : 'off/not-ready'}`);
+    console.log(`- ${policy.projectId}: ${blockerLabel}, clean=${readiness.cleanWorktree}, deployUnlocked=${readiness.deployUnlocked}, minimax=${readiness.minimax.ready ? 'ready' : 'off/not-ready'}, launchAudit=${audit.summary.fail} fail / ${audit.summary.warn} warn`);
     for (const blocker of readiness.blockers) {
       console.log(`  blocker: ${blocker}`);
+    }
+    for (const blocker of audit.blockers.slice(0, 5)) {
+      console.log(`  launch blocker: ${blocker}`);
     }
     for (const warning of readiness.warnings) {
       console.log(`  warning: ${warning}`);

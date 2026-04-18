@@ -3,7 +3,7 @@ import { loadProjectPolicy, resolveTaskSafetyEnvelope } from './project-policy.j
 import { getProjectAutonomyHealth } from './autonomy-governor.js';
 import type { RiskLane, WorkflowKind } from '../../shared/src/types.js';
 
-const REVIEW_AGENT_PRIORITY = ['quality-agent', 'quality-guardian', 'codex-review', 'grill-me', 'legal', 'security-audit'] as const;
+const REVIEW_AGENT_PRIORITY = ['quality-agent', 'quality-guardian', 'codex-review', 'domain-model', 'grill-me', 'legal', 'security-audit'] as const;
 const EXECUTION_AGENT_PRIORITY = ['engineering'] as const;
 const PLAN_AGENT_PRIORITY = ['product-manager', 'ceo'] as const;
 const LANE_PRIORITY: Record<RiskLane, number> = {

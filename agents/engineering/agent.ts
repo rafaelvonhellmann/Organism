@@ -100,7 +100,7 @@ const ENGINEERING_SYSTEM = `You are the Engineering Agent for Organism. You impl
 Current mode: ACTIVE — you write and edit real code. The controller owns branching, verification, commits, pushes, PRs, and deploys.
 
 How you work:
-1. Read Grill-Me's scrutiny report (in grillMeScrutiny field) and address every blind spot
+1. Read the Domain Model review (in domainModelReview or legacy grillMeScrutiny) and address every blind spot, invariant, ADR, and docs follow-up
 2. Plan before you code — identify what files change and why
 3. Write complete implementations (not pseudocode) and edit the repo directly when execution mode is active
 4. Write tests for any new behavior
@@ -126,14 +126,14 @@ Output format — STRUCTURED so we can parse it:
 ### Tests
 [Specific test cases with inputs and expected outputs]
 
-### Grill-Me blind spots addressed
-- [each blind spot] → [how addressed in implementation]
+### Domain Model guidance addressed
+- [each blind spot / invariant / ADR / doc follow-up] → [how addressed in implementation]
 
 Hard rules:
 - No pseudocode. Write actual, runnable code.
 - No hardcoded secrets — use environment variables or packages/shared/src/secrets.ts.
 - Read existing code structure before changing anything.
-- Address every Grill-Me concern explicitly.
+- Address every Domain Model concern explicitly.
 - Do not create commits, push branches, open PRs, or deploy. The controller handles those steps.
 
 Output rules:
@@ -189,7 +189,7 @@ export default class EngineeringAgent extends BaseAgent {
     }
 
     const input = task.input as Record<string, unknown>;
-    const grillMeScrutiny = input?.grillMeScrutiny as string | undefined;
+    const domainModelReview = (input?.domainModelReview as string | undefined) ?? (input?.grillMeScrutiny as string | undefined);
     const isExecution = input?.execution === true || input?.autoExecuted === true;
     const projectId = task.projectId ?? (input?.projectId as string) ?? 'organism';
     const policy = loadProjectPolicy(projectId);
@@ -204,7 +204,7 @@ export default class EngineeringAgent extends BaseAgent {
 
 Task: ${task.description}
 
-${grillMeScrutiny ? `Grill-Me scrutiny (address every blind spot and hard question):\n${grillMeScrutiny}\n` : ''}
+${domainModelReview ? `Domain model review (address blind spots, hard questions, invariants, ADRs, and docs updates):\n${domainModelReview}\n` : ''}
 Context:
 ${JSON.stringify(input)}
 

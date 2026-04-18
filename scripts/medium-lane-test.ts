@@ -1,6 +1,6 @@
 /**
  * MEDIUM lane smoke test — Week 2 gate.
- * Verifies: submit → Grill-Me interrogates → Engineering implements (shadow) → Quality reviews → complete
+ * Verifies: submit → Domain Model reviews → Engineering implements (shadow) → Quality reviews → complete
  */
 
 import { submitTask } from '../packages/core/src/orchestrator.js';
@@ -30,7 +30,7 @@ async function runMediumTest() {
   console.log(`Lane: ${originalTask.lane}`);
   console.log(`Routed to: ${originalTask.agent}\n`);
 
-  // Run 4 dispatch cycles: Grill-Me → Engineering → Quality Agent → (any remaining)
+// Run 4 dispatch cycles: Domain Model → Engineering → Quality Agent → (any remaining)
   for (let pass = 1; pass <= 4; pass++) {
     const pending = getPendingTasks();
     if (pending.length === 0) break;
@@ -47,7 +47,7 @@ async function runMediumTest() {
   console.log(`Total cost: $${cost.toFixed(4)}`);
 
   const checks = [
-    { name: 'Grill-Me ran (task routed to grill-me)', pass: originalTask.agent === 'grill-me' },
+  { name: 'Domain Model ran (task routed to domain-model)', pass: originalTask.agent === 'domain-model' || originalTask.agent === 'grill-me' },
     { name: 'Original task completed', pass: finalTask.status === 'completed' },
     { name: 'Cost < $5', pass: cost < 5.00 },
   ];

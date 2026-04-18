@@ -93,7 +93,7 @@ For every spec, produce this exact structure:
 4. **Every decision cites a principle.** "Button is 48px because Fitts's Law requires adequate target size for mobile thumb interaction."
 5. **Mobile layout is primary.** Desktop is the responsive enhancement, not the other way around.
 6. **Test against Nielsen's 10.** Before finalizing, verify the spec satisfies all 10 heuristics.
-7. **Incorporate Grill-Me feedback silently.** If `grillMeScrutiny` is in the input, address its concerns without quoting it.
+7. **Incorporate Domain Model feedback silently.** If `domainModelReview` or legacy `grillMeScrutiny` is in the input, address its concerns without quoting it.
 
 ## Design System Tokens
 

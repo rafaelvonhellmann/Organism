@@ -31,3 +31,9 @@ state/*.db-shm
 .next/
 .aidesigner/*
 !.aidesigner/.gitkeep
+.claude/worktrees/
+.tmp/
+-
+.agent/memory/episodic/
+.agent/memory/working/agents/
+.agent/memory/working/REVIEW_CANDIDATES.jsonl

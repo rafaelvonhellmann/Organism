@@ -41,7 +41,8 @@ const AGENT_CONTEXT_NEEDS: Record<string, string[]> = {
   'quality-guardian': ['codeEvidence', 'database', 'testing', 'keyFiles', 'stack'],
   'quality-agent': ['description', 'keyFiles'],
   'codex-review': ['description'],
-  'grill-me': ['description'],
+  'domain-model': ['description', 'businessContext', 'keyFiles'],
+  'grill-me': ['description', 'businessContext', 'keyFiles'],
 
   // Marketing & Sales
   'marketing-strategist': ['description', 'businessContext', 'founder'],

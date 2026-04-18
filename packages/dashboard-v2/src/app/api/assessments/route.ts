@@ -62,7 +62,7 @@ export async function GET(req: NextRequest) {
           CAST(strftime('%H', t.created_at / 1000, 'unixepoch') AS INTEGER) AS run_hour,
           COUNT(DISTINCT t.id) AS task_count,
           COUNT(DISTINCT CASE
-            WHEN t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent', 'risk-classifier')
+WHEN t.agent NOT IN ('domain-model', 'grill-me', 'codex-review', 'quality-agent', 'risk-classifier')
             THEN t.id
           END) AS primary_task_count,
           COUNT(DISTINCT CASE
@@ -109,7 +109,7 @@ export async function GET(req: NextRequest) {
             LEFT JOIN review_decisions rd ON rd.task_id = t.id
             WHERE t.project_id = ?
               AND t.created_at >= ? AND t.created_at < ?
-              AND t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent', 'risk-classifier')
+AND t.agent NOT IN ('domain-model', 'grill-me', 'codex-review', 'quality-agent', 'risk-classifier')
             GROUP BY rd.decision
           `,
           args: [pid, hourStart, hourEnd],
@@ -134,7 +134,7 @@ export async function GET(req: NextRequest) {
               LEFT JOIN gates g ON g.task_id = t.id AND g.gate = 'G4'
               WHERE t.project_id = ?
                 AND t.created_at >= ? AND t.created_at < ?
-                AND t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent', 'risk-classifier')
+AND t.agent NOT IN ('domain-model', 'grill-me', 'codex-review', 'quality-agent', 'risk-classifier')
               GROUP BY g.decision
             `,
             args: [pid, hourStart, hourEnd],

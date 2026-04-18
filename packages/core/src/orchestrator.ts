@@ -25,11 +25,11 @@ type AgentModel = 'haiku' | 'sonnet' | 'opus';
  * while keeping quality-sensitive agents strong.
  *
  * NEVER DOWNGRADE: legal, security-audit, quality-guardian, medical-content-reviewer
- * USE CHEAPER: grill-me, codex-review (uses GPT via own agent), risk-classifier
+ * USE CHEAPER: domain-model, codex-review (uses GPT via own agent), risk-classifier
  */
 export function selectModel(agent: string, _lane: RiskLane): AgentModel {
   // Cheap: classification, interrogation, formatting, triage
-  if (agent === 'grill-me') return 'haiku';
+  if (agent === 'domain-model' || agent === 'grill-me') return 'haiku';
   if (agent === 'codex-review') return 'haiku';  // codex-review uses GPT via its own agent
   if (agent === 'risk-classifier') return 'haiku';
 
@@ -181,9 +181,9 @@ function enforceInitialWorkflowGuard(
   if (initialAllowedWorkflows.includes(workflowKind)) return;
 
   throw new Error(
-    `EARLY CANARY GUARD: ${projectId} is limited to ${initialAllowedWorkflows.join(', ')} for its first ${initialWorkflowLimit} completed runs. ` +
-    `Current workflow "${workflowKind}" is blocked until the canary lane stabilizes.`,
-  );
+      `EARLY LAUNCH GUARD: ${projectId} is limited to ${initialAllowedWorkflows.join(', ')} for its first ${initialWorkflowLimit} completed goals. ` +
+      `Current workflow "${workflowKind}" is blocked until the early rollout lane stabilizes.`,
+    );
 }
 
 function inferRequestedActions(description: string): Array<'purchase' | 'contact' | 'create_account'> {
@@ -340,8 +340,8 @@ export async function submitTask(
   }
 
   if (shapingAction.type === 'convert_to_pitch') {
-    // Instead of executing, create a shaping task routed to product-manager
-    // Grill-Me is used upstream here for pitch refinement, not as a blanket gate
+    // Instead of executing, create a shaping task routed to product-manager.
+    // Domain Model is used upstream here for pitch refinement, not as a blanket gate.
     const agent = 'product-manager';
     const task = createTask({
       agent,
@@ -401,8 +401,8 @@ export async function submitTask(
     }
   }
 
-  // 5. Route to agent — Grill-Me is no longer a blanket gate for all MEDIUM/HIGH tasks.
-  //    Instead, it is used upstream in pitch refinement (product-manager delegates to grill-me
+  // 5. Route to agent — Domain Model is no longer a blanket gate for all MEDIUM/HIGH tasks.
+  //    Instead, it is used upstream in pitch refinement (product-manager delegates to domain-model
   //    during shaping). Once a bet is approved, tasks go directly to the intended agent.
   const agent = intendedAgent;
   const taskInput = submission.input && typeof submission.input === 'object'
@@ -526,7 +526,7 @@ async function routeToPipeline(taskId: string, agent: string, lane: RiskLane, be
  * Pipeline stages — now trigger-based for specialists instead of default-heavy.
  *
  * Shape Up changes:
- * - Grill-Me is no longer in the MEDIUM/HIGH runtime pipeline. It is used upstream
+ * - Domain Model is no longer in the MEDIUM/HIGH runtime pipeline. It is used upstream
  *   during pitch refinement when tasks don't have an approved bet.
  * - Specialist agents (legal, security-audit, quality-guardian) are only invoked
  *   when their trigger conditions match the task description.
@@ -537,7 +537,7 @@ function getPipelineStages(lane: RiskLane, _agent?: string, betId?: string): str
     case 'LOW':
       return ['quality-agent', 'auto-ship'];
     case 'MEDIUM':
-      // Removed grill-me from runtime pipeline (now upstream in shaping)
+      // Removed domain-model from runtime pipeline (now upstream in shaping)
       return ['quality-agent', 'codex-review', 'auto-ship'];
     case 'HIGH': {
       // Base pipeline without blanket specialist invocation

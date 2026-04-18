@@ -128,7 +128,7 @@ export function getProjectLaunchReadiness(projectId: string): ProjectLaunchReadi
   }
   if (policy.launchGuards.minimumHealthyRunsForDeploy > autonomy.consecutiveHealthyRuns) {
     warnings.push(
-      `Deploy stays approval-gated until ${policy.launchGuards.minimumHealthyRunsForDeploy} healthy runs; current streak is ${autonomy.consecutiveHealthyRuns}.`,
+      `Deploy stays approval-gated until ${policy.launchGuards.minimumHealthyRunsForDeploy} healthy goals; current streak is ${autonomy.consecutiveHealthyRuns}.`,
     );
   }
   if (
@@ -137,7 +137,7 @@ export function getProjectLaunchReadiness(projectId: string): ProjectLaunchReadi
     && policy.launchGuards.initialAllowedWorkflows.length > 0
   ) {
     warnings.push(
-      `Early canary guard is active for the first ${policy.launchGuards.initialWorkflowLimit} completed runs; allowed workflows: ${policy.launchGuards.initialAllowedWorkflows.join(', ')}.`,
+      `Early launch guard is active for the first ${policy.launchGuards.initialWorkflowLimit} completed goals; allowed workflows: ${policy.launchGuards.initialAllowedWorkflows.join(', ')}.`,
     );
   }
   if (policy.allowedActions.includes('push') && !remoteReachable) {

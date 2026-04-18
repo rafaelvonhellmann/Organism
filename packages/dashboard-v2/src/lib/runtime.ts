@@ -41,10 +41,10 @@ const HOME = process.env.USERPROFILE ?? process.env.HOME ?? '.';
 const STATE_DIR = process.env.ORGANISM_STATE_DIR ?? resolve(HOME, '.organism', 'state');
 const DEFAULT_CORE_AGENTS = ['ceo', 'product-manager', 'engineering', 'devops', 'quality-agent', 'security-audit', 'legal', 'quality-guardian', 'codex-review'];
 const ACTIVE_RUN_STALE_MS = 20 * 60 * 1000;
-const FINAL_GRADUATION_RUNS = 20;
+const FINAL_GRADUATION_RUNS = 3;
 const ROLLOUT_STAGES = [
-  { stage: 'bounded', label: 'bounded autonomy', threshold: 3 },
-  { stage: 'deploy_ready', label: 'low-risk deploys', threshold: 5 },
+  { stage: 'bounded', label: 'bounded autonomy', threshold: 1 },
+  { stage: 'deploy_ready', label: 'low-risk deploys', threshold: 2 },
   { stage: 'graduated', label: 'full graduation', threshold: FINAL_GRADUATION_RUNS },
 ] as const;
 const USEFUL_ARTIFACT_KINDS = new Set(['patch', 'verification', 'report', 'deployment']);
@@ -75,6 +75,29 @@ function readProjectConfig(projectId: string): {
   }
 }
 
+interface RecentGoalSnapshotRow {
+  id: string;
+  status: string;
+  workflow_kind: string;
+  latest_run_id: string | null;
+  latest_run_status: string | null;
+  latest_run_provider_failure_kind: string | null;
+  updated_at: number;
+}
+
+interface GoalTaskSnapshotRow {
+  status: string;
+  retry_class: string | null;
+  provider_failure_kind: string | null;
+  error: string | null;
+}
+
+function hasOperationalFailure(error: string | null): boolean {
+  if (!error) return false;
+  return /(fetch failed|transport_error|network error|timed out|timeout|manual pause|retry limit reached|credit balance is too low|rate limit|quota|billing|sql write operations are forbidden|writes are blocked|upgrade your plan|not recognized|corepack|pnpm|worktree|filename too long|path too long|permission denied)/i
+    .test(error);
+}
+
 async function getProjectAutonomyHealthSnapshot(client: Client | null, projectId: string) {
   const { autonomyMode, coreAgents } = readProjectConfig(projectId);
   const requiredConsecutiveRuns = FINAL_GRADUATION_RUNS;
@@ -101,7 +124,7 @@ async function getProjectAutonomyHealthSnapshot(client: Client | null, projectId
   }
 
   const [
-    recentRunsResult,
+    recentGoalsResult,
     completedResult,
     providerFailuresResult,
     activeRunsResult,
@@ -109,29 +132,46 @@ async function getProjectAutonomyHealthSnapshot(client: Client | null, projectId
     pendingApprovalsResult,
   ] = await Promise.all([
     client.execute({
-      sql: `SELECT status, provider_failure_kind
-            FROM run_sessions
-            WHERE project_id = ?
-              AND NOT (goal_id LIKE 'goal-%' AND status IN ('pending', 'running', 'paused', 'retry_scheduled'))
-              AND NOT (status IN ('pending', 'running', 'paused', 'retry_scheduled') AND updated_at < ?)
-            ORDER BY updated_at DESC
+      sql: `SELECT
+              g.id,
+              g.status,
+              g.workflow_kind,
+              g.latest_run_id,
+              r.status AS latest_run_status,
+              r.provider_failure_kind AS latest_run_provider_failure_kind,
+              g.updated_at
+            FROM goals g
+            LEFT JOIN run_sessions r ON r.id = g.latest_run_id
+            WHERE g.project_id = ?
+              AND NOT (g.status IN ('pending', 'running', 'paused', 'retry_scheduled') AND g.updated_at < ?)
+            ORDER BY g.updated_at DESC
             LIMIT 50`,
       args: [projectId, Date.now() - ACTIVE_RUN_STALE_MS],
     }),
     client.execute({
       sql: `SELECT COUNT(*) as c
-            FROM run_sessions
+            FROM goals
             WHERE project_id = ? AND status = 'completed'`,
       args: [projectId],
     }),
     client.execute({
-      sql: `SELECT COUNT(*) as c
-            FROM run_sessions
-            WHERE project_id = ?
-              AND provider_failure_kind IS NOT NULL
-              AND provider_failure_kind != ''
-              AND provider_failure_kind != 'none'
-              AND goal_id NOT LIKE 'goal-%'`,
+      sql: `SELECT
+              g.id,
+              r.provider_failure_kind AS latest_run_provider_failure_kind,
+              COUNT(
+                CASE
+                  WHEN t.status IN ('pending', 'in_progress', 'paused', 'retry_scheduled', 'awaiting_review')
+                    AND t.provider_failure_kind IS NOT NULL
+                    AND t.provider_failure_kind != ''
+                    AND t.provider_failure_kind != 'none'
+                  THEN 1
+                END
+              ) AS active_provider_failures
+            FROM goals g
+            LEFT JOIN run_sessions r ON r.id = g.latest_run_id
+            LEFT JOIN tasks t ON t.goal_id = g.id
+            WHERE g.project_id = ?
+            GROUP BY g.id, r.provider_failure_kind`,
       args: [projectId],
     }),
     client.execute({
@@ -165,16 +205,102 @@ async function getProjectAutonomyHealthSnapshot(client: Client | null, projectId
     }),
   ]);
 
+  const goalTaskSummaryRows = await client.execute({
+    sql: `SELECT
+            goal_id,
+            COUNT(CASE WHEN status IN ('pending', 'in_progress', 'paused', 'retry_scheduled', 'awaiting_review') THEN 1 END) AS active_tasks,
+            COUNT(
+              CASE
+                WHEN status IN ('pending', 'in_progress', 'paused', 'retry_scheduled', 'awaiting_review')
+                  AND provider_failure_kind IS NOT NULL
+                  AND provider_failure_kind != ''
+                  AND provider_failure_kind != 'none'
+                THEN 1
+              END
+            ) AS active_provider_failures
+          FROM tasks
+          WHERE project_id = ?
+          GROUP BY goal_id`,
+    args: [projectId],
+  });
+
+  const latestGoalTaskRows = await client.execute({
+    sql: `SELECT t.goal_id, t.status, t.retry_class, t.provider_failure_kind, t.error
+          FROM tasks t
+          INNER JOIN (
+            SELECT goal_id, MAX(COALESCE(completed_at, started_at, created_at)) AS latest_ts
+            FROM tasks
+            WHERE project_id = ?
+            GROUP BY goal_id
+          ) latest
+          ON latest.goal_id = t.goal_id
+         AND COALESCE(t.completed_at, t.started_at, t.created_at) = latest.latest_ts
+          WHERE t.project_id = ?`,
+    args: [projectId, projectId],
+  });
+
+  const goalTaskSummaries = new Map<string, { activeTasks: number; activeProviderFailures: number }>();
+  for (const row of goalTaskSummaryRows.rows) {
+    goalTaskSummaries.set(s(row.goal_id), {
+      activeTasks: n(row.active_tasks),
+      activeProviderFailures: n(row.active_provider_failures),
+    });
+  }
+
+  const latestGoalTasks = new Map<string, GoalTaskSnapshotRow>();
+  for (const row of latestGoalTaskRows.rows) {
+    latestGoalTasks.set(s(row.goal_id), {
+      status: s(row.status),
+      retry_class: row.retry_class == null ? null : s(row.retry_class),
+      provider_failure_kind: row.provider_failure_kind == null ? null : s(row.provider_failure_kind),
+      error: row.error == null ? null : s(row.error),
+    });
+  }
+
+  const recentGoals = recentGoalsResult.rows as unknown as RecentGoalSnapshotRow[];
+  const isHealthyGoal = (row: RecentGoalSnapshotRow): boolean => {
+    if (s(row.status) !== 'completed') return false;
+    if (!row.latest_run_id) return false;
+    if (s(row.latest_run_status) !== 'completed') return false;
+    const latestRunFailure = s(row.latest_run_provider_failure_kind);
+    if (latestRunFailure && latestRunFailure !== 'none') return false;
+
+    const taskSummary = goalTaskSummaries.get(s(row.id)) ?? { activeTasks: 0, activeProviderFailures: 0 };
+    if (taskSummary.activeTasks > 0) return false;
+
+    const relatedTask = latestGoalTasks.get(s(row.id));
+    if (!relatedTask) return true;
+    if (relatedTask.status === 'awaiting_review') return false;
+    if (
+      relatedTask.status !== 'completed'
+      && ['paused', 'retry_scheduled', 'in_progress', 'pending'].includes(relatedTask.status)
+    ) {
+      return false;
+    }
+    if (
+      relatedTask.status !== 'completed'
+      && (
+        (relatedTask.retry_class && relatedTask.retry_class !== 'none')
+        || (relatedTask.provider_failure_kind && relatedTask.provider_failure_kind !== 'none')
+        || hasOperationalFailure(relatedTask.error)
+      )
+    ) {
+      return false;
+    }
+    return true;
+  };
+
   let consecutiveHealthyRuns = 0;
-  for (const row of recentRunsResult.rows) {
-    const status = s(row.status);
-    const providerFailureKind = s(row.provider_failure_kind);
-    if (status !== 'completed' || (providerFailureKind && providerFailureKind !== 'none')) break;
+  for (const row of recentGoals) {
+    if (!isHealthyGoal(row)) break;
     consecutiveHealthyRuns += 1;
   }
 
   const recentCompletedRuns = n(completedResult.rows[0]?.c);
-  const recentProviderFailures = n(providerFailuresResult.rows[0]?.c);
+  const recentProviderFailures = providerFailuresResult.rows.filter((row) => {
+    const latestRunFailure = s(row.latest_run_provider_failure_kind);
+    return (latestRunFailure && latestRunFailure !== 'none') || n(row.active_provider_failures) > 0;
+  }).length;
   const activeRuns = n(activeRunsResult.rows[0]?.c);
   const pendingInterrupts = n(pendingInterruptsResult.rows[0]?.c);
   const pendingApprovals = n(pendingApprovalsResult.rows[0]?.c);
@@ -186,10 +312,10 @@ async function getProjectAutonomyHealthSnapshot(client: Client | null, projectId
 
   const blockers: string[] = [];
   if (nextRollout) {
-    blockers.push(`Needs ${nextRollout.threshold - consecutiveHealthyRuns} more consecutive healthy runs for ${nextRollout.label}`);
+    blockers.push(`Needs ${nextRollout.threshold - consecutiveHealthyRuns} more consecutive healthy goals for ${nextRollout.label}`);
   }
   if (recentProviderFailures > 0) {
-    blockers.push('Recent provider failures still present in the last 50 runs');
+    blockers.push('Recent provider failures still present in the last 50 goals');
   }
   if (pendingInterrupts > 0) {
     blockers.push('Pending interrupts need resolution');
@@ -539,7 +665,7 @@ interface RuntimeBlockerRow {
 function isReviewLaneBlocker(row: RuntimeBlockerRow): boolean {
   return row.workflow_kind === 'review'
     || row.workflow_kind === 'validate'
-    || ['quality-agent', 'quality-guardian', 'codex-review', 'grill-me', 'legal', 'security-audit'].includes(row.agent);
+    || ['quality-agent', 'quality-guardian', 'codex-review', 'domain-model', 'grill-me', 'legal', 'security-audit'].includes(row.agent);
 }
 
 function buildCurrentBlockers(rows: RuntimeBlockerRow[], runs: RuntimeRun[]) {

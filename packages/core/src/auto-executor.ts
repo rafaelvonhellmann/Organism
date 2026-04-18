@@ -9,7 +9,7 @@ import { RiskLane, TypedFinding, HandoffRequest, WorkflowKind } from '../../shar
 
 const PROJECT_REVIEW_MODES = new Set(['project_review', 'autonomy_cycle_review', 'self_audit_review']);
 const EXECUTION_FOLLOWUP_KINDS = new Set<WorkflowKind>(['implement', 'recover']);
-const REVIEW_ONLY_AGENTS = new Set(['quality-agent', 'quality-guardian', 'codex-review', 'grill-me', 'legal', 'security-audit']);
+const REVIEW_ONLY_AGENTS = new Set(['quality-agent', 'quality-guardian', 'codex-review', 'domain-model', 'grill-me', 'legal', 'security-audit']);
 
 function laneFromSeverity(severity: TypedFinding['severity']): RiskLane {
   switch (severity) {
@@ -389,7 +389,7 @@ function createRevisionFollowupTask(
 
   const originalTask = getTask(originalTaskId);
   if (!originalTask) return false;
-  if (['quality-agent', 'codex-review', 'grill-me', 'quality-guardian'].includes(originalTask.agent)) return false;
+  if (['quality-agent', 'codex-review', 'domain-model', 'grill-me', 'quality-guardian'].includes(originalTask.agent)) return false;
 
   const requestedAgent = originalTask.agent === 'quality-agent' ? 'engineering' : originalTask.agent;
   const requestedWorkflowKind = reviewFollowupWorkflow(originalTask.workflowKind);
@@ -593,6 +593,126 @@ function createEngineeringRecoveryTask(
   }
 }
 
+function createEngineeringValidationTask(
+  task: {
+    id: string;
+    agent: string;
+    description: string;
+    output: string;
+    input: string | null;
+    project_id: string;
+    goal_id: string | null;
+    workflow_kind?: WorkflowKind;
+  },
+  output: Record<string, unknown>,
+): boolean {
+  if (task.agent !== 'engineering') return false;
+  if (task.workflow_kind !== 'implement' && task.workflow_kind !== 'recover') return false;
+
+  const payload = typeof output.payload === 'object' && output.payload
+    ? output.payload as Record<string, unknown>
+    : null;
+
+  const mode = typeof output.mode === 'string'
+    ? output.mode
+    : typeof payload?.mode === 'string'
+      ? String(payload.mode)
+      : null;
+  if (mode !== 'executed') return false;
+
+  const changedFiles = Array.isArray(output.changedFiles)
+    ? output.changedFiles as unknown[]
+    : Array.isArray(payload?.changedFiles)
+      ? payload.changedFiles as unknown[]
+      : [];
+  if (changedFiles.length === 0) return false;
+
+  const workspaceCleanup = typeof output.workspaceCleanup === 'object' && output.workspaceCleanup
+    ? output.workspaceCleanup as Record<string, unknown>
+    : typeof payload?.workspaceCleanup === 'object' && payload.workspaceCleanup
+      ? payload.workspaceCleanup as Record<string, unknown>
+      : null;
+  if (workspaceCleanup?.removed === false) return false;
+
+  const verification = Array.isArray(output.verification)
+    ? output.verification as unknown[]
+    : Array.isArray(payload?.verification)
+      ? payload.verification as unknown[]
+      : [];
+  const failedVerification = verification.some((step) => {
+    if (!step || typeof step !== 'object') return false;
+    return (step as Record<string, unknown>).ok === false;
+  });
+  if (failedVerification) return false;
+
+  const compactFocus = compactTaskFocus(task.description);
+  const summary = tightenTaskSummary(`Validate implementation for "${compactFocus}"`);
+  const route = resolveFollowupRoute({
+    projectId: task.project_id,
+    preferredAgent: 'quality-agent',
+    workflowKind: 'validate',
+    lane: 'LOW',
+    description: summary,
+    allowReadOnlyDegrade: true,
+  });
+  if (!route) return false;
+
+  if (hasEquivalentFollowup({
+    goalId: task.goal_id,
+    projectId: task.project_id,
+    agent: route.agent,
+    workflowKind: route.workflowKind,
+    description: summary,
+    sourceTaskId: task.id,
+  })) return false;
+
+  try {
+    const created = createTask({
+      agent: route.agent,
+      lane: route.lane,
+      description: summary,
+      input: {
+        sourceTaskId: task.id,
+        sourceAgent: task.agent,
+        originalTaskId: task.id,
+        originalDescription: task.description,
+        sourceOutput: extractReviewText(output).slice(0, 6000),
+        changedFiles,
+        autoExecuted: true,
+        execution: false,
+        projectId: task.project_id,
+        requestedTargetAgent: 'quality-agent',
+        requestedWorkflowKind: 'validate',
+        routedFollowup: route.rerouted,
+        ...inheritFollowupPolicy(task.input ? JSON.parse(task.input) : null),
+      },
+      parentTaskId: task.id,
+      projectId: task.project_id,
+      goalId: task.goal_id ?? undefined,
+      workflowKind: route.workflowKind,
+      sourceKind: 'agent_followup',
+    });
+
+    writeAudit({
+      agent: 'auto-executor',
+      taskId: created.id,
+      action: 'task_created',
+      payload: {
+        sourceTaskId: task.id,
+        sourceAgent: task.agent,
+        followupType: 'engineering_validation',
+        targetAgent: route.agent,
+        workflowKind: route.workflowKind,
+        rerouted: route.rerouted,
+      },
+      outcome: 'success',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Scan recently completed tasks for structured follow-up work.
  * Only typed findings and handoffs can create new tasks.
@@ -601,6 +721,7 @@ export async function processApprovedFindings(): Promise<number> {
   const db = getDb();
   const tasks = db.prepare(`
     SELECT id, agent, description, input, output, project_id, goal_id, source_kind
+    , workflow_kind
     FROM tasks
     WHERE status = 'completed'
       AND output IS NOT NULL
@@ -617,6 +738,7 @@ export async function processApprovedFindings(): Promise<number> {
     output: string;
     project_id: string;
     goal_id: string | null;
+    workflow_kind: WorkflowKind;
     source_kind: string | null;
   }>;
 
@@ -648,6 +770,10 @@ export async function processApprovedFindings(): Promise<number> {
         }
       }
       if (canCreatePolicyFollowup(followupPolicy, 'implement', createdForTask, isAgentFollowup) && createRevisionFollowupTask(task, output)) {
+        created++;
+        createdForTask++;
+      }
+      if (canCreatePolicyFollowup(followupPolicy, 'validate', createdForTask, isAgentFollowup) && createEngineeringValidationTask(task, output)) {
         created++;
         createdForTask++;
       }

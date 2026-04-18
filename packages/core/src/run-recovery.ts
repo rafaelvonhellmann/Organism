@@ -2,6 +2,7 @@ import { createTask, getDb, getTask, updateTaskRuntimeState } from './task-queue
 import { appendRunProgress } from './run-memory.js';
 import { createArtifact, getRunSession, listRunSteps, mapProviderFailure, updateRunStatus, updateRunStep } from './run-state.js';
 import { resolveFollowupRoute } from './followup-routing.js';
+import { canAgentExecute } from './registry.js';
 import type { RiskLane, WorkflowKind } from '../../shared/src/types.js';
 
 const DEFAULT_RETRY_DELAY_MS = 60_000;
@@ -11,7 +12,7 @@ const DEFAULT_REVIEW_RETRY_DELAY_MS = 3 * 60 * 1000;
 const DEFAULT_REVIEW_COOLDOWN_MS = 2 * 60 * 1000;
 const DEFAULT_REVIEW_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_REVIEW_MAX_ATTEMPTS = 8;
-const REVIEW_RETRY_AGENTS = new Set(['quality-agent', 'quality-guardian', 'codex-review', 'grill-me', 'legal', 'security-audit']);
+const REVIEW_RETRY_AGENTS = new Set(['quality-agent', 'quality-guardian', 'codex-review', 'domain-model', 'grill-me', 'legal', 'security-audit']);
 const AUTO_HEAL_PROVIDER_FAILURES = new Set(['transport_error', 'overload', 'timeout', 'rate_limit']);
 
 interface RecoveryCounts {
@@ -716,6 +717,38 @@ export function autoHealPausedReviewTasks(options: {
     const supersedingExecution = findSupersedingExecutionTask(task);
     if (!isReviewLaneTask(task) || !providerFailureKind) {
       counts.skippedTasks += 1;
+      continue;
+    }
+    if (!canAgentExecute(task.agent, task.project_id)) {
+      const summary = `Retired paused review task for ${task.agent} because the agent is not enabled for project ${task.project_id}.`;
+      updateTaskRuntimeState({
+        taskId: task.id,
+        status: 'failed',
+        error: summarizeRecoveryError(task.error, summary),
+        retryClass: 'policy_block',
+        retryAt: null,
+        providerFailureKind: 'policy_block',
+      });
+
+      const run = latestRunForGoalAgent(task.goal_id, task.agent);
+      if (run && (run.status === 'paused' || run.status === 'retry_scheduled')) {
+        updateRunStatus({
+          runId: run.id,
+          status: 'failed',
+          retryClass: 'policy_block',
+          retryAt: null,
+          providerFailureKind: 'policy_block',
+          summary,
+        });
+      }
+
+      if (task.goal_id) {
+        appendRunProgress(task.goal_id, [
+          `- Retired blocked review task **${task.agent}** because it is not enabled for project **${task.project_id}**`,
+        ]);
+      }
+
+      counts.retiredTasks += 1;
       continue;
     }
     if (supersedingExecution) {

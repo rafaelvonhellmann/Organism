@@ -211,7 +211,7 @@ export async function getTasks(filters: {
       await client.execute(`
         UPDATE tasks SET status = 'completed', completed_at = ${Date.now()}
         WHERE status = 'awaiting_review' AND lane != 'HIGH'
-          AND agent NOT IN ('grill-me', 'codex-review', 'quality-agent')
+    AND agent NOT IN ('domain-model', 'grill-me', 'codex-review', 'quality-agent')
       `);
     } catch { /* best effort */ }
   }

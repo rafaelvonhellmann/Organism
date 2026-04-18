@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
 
   // Build WHERE filters using parameterized args
   const conditions: string[] = [
-    "t.agent NOT IN ('grill-me', 'codex-review', 'quality-agent')",
+    "t.agent NOT IN ('domain-model', 'grill-me', 'codex-review', 'quality-agent')",
   ];
   const args: (string | number)[] = [];
 
