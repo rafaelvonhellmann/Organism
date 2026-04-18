@@ -356,7 +356,7 @@ async function submitSynapseReviews() {
   try {
     const { execSync } = await import('child_process');
     console.log('Syncing to Turso...');
-    execSync('npx tsx --experimental-sqlite scripts/sync-to-turso.ts', { cwd: path.resolve(import.meta.dirname, '..'), stdio: 'inherit' });
+    execSync('npx tsx --experimental-sqlite scripts/sync-to-turso.ts', { cwd: path.resolve(import.meta.dirname, '..'), stdio: 'inherit', windowsHide: true });
     console.log('Synced to Turso.\n');
   } catch { console.warn('Turso sync skipped (non-critical).\n'); }
 }

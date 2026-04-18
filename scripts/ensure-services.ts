@@ -211,7 +211,7 @@ export function isProcessRunning(pid: number): boolean {
   try {
     // On Windows, tasklist; on Unix, kill -0
     if (process.platform === 'win32') {
-      const out = execSync(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+      const out = execSync(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       return out.includes(String(pid));
     } else {
       process.kill(pid, 0);

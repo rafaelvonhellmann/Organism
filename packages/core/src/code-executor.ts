@@ -110,13 +110,13 @@ export function resolveAdaptiveExecutorTimeout(params: Pick<CodeExecutionParams,
 
 function commandExists(command: string): boolean {
   const locator = process.platform === 'win32' ? 'where.exe' : 'which';
-  const result = spawnSync(locator, [command], { stdio: 'ignore' });
+  const result = spawnSync(locator, [command], { stdio: 'ignore', windowsHide: true });
   return result.status === 0;
 }
 
 function resolveCommandPath(command: string): string {
   const locator = process.platform === 'win32' ? 'where.exe' : 'which';
-  const result = spawnSync(locator, [command], { encoding: 'utf8' });
+  const result = spawnSync(locator, [command], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   if (result.status !== 0) {
     throw new Error(`Command "${command}" is not available on PATH`);
   }

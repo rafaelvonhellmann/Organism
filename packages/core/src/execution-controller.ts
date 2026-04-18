@@ -68,6 +68,7 @@ function runGit(args: string[], cwd: string): string {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   }).trim();
 }
 
@@ -492,6 +493,7 @@ export async function runPolicyCommand(task: Task, workspace: EngineeringWorkspa
       cwd: workspace.projectPath,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
       timeout: 10 * 60 * 1000,
     }).trim();
     recordToolEvent(task, 'tool.finished', { action, command: normalizedCommand, ok: true });

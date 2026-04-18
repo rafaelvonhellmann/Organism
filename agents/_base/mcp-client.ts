@@ -107,13 +107,13 @@ const COST_LIMIT_ESTIMATE = 50.0;
 
 function commandExists(command: string): boolean {
   const locator = process.platform === 'win32' ? 'where.exe' : 'which';
-  const result = spawnSync(locator, [command], { stdio: 'ignore' });
+  const result = spawnSync(locator, [command], { stdio: 'ignore', windowsHide: true });
   return result.status === 0;
 }
 
 function resolveCommandPath(command: string): string {
   const locator = process.platform === 'win32' ? 'where.exe' : 'which';
-  const result = spawnSync(locator, [command], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const result = spawnSync(locator, [command], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   if (result.status !== 0) {
     throw new Error(`Command "${command}" is not available on PATH`);
   }
@@ -602,7 +602,7 @@ function errorMessage(error: unknown): string {
 
 export function shouldFallbackFromClaudeCliToApi(error: unknown): boolean {
   const message = errorMessage(error);
-  return /credit balance is too low|RATE_LIMITED|rate limit|429|529|overloaded|connection error|fetch failed|network error|spawn error|timed out|timeout/i.test(message);
+  return /credit balance is too low|RATE_LIMITED|rate limit|429|529|overloaded|connection error|fetch failed|network error|spawn error|timed out|timeout|UNSUPPORTED_MODEL/i.test(message);
 }
 
 export function shouldFallbackFromAnthropicToOpenAi(error: unknown): boolean {
@@ -628,6 +628,11 @@ function callClaude(
   maxTokens = 2048,
 ): Promise<ModelCallResult> {
   return new Promise((resolve, reject) => {
+    if (/^gpt/i.test(model)) {
+      reject(new Error(`UNSUPPORTED_MODEL: claude CLI cannot run OpenAI model "${model}" — routing to OpenAI backend`));
+      return;
+    }
+
     const args = [
       '-p',
       '--model', MODEL_ALIASES[model as LogicalModelProfile] ?? model,

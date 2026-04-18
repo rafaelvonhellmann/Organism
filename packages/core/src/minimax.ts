@@ -23,7 +23,7 @@ export interface MiniMaxSearchResult {
 
 function commandExists(command: string): boolean {
   const locator = process.platform === 'win32' ? 'where.exe' : 'which';
-  const result = spawnSync(locator, [command], { stdio: 'ignore' });
+  const result = spawnSync(locator, [command], { stdio: 'ignore', windowsHide: true });
   return result.status === 0;
 }
 

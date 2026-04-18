@@ -39,9 +39,10 @@ function saveLastCommits(commits: Record<string, string>): void {
 function getLatestCommit(repoPath: string): { hash: string; message: string; files: string[] } | null {
   try {
     if (!fs.existsSync(repoPath)) return null;
-    const hash = execSync('git rev-parse HEAD', { cwd: repoPath, encoding: 'utf8' }).trim();
-    const message = execSync('git log -1 --format=%s', { cwd: repoPath, encoding: 'utf8' }).trim();
-    const files = execSync('git diff --name-only HEAD~1 HEAD', { cwd: repoPath, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+    const execOpts = { cwd: repoPath, encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'], windowsHide: true };
+    const hash = execSync('git rev-parse HEAD', execOpts).trim();
+    const message = execSync('git log -1 --format=%s', execOpts).trim();
+    const files = execSync('git diff --name-only HEAD~1 HEAD', execOpts).trim().split('\n').filter(Boolean);
     return { hash, message, files };
   } catch {
     return null;

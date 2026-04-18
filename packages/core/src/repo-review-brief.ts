@@ -39,6 +39,7 @@ function tryGit(args: string[], cwd: string): string {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     }).trim();
   } catch {
     return '';
