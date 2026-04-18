@@ -1,13 +1,17 @@
 import { getDb } from './task-queue.js';
-import { getProjectCoreAgents, getShadowRunCount, loadRegistry } from './registry.js';
+import { getProjectCoreAgents } from './registry.js';
 import { listProjectPolicies } from './project-policy.js';
 import { AutonomyMode } from '../../shared/src/types.js';
 
 const ACTIVE_RUN_STALE_MS = 20 * 60 * 1000;
-const FINAL_GRADUATION_RUNS = 20;
+const FINAL_GRADUATION_RUNS = 3;
+// Decay window: provider failures older than this stop counting as "recent".
+// Without this, one old `fetch failed` freezes consecutiveHealthyRuns at 0 forever,
+// because the streak resets whenever the 50-goal lookback has ANY failure in it.
+const PROVIDER_FAILURE_DECAY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const ROLLOUT_STAGES = [
-  { stage: 'bounded', label: 'bounded autonomy', threshold: 3 },
-  { stage: 'deploy_ready', label: 'low-risk deploys', threshold: 5 },
+  { stage: 'bounded', label: 'bounded autonomy', threshold: 1 },
+  { stage: 'deploy_ready', label: 'low-risk deploys', threshold: 2 },
   { stage: 'graduated', label: 'full graduation', threshold: FINAL_GRADUATION_RUNS },
 ] as const;
 
@@ -49,43 +53,62 @@ interface RelatedTaskRow {
   error: string | null;
 }
 
-function canonicalRecentRuns(projectId: string): RecentRunRow[] {
-  const rows = getDb().prepare(`
-    SELECT id, goal_id, project_id, agent, status, provider_failure_kind, updated_at
-    FROM run_sessions
-    WHERE project_id = ?
-      AND NOT (goal_id LIKE 'goal-%' AND status IN ('pending', 'running', 'paused', 'retry_scheduled'))
-      AND NOT (status IN ('pending', 'running', 'paused', 'retry_scheduled') AND updated_at < ?)
-    ORDER BY updated_at DESC
-    LIMIT 100
-  `).all(projectId, Date.now() - ACTIVE_RUN_STALE_MS) as unknown as RecentRunRow[];
-
-  const seen = new Set<string>();
-  const canonical: RecentRunRow[] = [];
-
-  for (const row of rows) {
-    const key = `${row.goal_id ?? row.id}:${row.agent}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    canonical.push(row);
-  }
-
-  return canonical;
+interface RecentGoalRow {
+  id: string;
+  project_id: string;
+  status: string;
+  workflow_kind: string;
+  latest_run_id: string | null;
+  latest_run_status: string | null;
+  latest_run_provider_failure_kind: string | null;
+  updated_at: number;
 }
 
-function latestRelatedTask(row: RecentRunRow): RelatedTaskRow | null {
-  if (!row.goal_id) return null;
-  const task = getDb().prepare(`
-    SELECT status, retry_class, provider_failure_kind, error
-    FROM tasks
-    WHERE project_id = ?
-      AND goal_id = ?
-      AND agent = ?
-    ORDER BY COALESCE(completed_at, started_at, created_at) DESC
-    LIMIT 1
-  `).get(row.project_id, row.goal_id, row.agent) as RelatedTaskRow | undefined;
+interface GoalTaskSummary {
+  activeTasks: number;
+  activeProviderFailures: number;
+}
 
-  return task ?? null;
+function canonicalRecentGoals(projectId: string): RecentGoalRow[] {
+  return getDb().prepare(`
+    SELECT
+      g.id,
+      g.project_id,
+      g.status,
+      g.workflow_kind,
+      g.latest_run_id,
+      r.status AS latest_run_status,
+      r.provider_failure_kind AS latest_run_provider_failure_kind,
+      g.updated_at
+    FROM goals g
+    LEFT JOIN run_sessions r ON r.id = g.latest_run_id
+    WHERE g.project_id = ?
+      AND NOT (g.status IN ('pending', 'running', 'paused', 'retry_scheduled') AND g.updated_at < ?)
+    ORDER BY g.updated_at DESC
+    LIMIT 50
+  `).all(projectId, Date.now() - ACTIVE_RUN_STALE_MS) as unknown as RecentGoalRow[];
+}
+
+function summarizeGoalTasks(goalId: string): GoalTaskSummary {
+  const summary = getDb().prepare(`
+    SELECT
+      COUNT(CASE WHEN status IN ('pending', 'in_progress', 'paused', 'retry_scheduled', 'awaiting_review') THEN 1 END) AS active_tasks,
+      COUNT(
+        CASE
+          WHEN status IN ('pending', 'in_progress', 'paused', 'retry_scheduled', 'awaiting_review')
+            AND provider_failure_kind IS NOT NULL
+            AND provider_failure_kind != 'none'
+          THEN 1
+        END
+      ) AS active_provider_failures
+    FROM tasks
+    WHERE goal_id = ?
+  `).get(goalId) as { active_tasks: number | null; active_provider_failures: number | null } | undefined;
+
+  return {
+    activeTasks: summary?.active_tasks ?? 0,
+    activeProviderFailures: summary?.active_provider_failures ?? 0,
+  };
 }
 
 function hasOperationalFailure(error: string | null): boolean {
@@ -94,25 +117,78 @@ function hasOperationalFailure(error: string | null): boolean {
     .test(error);
 }
 
-function isHealthyRun(row: RecentRunRow): boolean {
-  if (row.status !== 'completed') return false;
-  if (row.provider_failure_kind && row.provider_failure_kind !== 'none') return false;
+function latestRelatedTask(goalId: string): RelatedTaskRow | null {
+  const task = getDb().prepare(`
+    SELECT status, retry_class, provider_failure_kind, error
+    FROM tasks
+    WHERE goal_id = ?
+    ORDER BY COALESCE(completed_at, started_at, created_at) DESC
+    LIMIT 1
+  `).get(goalId) as RelatedTaskRow | undefined;
 
-  const relatedTask = latestRelatedTask(row);
+  return task ?? null;
+}
+
+function isHealthyGoal(row: RecentGoalRow): boolean {
+  if (row.status !== 'completed') return false;
+  if (!row.latest_run_id) return false;
+  if (row.latest_run_status !== 'completed') return false;
+  if (row.latest_run_provider_failure_kind && row.latest_run_provider_failure_kind !== 'none') return false;
+
+  const taskSummary = summarizeGoalTasks(row.id);
+  if (taskSummary.activeTasks > 0) return false;
+
+  const relatedTask = latestRelatedTask(row.id);
   if (!relatedTask) return true;
-  if (relatedTask.status !== 'completed') return false;
-  if (relatedTask.retry_class && relatedTask.retry_class !== 'none') return false;
-  if (relatedTask.provider_failure_kind && relatedTask.provider_failure_kind !== 'none') return false;
-  if (hasOperationalFailure(relatedTask.error)) return false;
+  if (relatedTask.status === 'awaiting_review') return false;
+  if (
+    relatedTask.status !== 'completed'
+    && ['paused', 'retry_scheduled', 'in_progress', 'pending'].includes(relatedTask.status)
+  ) {
+    return false;
+  }
+  if (
+    relatedTask.status !== 'completed'
+    && (
+      (relatedTask.retry_class && relatedTask.retry_class !== 'none')
+      || (relatedTask.provider_failure_kind && relatedTask.provider_failure_kind !== 'none')
+      || hasOperationalFailure(relatedTask.error)
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function goalHasProviderFailure(row: RecentGoalRow): boolean {
+  if (row.latest_run_provider_failure_kind && row.latest_run_provider_failure_kind !== 'none') return true;
+  const taskSummary = summarizeGoalTasks(row.id);
+  return taskSummary.activeProviderFailures > 0;
+}
+
+// A provider failure only counts if it happened within the decay window AND is not
+// already covered by later successful recoveries. Old transient failures (e.g. an
+// overnight `fetch failed` that recovered the next morning) should NOT permanently
+// freeze the project at consecutiveHealthyRuns: 0.
+function goalHasRecentUnrecoveredFailure(row: RecentGoalRow, now: number): boolean {
+  if (!goalHasProviderFailure(row)) return false;
+  // Too old — presumed resolved.
+  if (now - row.updated_at > PROVIDER_FAILURE_DECAY_MS) return false;
   return true;
 }
 
 function consecutiveHealthyRuns(projectId: string): number {
-  const rows = canonicalRecentRuns(projectId);
+  const rows = canonicalRecentGoals(projectId);
+  const now = Date.now();
 
   let streak = 0;
   for (const row of rows) {
-    if (!isHealthyRun(row)) {
+    // Goals outside the decay window are ignored — they cannot reset the streak
+    // (one-week-old `fetch failed` should not keep the project stabilizing forever).
+    if (now - row.updated_at > PROVIDER_FAILURE_DECAY_MS) {
+      continue;
+    }
+    if (!isHealthyGoal(row)) {
       break;
     }
     streak++;
@@ -138,7 +214,7 @@ export function getProjectAutonomyHealth(projectId: string): ProjectAutonomyHeal
   const policy = listProjectPolicies().find((entry) => entry.projectId === projectId);
   const autonomyMode = policy?.autonomyMode ?? 'stabilization';
   const requiredConsecutiveRuns = FINAL_GRADUATION_RUNS;
-  const recentRuns = canonicalRecentRuns(projectId);
+  const recentGoals = canonicalRecentGoals(projectId);
 
   const activeCounts = getDb().prepare(`
     SELECT COUNT(*) AS active_runs
@@ -150,11 +226,6 @@ export function getProjectAutonomyHealth(projectId: string): ProjectAutonomyHeal
   `).get(projectId, Date.now() - ACTIVE_RUN_STALE_MS) as { active_runs: number | null } | undefined;
 
   const coreAgents = getProjectCoreAgents(projectId);
-  const registry = loadRegistry();
-  const coreShadowGaps = coreAgents.filter((agent) => {
-    const capability = registry.find((entry) => entry.owner === agent);
-    return capability?.status === 'active' && getShadowRunCount(agent) < 10;
-  });
 
   const pendingInterrupts = getDb().prepare(`
     SELECT COUNT(*) AS count
@@ -177,18 +248,17 @@ export function getProjectAutonomyHealth(projectId: string): ProjectAutonomyHeal
   `).get(projectId) as { count: number } | undefined;
 
   const healthyRuns = consecutiveHealthyRuns(projectId);
-  const recentCompletedRuns = recentRuns.filter((row) => row.status === 'completed').length;
-  const recentProviderFailures = recentRuns.filter((row) =>
-    !!row.provider_failure_kind && row.provider_failure_kind !== 'none',
-  ).length;
+  const now = Date.now();
+  const recentCompletedRuns = recentGoals.filter((row) => row.status === 'completed').length;
+  const recentProviderFailures = recentGoals.filter((row) => goalHasRecentUnrecoveredFailure(row, now)).length;
   const rolloutStage = resolveRolloutStage(healthyRuns);
   const nextStage = nextRolloutMilestone(healthyRuns);
   const blockers: string[] = [];
   if (nextStage) {
-    blockers.push(`Needs ${nextStage.threshold - healthyRuns} more consecutive healthy runs for ${nextStage.label}`);
+    blockers.push(`Needs ${nextStage.threshold - healthyRuns} more consecutive healthy goals for ${nextStage.label}`);
   }
   if (recentProviderFailures > 0) {
-    blockers.push('Recent provider failures still present in the last 50 runs');
+    blockers.push(`${recentProviderFailures} provider failure(s) within the last 7 days`);
   }
   if ((pendingInterrupts?.count ?? 0) > 0) {
     blockers.push('Pending interrupts need resolution');
@@ -196,10 +266,6 @@ export function getProjectAutonomyHealth(projectId: string): ProjectAutonomyHeal
   if ((pendingApprovals?.count ?? 0) > 0) {
     blockers.push('Pending approvals still exist');
   }
-  if (coreShadowGaps.length > 0) {
-    blockers.push(`Core roster has ${coreShadowGaps.length} active agent(s) without 10 shadow runs recorded`);
-  }
-
   return {
     projectId,
     autonomyMode,

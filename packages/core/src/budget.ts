@@ -10,6 +10,7 @@ import { RiskLane } from '../../shared/src/types.js';
 //   - Perspective runs: $50/day
 const DEFAULT_CAPS: Record<string, number> = {
   // Cheap: triage, interrogation, formatting, classification
+  'domain-model': 5.00,
   'grill-me': 5.00,
   'codex-review': 5.00,
   'risk-classifier': 5.00,
@@ -52,10 +53,36 @@ const DEFAULT_CAPS: Record<string, number> = {
 const PER_TASK_HARD_CAPS: Record<string, number> = {
   'security-audit': 3.00,
   'product-manager': 2.00,
+  'quality-guardian': 4.00,
+  'legal': 3.00,
+  'medical-content-reviewer': 2.00,
+  'perspectives': 5.00,
 };
 
-export function getPerTaskHardCap(agent: string): number | null {
-  return PER_TASK_HARD_CAPS[agent] ?? null;
+// Default per-task hard cap by lane when the agent has no explicit override.
+// Prevents a single runaway task from blowing the daily agent cap (design $39 vs $10).
+const DEFAULT_PER_TASK_HARD_CAP_BY_LANE: Record<RiskLane, number> = {
+  LOW: 0.25,
+  MEDIUM: 1.00,
+  HIGH: 3.00,
+};
+
+export function getPerTaskHardCap(agent: string, lane?: RiskLane): number | null {
+  const override = PER_TASK_HARD_CAPS[agent];
+  if (override !== undefined) return override;
+  if (lane) return DEFAULT_PER_TASK_HARD_CAP_BY_LANE[lane];
+  return null;
+}
+
+// Freeze threshold: if an agent has spent >= this fraction of its daily cap,
+// the runner skips dispatch instead of letting the stampede happen (89 engineering
+// failures in the 2026-04-07 legacy DB were all "cap exceeded" retries).
+const FREEZE_FRACTION = 0.95;
+
+export function isAgentBudgetFrozen(agent: string, projectId?: string): { frozen: boolean; spent: number; cap: number } {
+  const cap = getAgentCap(agent);
+  const spent = getAgentSpend(agent, undefined, projectId);
+  return { frozen: spent >= cap * FREEZE_FRACTION, spent, cap };
 }
 
 export const MAX_REVISIONS = 2;

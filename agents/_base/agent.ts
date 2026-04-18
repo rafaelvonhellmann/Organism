@@ -513,9 +513,20 @@ export abstract class BaseAgent {
       const tokensUsed = result.tokensUsed ?? 0;
       let costUsd = estimateCost(this.model, Math.floor(tokensUsed * 0.7), Math.floor(tokensUsed * 0.3));
 
-      const hardCap = getPerTaskHardCap(this.name);
+      const hardCap = getPerTaskHardCap(this.name, task.lane);
       if (hardCap && costUsd > hardCap) {
-        console.warn(`[${this.name}] Per-task hard cap hit: $${costUsd.toFixed(4)} > $${hardCap.toFixed(2)} — clamping`);
+        const overPct = ((costUsd / hardCap) - 1) * 100;
+        console.warn(`[${this.name}] Per-task hard cap hit: $${costUsd.toFixed(4)} > $${hardCap.toFixed(2)} (lane=${task.lane}, +${overPct.toFixed(0)}%) — clamping and flagging overrun`);
+        // Record the true overrun in audit so it surfaces in observability,
+        // but clamp the accounted cost so a single rogue task does not bust
+        // the daily cap in one shot.
+        writeAudit({
+          agent: this.name,
+          taskId: task.id,
+          action: 'budget_check',
+          payload: { event: 'budget_overrun', lane: task.lane, hardCap, actualCost: costUsd, overPct },
+          outcome: 'success',
+        });
         costUsd = hardCap;
       }
 

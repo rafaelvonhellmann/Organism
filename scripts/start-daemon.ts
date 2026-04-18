@@ -34,6 +34,7 @@ import { isRateLimited, getRateLimitStatus, resolveModelBackend } from '../agent
 import { resolveCodeExecutor } from '../packages/core/src/code-executor.js';
 import { bootstrapRuntimeEnv } from '../packages/shared/src/runtime-env.js';
 import { getSecretOrNull } from '../packages/shared/src/secrets.js';
+import { getSpendSummary } from '../packages/core/src/budget.js';
 import { ensureDashboard } from './ensure-services.js';
 bootstrapRuntimeEnv();
 const VERSION = '0.2.0';
@@ -120,6 +121,12 @@ interface DaemonStatus {
   }>;
   config: typeof DAEMON_CONFIG;
   version: string;
+  observability: {
+    recentErrors: Array<{ pattern: string; count: number; lastTs: string | null; sampleAgent: string }>;
+    silentFailures24h: number;
+    dispatchLag: { p50Ms: number | null; p95Ms: number | null; maxMs: number | null; sampleSize: number };
+    capLocks: Array<{ agent: string; spent: number; cap: number; pct: number }>;
+  };
 }
 
 import { PIDS_DIR, STATE_DIR } from '../packages/shared/src/state-dir.js';
@@ -220,6 +227,95 @@ function computeNextReview(): string | null {
   return next.toISOString();
 }
 
+// ── Observability collectors ───────────────────────────────────────────────
+// Read-only queries over tasks + audit_log to expose "why is it stuck?" signals
+// directly in daemon-status.json. Keeps the dashboard honest without grepping logs.
+
+function collectObservability(): DaemonStatus['observability'] {
+  const db = getDb();
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+
+  // Top failure patterns in the last 24h (first 120 chars of error).
+  let recentErrors: Array<{ pattern: string; count: number; lastTs: string | null; sampleAgent: string }> = [];
+  try {
+    const rows = db.prepare(`
+      SELECT substr(COALESCE(error, ''), 1, 120) AS pattern,
+             COUNT(*) AS c,
+             MAX(COALESCE(completed_at, started_at, created_at)) AS last_ts,
+             agent
+      FROM tasks
+      WHERE status = 'failed'
+        AND COALESCE(completed_at, started_at, created_at) >= ?
+      GROUP BY pattern
+      ORDER BY c DESC
+      LIMIT 10
+    `).all(dayAgo) as Array<{ pattern: string; c: number; last_ts: number | null; agent: string }>;
+    recentErrors = rows
+      .filter((r) => r.pattern && r.pattern.length > 0)
+      .map((r) => ({
+        pattern: r.pattern,
+        count: r.c,
+        lastTs: r.last_ts ? new Date(r.last_ts).toISOString() : null,
+        sampleAgent: r.agent,
+      }));
+  } catch {
+    recentErrors = [];
+  }
+
+  // Count of silent failures (E305) in the last 24h.
+  let silentFailures24h = 0;
+  try {
+    const row = db.prepare(`
+      SELECT COUNT(*) AS c
+      FROM tasks
+      WHERE status = 'failed'
+        AND error LIKE '%empty_output_silent_failure%'
+        AND COALESCE(completed_at, started_at, created_at) >= ?
+    `).get(dayAgo) as { c: number } | undefined;
+    silentFailures24h = row?.c ?? 0;
+  } catch {
+    silentFailures24h = 0;
+  }
+
+  // Dispatch lag: time from created_at to started_at for tasks started in last 24h.
+  let dispatchLag: DaemonStatus['observability']['dispatchLag'] = { p50Ms: null, p95Ms: null, maxMs: null, sampleSize: 0 };
+  try {
+    const rows = db.prepare(`
+      SELECT (started_at - created_at) AS lag
+      FROM tasks
+      WHERE started_at IS NOT NULL
+        AND started_at >= ?
+        AND started_at > created_at
+    `).all(dayAgo) as Array<{ lag: number }>;
+    const lags = rows.map((r) => r.lag).filter((n) => Number.isFinite(n) && n >= 0).sort((a, b) => a - b);
+    if (lags.length > 0) {
+      const p50Index = Math.floor(lags.length * 0.5);
+      const p95Index = Math.floor(lags.length * 0.95);
+      dispatchLag = {
+        p50Ms: lags[p50Index] ?? null,
+        p95Ms: lags[p95Index] ?? null,
+        maxMs: lags[lags.length - 1] ?? null,
+        sampleSize: lags.length,
+      };
+    }
+  } catch {
+    // leave defaults
+  }
+
+  // Cap locks: which agents are at >=95% of today's budget (frozen by runner).
+  let capLocks: Array<{ agent: string; spent: number; cap: number; pct: number }> = [];
+  try {
+    const spend = getSpendSummary();
+    capLocks = spend
+      .filter((r) => r.pct >= 95)
+      .map((r) => ({ agent: r.agent, spent: Number(r.spent.toFixed(4)), cap: r.cap, pct: Number(r.pct.toFixed(1)) }));
+  } catch {
+    capLocks = [];
+  }
+
+  return { recentErrors, silentFailures24h, dispatchLag, capLocks };
+}
+
 function buildStatus(): DaemonStatus {
   const rlStatus = getRateLimitStatus();
   let modelBackend: ReturnType<typeof resolveModelBackend> | null = null;
@@ -296,6 +392,7 @@ function buildStatus(): DaemonStatus {
     readiness,
     config: DAEMON_CONFIG,
     version: VERSION,
+    observability: collectObservability(),
   };
 }
 
@@ -578,8 +675,11 @@ async function dashboardActionTick(): Promise<void> {
   try {
     await maybeEnsureDashboardBridge();
     persistStatus();
+    // Process dashboard-triggered actions: enqueue tasks, do NOT dispatch here.
+    // The agent runner's 10s poll and the execute cycle already drain the queue.
+    // Calling dispatchPendingTasks from here created a third overlapping driver
+    // and a race with the runner's in-flight guard.
     await processDashboardActions();
-    await dispatchPendingTasks();
     persistStatus();
     await runSyncCycle(true);
     persistStatus();

@@ -11,6 +11,7 @@
 import { getPendingTasks, getRecentCompletedTasks, isTaskShadowMode, markQualityReviewed, createTask, releaseRetryScheduledTasks } from './task-queue.js';
 import { BaseAgent } from '../../../agents/_base/agent.js';
 import { isRateLimited, getRateLimitStatus } from '../../../agents/_base/mcp-client.js';
+import { isAgentBudgetFrozen } from './budget.js';
 
 // Concrete agent implementations — add each new agent here as it's built.
 // The key must match the `owner` field in capability-registry.json.
@@ -194,6 +195,14 @@ async function dispatchSinglePass(): Promise<number> {
       const AgentClass = AGENT_MAP[agentName];
       if (!AgentClass) {
         console.warn(`[Runner] No implementation registered for '${agentName}'. Add it to AGENT_MAP in agent-runner.ts.`);
+        continue;
+      }
+      // Budget freeze: skip dispatch entirely if agent is at 95%+ of daily cap.
+      // Prevents retry stampedes where every queued task fails with BUDGET_CAP_EXCEEDED.
+      const budget = isAgentBudgetFrozen(agentName);
+      if (budget.frozen) {
+        const pct = ((budget.spent / budget.cap) * 100).toFixed(0);
+        console.log(`[Runner] Agent '${agentName}' is budget-frozen (spent: $${budget.spent.toFixed(2)} / cap: $${budget.cap.toFixed(2)}, ${pct}%) — deferring ${pendingCountByAgent.get(agentName) ?? 0} pending task(s) until tomorrow`);
         continue;
       }
       const desiredWorkers = Math.min(
