@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { readRecentForAgent } from '../../packages/core/src/audit.js';
 import { assertBudget, recordSpend, estimateCost, getAgentSpend, checkOverspend, getPerTaskHardCap } from '../../packages/core/src/budget.js';
-import { checkoutTask, completeTask, awaitReviewTask, getPendingTasks, createTask, getSiblingTaskOutputs, isTaskShadowMode, recordShadowRun, updateTaskRuntimeState } from '../../packages/core/src/task-queue.js';
+import { checkoutTask, completeTask, failTask, awaitReviewTask, getPendingTasks, createTask, getSiblingTaskOutputs, isTaskShadowMode, recordShadowRun, updateTaskRuntimeState } from '../../packages/core/src/task-queue.js';
 import { writeAudit } from '../../packages/core/src/audit.js';
 import { evaluateG1 } from '../../packages/core/src/gates.js';
 import { Task, AgentCapability } from '../../packages/shared/src/types.js';
@@ -16,6 +16,14 @@ import { normalizeAgentEnvelope, extractEnvelopeText } from '../../packages/core
 import { createArtifact, createRunSession, getLatestRunForGoal, mapProviderFailure, updateRunStatus, createRunStep, updateRunStep } from '../../packages/core/src/run-state.js';
 import { readRunMemory } from '../../packages/core/src/run-memory.js';
 import { loadProjectPolicy, requiresHumanReviewGate } from '../../packages/core/src/project-policy.js';
+import {
+  appendPortableLearning,
+  buildPortableWorkspaceSnapshot,
+  ensurePortableAgentStack,
+  loadPortableAgentContext,
+  stagePortableReviewCandidate,
+  updatePortableWorkspace,
+} from '../../packages/core/src/agent-brain.js';
 
 // Tasklist candidates — checked in order, first found wins
 const TASKLIST_CANDIDATES = [
@@ -37,6 +45,7 @@ export type AgentModel = 'haiku' | 'sonnet' | 'opus' | 'gpt4o' | 'gpt5.4';
 
 export interface AgentConfig {
   name: string;
+  registryOwner?: string;
   model: AgentModel;
   capability: AgentCapability;
   maxRunTimeMs?: number; // Default: 30 minutes
@@ -62,9 +71,10 @@ export abstract class BaseAgent {
   constructor(config: AgentConfig) {
     let runtimeConfig = config;
     try {
-      const registryCap = loadRegistry().find((cap) => cap.owner === config.name);
+      const registryOwner = config.registryOwner ?? config.name;
+      const registryCap = loadRegistry().find((cap) => cap.owner === registryOwner);
       if (!registryCap) {
-        throw new Error(`Agent '${config.name}' is missing from capability-registry.json`);
+        throw new Error(`Agent '${registryOwner}' is missing from capability-registry.json`);
       }
       runtimeConfig = {
         ...config,
@@ -164,6 +174,7 @@ export abstract class BaseAgent {
 
   // Main entry point — polls for pending tasks and processes them
   async run() {
+    ensurePortableAgentStack();
     this.loadBreadcrumbs();
     this.loadTasklist(); // logs tasklist presence; subclasses access via execute() input
 
@@ -223,6 +234,15 @@ export abstract class BaseAgent {
 
     const startedAt = Date.now();
     const maxRunTime = this.config.maxRunTimeMs ?? 30 * 60 * 1000;
+
+    updatePortableWorkspace(
+      buildPortableWorkspaceSnapshot(
+        task,
+        this.name,
+        'running',
+        'Continue the current bounded task and record the next safe step before handing off.',
+      ),
+    );
 
     // Load project context from filesystem if available
     if (task.projectId) {
@@ -318,6 +338,33 @@ export abstract class BaseAgent {
         retryClass: 'budget_pause',
         providerFailureKind: 'policy_block',
       });
+      appendPortableLearning({
+        ts: Date.now(),
+        agent: this.name,
+        projectId: task.projectId ?? 'organism',
+        taskId: task.id,
+        workflowKind: task.workflowKind ?? 'implement',
+        lane: task.lane,
+        status: 'paused',
+        summary: message.slice(0, 500),
+      });
+      stagePortableReviewCandidate({
+        agent: this.name,
+        projectId: task.projectId ?? 'organism',
+        taskId: task.id,
+        kind: 'failure-pattern',
+        summary: `Budget/policy block for ${task.description.slice(0, 80)}`,
+        evidence: message.slice(0, 500),
+      });
+      updatePortableWorkspace(
+        buildPortableWorkspaceSnapshot(
+          task,
+          this.name,
+          'paused',
+          'Pause until the budget or policy block is resolved.',
+          message.slice(0, 240),
+        ),
+      );
       this.activeTaskHeartbeat = null;
       return;
     }
@@ -351,6 +398,33 @@ export abstract class BaseAgent {
         retryAt: Date.now() + 10 * 60 * 1000,
         providerFailureKind: 'timeout',
       });
+      appendPortableLearning({
+        ts: Date.now(),
+        agent: this.name,
+        projectId: task.projectId ?? 'organism',
+        taskId: task.id,
+        workflowKind: task.workflowKind ?? 'implement',
+        lane: task.lane,
+        status: 'retry_scheduled',
+        summary: `Timeout after ${maxRunTime}ms`,
+      });
+      stagePortableReviewCandidate({
+        agent: this.name,
+        projectId: task.projectId ?? 'organism',
+        taskId: task.id,
+        kind: 'failure-pattern',
+        summary: `Timeout pattern for ${task.description.slice(0, 80)}`,
+        evidence: `Timed out after ${maxRunTime}ms.`,
+      });
+      updatePortableWorkspace(
+        buildPortableWorkspaceSnapshot(
+          task,
+          this.name,
+          'retry_scheduled',
+          'Retry the bounded task after timeout recovery or narrow the scope.',
+          `Timeout after ${maxRunTime}ms`,
+        ),
+      );
       this.activeTaskHeartbeat = null;
     }, maxRunTime);
 
@@ -405,6 +479,19 @@ export abstract class BaseAgent {
       }
     }
 
+    const portableBrain = loadPortableAgentContext();
+    if (task.input && typeof task.input === 'object') {
+      const input = task.input as Record<string, unknown>;
+      if (!input.portableBrain) {
+        (task as { input: unknown }).input = { ...input, portableBrain };
+      }
+    } else {
+      (task as { input: unknown }).input = {
+        originalInput: task.input ?? null,
+        portableBrain,
+      };
+    }
+
     // Palate: inject capability-scoped knowledge sources for this specific task.
     // Resolves by capability + project (not agent name) — only fires when the
     // matched capability actually declares knowledgeSources in the registry.
@@ -455,10 +542,10 @@ export abstract class BaseAgent {
       }
 
       // HIGH lane + primary agents: queue review pipeline then pause for Rafael's review.
-      // Pipeline internals (grill-me, codex-review, quality-agent, quality-guardian)
+      // Pipeline internals (domain-model, legacy grill-me alias, codex-review, quality-agent, quality-guardian)
       // auto-complete as before — they ARE the review pipeline.
       const PIPELINE_INTERNAL_AGENTS = [
-        'grill-me', 'codex-review', 'quality-agent', 'quality-guardian',
+        'domain-model', 'grill-me', 'codex-review', 'quality-agent', 'quality-guardian',
         'legal', 'security-audit',
       ];
       const isPipelineInternal = PIPELINE_INTERNAL_AGENTS.includes(this.name);
@@ -538,8 +625,56 @@ export abstract class BaseAgent {
           payload: { durationMs: Date.now() - startedAt, tokensUsed, costUsd, awaitingReview: true, reviewsQueued: reviewAgents },
           outcome: 'success',
         });
+        appendPortableLearning({
+          ts: Date.now(),
+          agent: this.name,
+          projectId: task.projectId ?? 'organism',
+          taskId: task.id,
+          workflowKind: task.workflowKind ?? 'implement',
+          lane: task.lane,
+          status: 'awaiting_review',
+          summary: `Queued for human review: ${envelope.summary}`,
+        });
+        updatePortableWorkspace(
+          buildPortableWorkspaceSnapshot(
+            task,
+            this.name,
+            'awaiting_review',
+            'Wait for the human review gate before any further autonomous work.',
+            envelope.summary,
+          ),
+        );
         this.activeTaskHeartbeat = null;
         return; // Stop here — no auto-chaining until Rafael approves
+      }
+
+      // Silent-failure guard: refuse $0 completions with empty output.
+      // Prevents agents from marking tasks "done" when they short-circuited
+      // (missing API key, rate-limited guard, stub return) — which would
+      // otherwise count as healthy runs and break the autonomy governor.
+      {
+        const envelopeText = extractEnvelopeText(envelope) || '';
+        const summaryText = envelope?.summary ?? '';
+        const totalLen = envelopeText.length + summaryText.length;
+        if (costUsd === 0 && tokensUsed === 0 && totalLen < 50 && !taskShadowMode) {
+          const errMsg = 'empty_output_silent_failure: agent returned no content and spent $0 (likely missing API key, rate limit, or short-circuited guard).';
+          failTask(task.id, errMsg);
+          if (run && runStep) {
+            updateRunStep({ stepId: runStep.id, status: 'failed', detail: errMsg });
+            updateRunStatus({ runId: run.id, status: 'failed', summary: errMsg });
+          }
+          console.error(`[${this.name}] Task ${task.id} → failed (silent failure): ${errMsg}`);
+          writeAudit({
+            agent: this.name,
+            taskId: task.id,
+            action: 'task_failed',
+            payload: { reason: 'empty_output_silent_failure', durationMs: Date.now() - startedAt, tokensUsed, costUsd },
+            outcome: 'failure',
+            errorCode: OrganismError.PROVIDER_EMPTY_OUTPUT,
+          });
+          this.activeTaskHeartbeat = null;
+          return;
+        }
       }
 
       completeTask(task.id, envelope, tokensUsed, costUsd);
@@ -656,6 +791,36 @@ export abstract class BaseAgent {
         outcome: 'success',
       });
 
+      appendPortableLearning({
+        ts: Date.now(),
+        agent: this.name,
+        projectId: task.projectId ?? 'organism',
+        taskId: task.id,
+        workflowKind: task.workflowKind ?? 'implement',
+        lane: task.lane,
+        status: 'success',
+        summary: envelope.summary,
+      });
+      if (taskInput?.qualityFeedback) {
+        stagePortableReviewCandidate({
+          agent: this.name,
+          projectId: task.projectId ?? 'organism',
+          taskId: task.id,
+          kind: 'review-feedback',
+          summary: `Revision pattern for ${task.description.slice(0, 80)}`,
+          evidence: 'This task completed with attached quality feedback and should be reviewed for a reusable lesson.',
+        });
+      }
+      updatePortableWorkspace(
+        buildPortableWorkspaceSnapshot(
+          task,
+          this.name,
+          'completed',
+          'Pick the next safe bounded task or hand off to validation.',
+          envelope.summary,
+        ),
+      );
+
       console.log(`[${this.name}] Task ${task.id} completed. Cost: $${costUsd.toFixed(4)}`);
       this.activeTaskHeartbeat = null;
     } catch (err) {
@@ -691,6 +856,35 @@ export abstract class BaseAgent {
         retryAt,
         providerFailureKind: providerFailure.providerFailureKind,
       });
+      appendPortableLearning({
+        ts: Date.now(),
+        agent: this.name,
+        projectId: task.projectId ?? 'organism',
+        taskId: task.id,
+        workflowKind: task.workflowKind ?? 'implement',
+        lane: task.lane,
+        status: nextStatus,
+        summary: errorMsg.slice(0, 500),
+      });
+      stagePortableReviewCandidate({
+        agent: this.name,
+        projectId: task.projectId ?? 'organism',
+        taskId: task.id,
+        kind: 'failure-pattern',
+        summary: `Failure pattern for ${task.description.slice(0, 80)}`,
+        evidence: errorMsg.slice(0, 500),
+      });
+      updatePortableWorkspace(
+        buildPortableWorkspaceSnapshot(
+          task,
+          this.name,
+          nextStatus,
+          nextStatus === 'retry_scheduled'
+            ? 'Retry the current bounded task after recovery or reroute to the smallest validation step.'
+            : 'Pause and inspect the latest blocker before continuing.',
+          errorMsg.slice(0, 240),
+        ),
+      );
       console.error(`[${this.name}] Task ${task.id} failed: ${errorMsg}`);
       this.activeTaskHeartbeat = null;
     } finally {

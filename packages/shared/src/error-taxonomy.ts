@@ -38,6 +38,7 @@ export enum OrganismError {
   SUBAGENT_SPAWN_FAILED = 'E302',        // Guardian couldn't spawn one of its 6 parallel subagents
   SHADOW_PROMOTION_BELOW_THRESHOLD = 'E303', // Agent didn't meet the quality bar after 10 shadow runs
   DEAD_LETTER_TIMEOUT = 'E304',          // Task was in_progress for >30 min with no heartbeat
+  PROVIDER_EMPTY_OUTPUT = 'E305',        // Agent returned empty output with $0 cost — silent failure
 }
 
 export interface OrganismErrorRecord {

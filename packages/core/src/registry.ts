@@ -6,6 +6,9 @@ import { getDb } from './task-queue.js';
 const REGISTRY_PATH = path.resolve(process.cwd(), 'knowledge/capability-registry.json');
 const PROJECTS_DIR = path.resolve(process.cwd(), 'knowledge', 'projects');
 const DEFAULT_CORE_AGENTS = ['ceo', 'product-manager', 'engineering', 'devops', 'quality-agent', 'security-audit', 'legal', 'quality-guardian', 'codex-review'];
+const AGENT_OWNER_ALIASES: Record<string, string> = {
+  'grill-me': 'domain-model',
+};
 
 interface RegistryFile {
   capabilities: AgentCapability[];
@@ -134,7 +137,9 @@ export function getShadowRunCount(agentName: string): number {
 }
 
 export function canAgentExecute(agentName: string, projectId?: string, options?: CapabilityFilterOptions): boolean {
-  return getCapabilitiesForProject(projectId, options).some((capability) => capability.owner === agentName);
+  const normalizedAgentName = AGENT_OWNER_ALIASES[agentName] ?? agentName;
+  return getCapabilitiesForProject(projectId, options)
+    .some((capability) => capability.owner === agentName || capability.owner === normalizedAgentName);
 }
 
 export function getProjectCoreAgents(projectId: string): string[] {
@@ -143,14 +148,57 @@ export function getProjectCoreAgents(projectId: string): string[] {
   return DEFAULT_CORE_AGENTS;
 }
 
+// Structural coherence check between registry and the in-process AGENT_MAP.
+// Run at daemon startup to fail fast if registry/runtime drift.
+// Missing implementations = warn (task will fail at dispatch with cryptic error).
+// Implementations without registry entry = warn (budget cap / routing / status will silently mismatch).
+export interface RegistryCoherenceReport {
+  missingImplementations: string[];
+  orphanedImplementations: string[];
+  activeCount: number;
+  shadowCount: number;
+  suspendedCount: number;
+}
+
+export function checkRegistryCoherence(registeredRunnerAgents: string[]): RegistryCoherenceReport {
+  const caps = loadRegistry();
+  const registryOwners = new Set<string>();
+  const activeOrShadow = caps.filter((c) => c.status === 'active' || c.status === 'shadow');
+  for (const cap of activeOrShadow) registryOwners.add(cap.owner);
+
+  const runnerSet = new Set(registeredRunnerAgents);
+  const missingImplementations: string[] = [];
+  for (const owner of registryOwners) {
+    const aliased = AGENT_OWNER_ALIASES[owner] ?? owner;
+    if (!runnerSet.has(owner) && !runnerSet.has(aliased)) {
+      missingImplementations.push(owner);
+    }
+  }
+
+  const orphanedImplementations: string[] = [];
+  for (const runnerAgent of runnerSet) {
+    const matched = caps.some((c) => c.owner === runnerAgent || AGENT_OWNER_ALIASES[c.owner] === runnerAgent);
+    if (!matched) orphanedImplementations.push(runnerAgent);
+  }
+
+  return {
+    missingImplementations,
+    orphanedImplementations,
+    activeCount: caps.filter((c) => c.status === 'active').length,
+    shadowCount: caps.filter((c) => c.status === 'shadow').length,
+    suspendedCount: caps.filter((c) => c.status === 'suspended').length,
+  };
+}
+
 // Update agent status in the registry file (used by shadow-promote.ts)
 export function updateAgentStatus(agentName: string, status: AgentCapability['status']): void {
   const file = JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8')) as RegistryFile;
-  const cap = file.capabilities.find((c) => c.owner === agentName);
+  const normalizedAgentName = AGENT_OWNER_ALIASES[agentName] ?? agentName;
+  const cap = file.capabilities.find((c) => c.owner === agentName || c.owner === normalizedAgentName);
   if (!cap) throw new Error(`Agent '${agentName}' not found in registry`);
   if (status === 'active') {
     const manualOverride = (cap as AgentCapability & { manualActivation?: unknown }).manualActivation;
-    if (!manualOverride && getShadowRunCount(agentName) < 10) {
+    if (!manualOverride && getShadowRunCount(normalizedAgentName) < 10) {
       throw new Error(`Agent '${agentName}' needs at least 10 shadow runs before promotion to active`);
     }
   }

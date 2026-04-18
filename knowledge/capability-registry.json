@@ -87,13 +87,13 @@
       "projectScope": "all"
     },
     {
-      "id": "quality.interrogation",
-      "owner": "grill-me",
+      "id": "quality.domain_model",
+      "owner": "domain-model",
       "collaborators": [],
       "reviewerLane": "LOW",
-      "description": "Socratic interrogation of decisions — challenges assumptions and blind spots",
+      "description": "Domain-model review — challenges assumptions, adds DDD framing, and proposes ADR/docs updates before execution",
       "status": "active",
-      "model": "gpt4o",
+      "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": "all"
     },
@@ -104,7 +104,7 @@
       "reviewerLane": "LOW",
       "description": "OpenAI review lane for logic, security, edge cases, and performance blind-spot coverage",
       "status": "active",
-      "model": "gpt4o",
+      "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": "all"
     },
@@ -113,11 +113,11 @@
       "owner": "quality-guardian",
       "collaborators": [
         "quality-agent",
-        "grill-me"
+        "domain-model"
       ],
       "reviewerLane": "HIGH",
       "description": "Full 6-phase quality audit with Playwright browser verification. Fires on HIGH-risk tasks and Saturday deep audit.",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": "all"
@@ -146,7 +146,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "Campaign strategy, channel selection, keyword research, positioning. Uses the 80/20 popularize playbook. References knowledge/marketing/popularize-playbook.md.",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "2-3x-week",
       "projectScope": "all",
@@ -165,7 +165,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "Growth strategy using the popularize playbook: multi-channel distribution, community building, content-led SEO, sustained promotion.",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "2-3x-week",
       "projectScope": "all",
@@ -182,7 +182,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "Content creation, email campaigns, social media posts",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all"
@@ -195,7 +195,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "SEO optimization, keyword research, content strategy",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all"
@@ -209,7 +209,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "Blog post writing for the company blog",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "2-3x-week",
       "projectScope": "all"
@@ -222,7 +222,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "UI/UX design, wireframes, component specifications",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "always-on",
       "projectScope": "all"
@@ -235,7 +235,7 @@
       ],
       "reviewerLane": "HIGH",
       "description": "Financial tracking, budget reporting, cost optimization",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "weekly",
       "projectScope": "all"
@@ -248,7 +248,7 @@
       ],
       "reviewerLane": "HIGH",
       "description": "Deployment, infrastructure management, CI/CD",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "always-on",
       "projectScope": "all"
@@ -261,7 +261,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "Sales outreach, lead qualification, pipeline management",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "2-3x-week",
       "projectScope": "all"
@@ -285,7 +285,7 @@
       ],
       "reviewerLane": "HIGH",
       "description": "Security audits, OWASP scanning, vulnerability assessment",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "weekly",
       "projectScope": "all"
@@ -298,7 +298,7 @@
       ],
       "reviewerLane": "HIGH",
       "description": "Legal compliance, terms of service, privacy policy",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": "all"
@@ -355,7 +355,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "Technology strategy, architecture decisions, build-vs-buy, scalability assessment",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "weekly",
       "projectScope": "all"
@@ -382,7 +382,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "User retention, onboarding, NPS, churn prevention, feedback loops",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all"
@@ -396,7 +396,7 @@
       ],
       "reviewerLane": "LOW",
       "description": "Metrics, funnel analysis, cohort analysis, SQL generation, data-driven insights",
-      "status": "active",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "daily",
       "projectScope": "all"

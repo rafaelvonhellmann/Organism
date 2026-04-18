@@ -20,11 +20,11 @@ import { execFileSync } from 'child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { getDb } from '../packages/core/src/task-queue.js';
-import { loadRegistry } from '../packages/core/src/registry.js';
+import { loadRegistry, checkRegistryCoherence } from '../packages/core/src/registry.js';
 import { listProjectPolicies } from '../packages/core/src/project-policy.js';
 import { getProjectLaunchReadiness } from '../packages/core/src/project-readiness.js';
 import { startScheduler } from '../packages/core/src/scheduler.js';
-import { startDaemon, dispatchPendingTasks } from '../packages/core/src/agent-runner.js';
+import { startDaemon, dispatchPendingTasks, getRegisteredAgentNames } from '../packages/core/src/agent-runner.js';
 import { listProjectAutonomyHealth } from '../packages/core/src/autonomy-governor.js';
 import { autoHealPausedReviewTasks, recoverInterruptedWork, recoverStaleWork } from '../packages/core/src/run-recovery.js';
 import { processDashboardActions } from '../packages/core/src/action-processor.js';
@@ -43,6 +43,7 @@ const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? '7391');
 const DAEMON_POLL_MS = 10_000;   // 10 seconds — agent runner polling interval
 const SCHEDULER_TICK_MS = 60_000; // 60 seconds — scheduler tick interval
 const DASHBOARD_ACTION_POLL_MS = 10_000; // 10 seconds — responsive website action pickup
+const DASHBOARD_ENSURE_INTERVAL_MS = 15_000; // 15 seconds — keep localhost bridge alive
 const SYNC_TIMEOUT_MS = 90_000;
 
 // ── Daemon config ─────────────────────────────────────────────────────────
@@ -140,6 +141,34 @@ const daemonState = {
 };
 
 let syncCycleInFlight: Promise<void> | null = null;
+let dashboardEnsureInFlight: Promise<void> | null = null;
+let lastDashboardEnsureMs = 0;
+
+async function maybeEnsureDashboardBridge(force = false): Promise<void> {
+  const now = Date.now();
+  if (!force && now - lastDashboardEnsureMs < DASHBOARD_ENSURE_INTERVAL_MS) {
+    return;
+  }
+  if (dashboardEnsureInFlight) {
+    await dashboardEnsureInFlight;
+    return;
+  }
+
+  lastDashboardEnsureMs = now;
+  dashboardEnsureInFlight = (async () => {
+    try {
+      await ensureDashboard();
+    } catch (error) {
+      console.error('[Daemon] Failed to ensure dashboard bridge:', error);
+    }
+  })();
+
+  try {
+    await dashboardEnsureInFlight;
+  } finally {
+    dashboardEnsureInFlight = null;
+  }
+}
 
 async function syncWithTimeout(): Promise<{ status: 'ok' | 'blocked' | 'skipped'; reason: string | null }> {
   try {
@@ -523,6 +552,7 @@ async function runReviewCycle(): Promise<void> {
 
 async function lifecycleTick(): Promise<void> {
   try {
+    await maybeEnsureDashboardBridge();
     const stale = recoverStaleWork();
     if (stale.recoveredRuns > 0 || stale.retriedTasks > 0 || stale.pausedTasks > 0) {
       console.log(
@@ -546,6 +576,7 @@ async function lifecycleTick(): Promise<void> {
 
 async function dashboardActionTick(): Promise<void> {
   try {
+    await maybeEnsureDashboardBridge();
     persistStatus();
     await processDashboardActions();
     await dispatchPendingTasks();
@@ -699,11 +730,21 @@ async function main(): Promise<void> {
 
   // 3. Dashboard bridge — run it as a separate process so HTTP stays responsive
   // even while the daemon is busy with agent work.
-  await ensureDashboard();
+  await maybeEnsureDashboardBridge(true);
   console.log(`[Daemon] Dashboard bridge ensured on port ${DASHBOARD_PORT}`);
 
   // 4. Migrations already run inside getDb() (called during health check above).
   console.log('[Daemon] Database migrations OK');
+
+  // 4a. Registry coherence check — fail-fast on drift between registry + runner AGENT_MAP.
+  const coherence = checkRegistryCoherence(getRegisteredAgentNames());
+  if (coherence.missingImplementations.length > 0) {
+    console.error(`[Daemon] Registry drift: ${coherence.missingImplementations.length} active/shadow agent(s) missing from AGENT_MAP: ${coherence.missingImplementations.join(', ')}`);
+  }
+  if (coherence.orphanedImplementations.length > 0) {
+    console.warn(`[Daemon] Registry drift: ${coherence.orphanedImplementations.length} AGENT_MAP entry(ies) have no active/shadow registry record: ${coherence.orphanedImplementations.join(', ')}`);
+  }
+  console.log(`[Daemon] Registry: ${coherence.activeCount} active, ${coherence.shadowCount} shadow, ${coherence.suspendedCount} suspended`);
 
   // 4b. Recover any interrupted work before the scheduler/runner resume.
   recoverWorkOnStartup();

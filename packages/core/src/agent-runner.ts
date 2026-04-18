@@ -17,7 +17,7 @@ import { isRateLimited, getRateLimitStatus } from '../../../agents/_base/mcp-cli
 import CeoAgent from '../../../agents/ceo/agent.js';
 import ProductManagerAgent from '../../../agents/product-manager/agent.js';
 import QualityAgent from '../../../agents/quality/quality-agent/agent.js';
-import GrillMeAgent from '../../../agents/quality/grill-me/agent.js';
+import DomainModelAgent, { LegacyGrillMeAliasAgent } from '../../../agents/quality/domain-model/agent.js';
 import EngineeringAgent from '../../../agents/engineering/agent.js';
 import MarketingExecutorAgent from '../../../agents/marketing-executor/agent.js';
 import SeoAgent from '../../../agents/seo/agent.js';
@@ -49,7 +49,8 @@ const AGENT_MAP: Record<string, AgentConstructor> = {
   'ceo': CeoAgent,
   'product-manager': ProductManagerAgent,
   'quality-agent': QualityAgent,
-  'grill-me': GrillMeAgent,
+  'domain-model': DomainModelAgent,
+  'grill-me': LegacyGrillMeAliasAgent,
   'engineering': EngineeringAgent,
   'marketing-executor': MarketingExecutorAgent,
   'seo': SeoAgent,
@@ -77,12 +78,17 @@ const AGENT_MAP: Record<string, AgentConstructor> = {
 let dispatchInFlight: Promise<number> | null = null;
 const activeAgentWorkers = new Map<string, number>();
 
+export function getRegisteredAgentNames(): string[] {
+  return Object.keys(AGENT_MAP);
+}
+
 // ── Agent priority levels for parallel dispatch ────────────────────────────
-// Level 0: grill-me (must run first for MEDIUM/HIGH tasks)
+// Level 0: domain-model / legacy grill-me alias (front-load shaping guidance)
 // Level 1: all primary agents (CEO, CTO, engineering, etc.) — can run in parallel
 // Level 2: quality-agent, codex-review, quality-guardian — depend on level 1 outputs
 // Level 3: synthesis — depends on everything
 const AGENT_PRIORITY: Record<string, number> = {
+  'domain-model': 0,
   'grill-me': 0,
   'quality-agent': 2,
   'codex-review': 2,
@@ -266,6 +272,7 @@ async function batchQualityReviews(): Promise<void> {
   const completed = getRecentCompletedTasks(20);
   const needsQualityReview = completed.filter(t =>
     !t.agent.startsWith('quality') &&
+    !t.agent.startsWith('domain-model') &&
     !t.agent.startsWith('grill-me') &&
     !t.agent.startsWith('codex-review') &&
     !isTaskShadowMode(t)

@@ -17,8 +17,14 @@ const DAEMON_STATUS_FILE = path.join(STATE_DIR, 'daemon-status.json');
 const DAEMON_STATUS_STALE_MS = 2 * 60 * 1000;
 const DASHBOARD_PORT = Number.parseInt(process.env.DASHBOARD_PORT ?? '7391', 10);
 const DASHBOARD_HEALTH_URL = `http://127.0.0.1:${DASHBOARD_PORT}/api/health`;
+const DASHBOARD_RESTART_MIN_GAP_MS = 60_000;
+const DASHBOARD_FAIL_THRESHOLD = 3;
 const require = createRequire(import.meta.url);
 const TSX_CLI_PATH = require.resolve('tsx/cli');
+
+// Debounce state for dashboard restart. Prevents the tick-every-15s kill/respawn loop.
+let dashboardLastRestartMs = 0;
+let dashboardConsecutiveFails = 0;
 
 interface ServiceSignature {
   processName?: string;
@@ -377,7 +383,8 @@ export async function ensureDaemon(): Promise<void> {
 // --- Dashboard ---
 
 export async function ensureDashboard(): Promise<void> {
-  if (await fetchHealth(DASHBOARD_HEALTH_URL)) {
+  if (await fetchHealth(DASHBOARD_HEALTH_URL, 5000)) {
+    dashboardConsecutiveFails = 0;
     const discoveredPid = readPid('dashboard') ?? findWindowsPid('packages/dashboard/src/server.ts', 'node.exe');
     if (discoveredPid) {
       writePid('dashboard', discoveredPid);
@@ -386,13 +393,23 @@ export async function ensureDashboard(): Promise<void> {
     return;
   }
 
+  dashboardConsecutiveFails += 1;
+  const sinceLastRestart = Date.now() - dashboardLastRestartMs;
+
   const pidFromFile = readPid('dashboard');
   const discoveredPid = pidFromFile ?? findWindowsPid('packages/dashboard/src/server.ts', 'node.exe');
-  if (discoveredPid !== null && isProcessRunning(discoveredPid)) {
+  const processAlive = discoveredPid !== null && isProcessRunning(discoveredPid);
+
+  if (processAlive && (dashboardConsecutiveFails < DASHBOARD_FAIL_THRESHOLD || sinceLastRestart < DASHBOARD_RESTART_MIN_GAP_MS)) {
+    console.log(`  Dashboard health check failed (${dashboardConsecutiveFails}/${DASHBOARD_FAIL_THRESHOLD}), process still alive. Holding restart (${Math.max(0, DASHBOARD_RESTART_MIN_GAP_MS - sinceLastRestart) / 1000}s until next restart allowed).`);
+    return;
+  }
+
+  if (processAlive) {
     if (!pidFromFile) {
-      writePid('dashboard', discoveredPid);
+      writePid('dashboard', discoveredPid!);
     }
-    console.log('  Dashboard process found but health check failed. Restarting it cleanly...');
+    console.log(`  Dashboard unhealthy for ${dashboardConsecutiveFails} consecutive checks. Restarting it cleanly...`);
     if (process.platform === 'win32') {
       try {
         execSync(`taskkill /PID ${discoveredPid} /T /F`, { stdio: 'ignore' });
@@ -401,7 +418,7 @@ export async function ensureDashboard(): Promise<void> {
       }
     } else {
       try {
-        process.kill(discoveredPid, 'SIGTERM');
+        process.kill(discoveredPid!, 'SIGTERM');
       } catch {
         // Best effort.
       }
@@ -444,10 +461,13 @@ export async function ensureDashboard(): Promise<void> {
     }
   }
 
+  dashboardLastRestartMs = Date.now();
+
   for (let i = 0; i < 15; i++) {
     await sleep(1000);
     const expectedPid = readPid('dashboard');
     if (await waitForStableDashboardHealth(expectedPid)) {
+      dashboardConsecutiveFails = 0;
       console.log(`  Dashboard started on :${DASHBOARD_PORT}`);
       return;
     }
