@@ -14,6 +14,7 @@ interface Probe {
 }
 
 const baseUrl = (process.env.DASHBOARD_SMOKE_BASE_URL ?? 'https://organism-hq.vercel.app').replace(/\/+$/, '');
+const dashboardAuthToken = process.env.DASHBOARD_AUTH_TOKEN?.trim();
 
 const protectedProbes: Probe[] = [
   { label: 'tasks list', path: '/api/tasks', expectedStatus: 401 },
@@ -27,6 +28,15 @@ const protectedProbes: Probe[] = [
     body: {},
     expectedStatus: 401,
   },
+];
+
+const authenticatedProbes = [
+  '/api/projects',
+  '/api/project/synapse',
+  '/api/runtime?project=synapse',
+  '/api/review-queue?project=synapse',
+  '/api/action-items?counts=1&project=synapse',
+  '/project/synapse',
 ];
 
 const requiredHeaders = [
@@ -85,6 +95,61 @@ async function checkSecurityHeaders(): Promise<void> {
   }
 }
 
+async function checkAuthenticatedProjectFlow(): Promise<void> {
+  if (!dashboardAuthToken) {
+    console.log('Skipping authenticated project smoke: DASHBOARD_AUTH_TOKEN is not set.');
+    return;
+  }
+
+  const headers = {
+    Cookie: `organism-auth=${dashboardAuthToken}`,
+  };
+
+  const authResponse = await fetch(`${baseUrl}/api/auth`, { cache: 'no-store', headers });
+  if (!authResponse.ok) {
+    throw new Error(`authenticated /api/auth returned ${authResponse.status}`);
+  }
+
+  const authBody = await authResponse.json() as {
+    authRequired?: unknown;
+    authenticated?: unknown;
+    configured?: unknown;
+  };
+  if (authBody.authRequired !== true || authBody.authenticated !== true || authBody.configured !== true) {
+    throw new Error(`authenticated /api/auth returned unexpected body ${JSON.stringify(authBody)}`);
+  }
+
+  for (const path of authenticatedProbes) {
+    const response = await fetch(`${baseUrl}${path}`, { cache: 'no-store', headers });
+    if (!response.ok) {
+      throw new Error(`authenticated ${path} returned ${response.status}`);
+    }
+
+    if (path === '/api/projects') {
+      const projects = await response.json() as unknown;
+      if (!Array.isArray(projects) || !projects.includes('synapse')) {
+        throw new Error(`/api/projects must include synapse, got ${JSON.stringify(projects)}`);
+      }
+      continue;
+    }
+
+    if (path === '/api/project/synapse') {
+      const project = await response.json() as { project?: unknown; metrics?: unknown };
+      if (project.project !== 'synapse' || !project.metrics) {
+        throw new Error(`/api/project/synapse returned unexpected body ${JSON.stringify(project)}`);
+      }
+      continue;
+    }
+
+    if (path === '/project/synapse') {
+      const text = await response.text();
+      if (/internal server error/i.test(text)) {
+        throw new Error('/project/synapse returned an internal server error page');
+      }
+    }
+  }
+}
+
 async function main(): Promise<void> {
   console.log(`Dashboard auth smoke: ${baseUrl}`);
 
@@ -93,6 +158,7 @@ async function main(): Promise<void> {
     await checkProtectedProbe(probe);
   }
   await checkSecurityHeaders();
+  await checkAuthenticatedProjectFlow();
 
   console.log('Dashboard auth smoke passed.');
 }
