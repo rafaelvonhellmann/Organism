@@ -41,6 +41,7 @@ const HOME = process.env.USERPROFILE ?? process.env.HOME ?? '.';
 const STATE_DIR = process.env.ORGANISM_STATE_DIR ?? resolve(HOME, '.organism', 'state');
 const DEFAULT_CORE_AGENTS = ['ceo', 'product-manager', 'engineering', 'devops', 'quality-agent', 'security-audit', 'legal', 'quality-guardian', 'codex-review'];
 const ACTIVE_RUN_STALE_MS = 20 * 60 * 1000;
+const BLOCKER_STALE_MS = 24 * 60 * 60 * 1000;
 const FINAL_GRADUATION_RUNS = 3;
 const ROLLOUT_STAGES = [
   { stage: 'bounded', label: 'bounded autonomy', threshold: 1 },
@@ -569,7 +570,7 @@ function formatEvent(row: Row) {
     runId: s(row.run_id),
     goalId: s(row.goal_id),
     eventType: s(row.event_type),
-    payload: tryParse(row.payload),
+    payload: compactRuntimeValue(tryParse(row.payload)),
     ts: n(row.ts),
   };
 }
@@ -582,7 +583,7 @@ function formatArtifact(row: Row) {
     kind: s(row.kind),
     title: s(row.title),
     path: row.path ? s(row.path) : null,
-    content: row.content ? s(row.content) : null,
+    content: row.content ? trimRuntimeText(s(row.content), 1200) : null,
     createdAt: n(row.created_at),
   };
 }
@@ -594,7 +595,7 @@ function formatRecentOutput(row: Row) {
     status: s(row.status),
     lane: s(row.lane),
     description: s(row.description),
-    summary: summarizeTaskOutput(row.output, row.error, row.project_id),
+    summary: trimRuntimeText(summarizeTaskOutput(row.output, row.error, row.project_id), 700),
     completedAt: row.completed_at != null ? n(row.completed_at) : null,
     createdAt: n(row.created_at),
   };
@@ -643,9 +644,33 @@ function buildUsefulOutputs(
 }
 
 function trimUsefulSummary(value: string | null): string | null {
+  return trimRuntimeText(value, 320);
+}
+
+function trimRuntimeText(value: string | null, maxLength: number): string | null {
   if (!value) return null;
   const compact = value.replace(/\s+/g, ' ').trim();
-  return compact.length > 320 ? `${compact.slice(0, 317).trimEnd()}...` : compact;
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 3).trimEnd()}...` : compact;
+}
+
+function compactRuntimeValue(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return trimRuntimeText(value, 700);
+  if (value == null || typeof value !== 'object') return value;
+  if (depth >= 3) return '[truncated]';
+
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 25).map((item) => compactRuntimeValue(item, depth + 1));
+    if (value.length > 25) items.push(`[${value.length - 25} more]`);
+    return items;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>);
+  const compact: Record<string, unknown> = {};
+  for (const [key, item] of entries.slice(0, 25)) {
+    compact[key] = compactRuntimeValue(item, depth + 1);
+  }
+  if (entries.length > 25) compact._truncated = `${entries.length - 25} more field(s)`;
+  return compact;
 }
 
 interface RuntimeBlockerRow {
@@ -895,9 +920,13 @@ export async function getRuntimeSnapshot(projectId?: string) {
   const projectFilter = projectId ? 'WHERE project_id = ?' : '';
   const projectArgs = projectId ? [projectId] : [];
   const taskOutputFilter = projectId ? 'WHERE project_id = ? AND output IS NOT NULL' : 'WHERE output IS NOT NULL';
+  const blockerCutoff = Date.now() - BLOCKER_STALE_MS;
   const blockerFilter = projectId
-    ? `WHERE project_id = ? AND status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')`
-    : `WHERE status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')`;
+    ? `WHERE project_id = ? AND status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')
+       AND COALESCE(retry_at, completed_at, started_at, created_at) >= ?`
+    : `WHERE status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')
+       AND COALESCE(retry_at, completed_at, started_at, created_at) >= ?`;
+  const blockerArgs = projectId ? [projectId, blockerCutoff] : [blockerCutoff];
 
   const [goalsRows, runsRows, interruptsRows, approvalsRows, eventsRows, artifactsRows, outputRows, blockerRows] = await Promise.all([
     execute(
@@ -962,7 +991,7 @@ export async function getRuntimeSnapshot(projectId?: string) {
        ${blockerFilter}
        ORDER BY COALESCE(completed_at, created_at) DESC
        LIMIT 24`,
-      projectArgs,
+      blockerArgs,
     ),
   ]);
 

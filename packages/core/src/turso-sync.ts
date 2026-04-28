@@ -21,6 +21,9 @@ let schemaCreated = false;
 let lastSyncTs = 0; // epoch ms — only rows newer than this get synced
 let lastDaemonStatusUpdatedAt = 0;
 
+const ACTIVE_TASK_STATUSES = ['pending', 'in_progress', 'awaiting_review', 'paused', 'retry_scheduled'];
+const ACTIVE_RUN_STATUSES = ['pending', 'running', 'paused', 'retry_scheduled'];
+
 export type TursoSyncResult =
   | { status: 'ok'; reason?: null }
   | { status: 'skipped'; reason: 'not_configured' }
@@ -50,9 +53,9 @@ function loadTursoEnv(): { url: string; token: string } | null {
     try {
       const lines = readFileSync(envFile, 'utf-8').split('\n');
       for (const line of lines) {
-        const match = line.match(/^(\w+)="(.+)"$/);
-        if (match && !process.env[match[1]]) {
-          process.env[match[1]] = match[2];
+        const parsed = parseEnvLine(line);
+        if (parsed && !process.env[parsed.key]) {
+          process.env[parsed.key] = parsed.value;
         }
       }
     } catch { /* ignore read errors */ }
@@ -63,6 +66,26 @@ function loadTursoEnv(): { url: string; token: string } | null {
 
   if (url && token) return { url, token };
   return null;
+}
+
+function parseEnvLine(line: string): { key: string; value: string } | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+  const eq = trimmed.indexOf('=');
+  if (eq <= 0) return null;
+
+  const key = trimmed.slice(0, eq).trim();
+  if (!/^\w+$/.test(key)) return null;
+
+  let value = trimmed.slice(eq + 1).trim();
+  if (
+    (value.startsWith('"') && value.endsWith('"'))
+    || (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1);
+  }
+
+  return { key, value };
 }
 
 function getRemote(): Client | null {
@@ -425,6 +448,27 @@ async function batchUpsert(remote: Client, stmts: Array<{ sql: string; args: unk
   }
 }
 
+async function deleteByStatuses(remote: Client, table: string, statuses: string[]): Promise<void> {
+  const placeholders = statuses.map(() => '?').join(', ');
+  await remote.execute({
+    sql: `DELETE FROM ${table} WHERE status IN (${placeholders})`,
+    args: statuses,
+  });
+}
+
+async function clearVolatileRemoteState(remote: Client): Promise<void> {
+  // Local SQLite is authoritative for lifecycle state. The sync process is
+  // launched as a child process, so every invocation starts with lastSyncTs=0.
+  // Clearing non-terminal remote rows before upserting local rows prevents old
+  // retry/pending rows from blocking the hosted dashboard forever.
+  await deleteByStatuses(remote, 'tasks', ACTIVE_TASK_STATUSES);
+  await deleteByStatuses(remote, 'goals', ACTIVE_RUN_STATUSES);
+  await deleteByStatuses(remote, 'run_sessions', ACTIVE_RUN_STATUSES);
+  await deleteByStatuses(remote, 'run_steps', ['pending', 'running', 'paused']);
+  await deleteByStatuses(remote, 'interrupts', ['pending']);
+  await deleteByStatuses(remote, 'approvals', ['pending']);
+}
+
 // ── Main sync function ───────────────────────────────────────────────────────
 
 export async function syncToTurso(): Promise<TursoSyncResult> {
@@ -456,6 +500,9 @@ export async function syncToTurso(): Promise<TursoSyncResult> {
     const local = getDb();
     const syncStart = Date.now();
     const isFirstSync = lastSyncTs === 0;
+    if (isFirstSync) {
+      await clearVolatileRemoteState(remote);
+    }
 
   // ── Tasks (upsert by id; use created_at for new, but tasks can be updated so just re-upsert all changed) ──
   // Tasks don't have an updated_at column, so we use a full upsert for all tasks.

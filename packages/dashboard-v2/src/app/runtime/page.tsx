@@ -270,6 +270,10 @@ export default function RuntimePage() {
   const [localDaemonStatus, setLocalDaemonStatus] = useState<LocalDaemonStatusSnapshot | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [connected, setConnected] = useState(false);
+  const [eventStreamEnabled] = useState(() => (
+    typeof window !== 'undefined'
+    && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
+  ));
 
   const fetchSnapshot = useCallback(async () => {
     const url = project ? `/api/runtime?project=${project}` : '/api/runtime';
@@ -306,6 +310,11 @@ export default function RuntimePage() {
   }, [fetchSnapshot, fetchLocalBridge, fetchLocalDaemonStatus]);
 
   useEffect(() => {
+    if (!eventStreamEnabled) {
+      setConnected(false);
+      return;
+    }
+
     const url = project ? `/api/runtime/events?project=${project}` : '/api/runtime/events';
     const es = new EventSource(url);
 
@@ -333,7 +342,7 @@ export default function RuntimePage() {
     };
 
     return () => es.close();
-  }, [project]);
+  }, [eventStreamEnabled, project]);
 
   const activeRuns = useMemo(
     () => snapshot?.runs.filter((run) => run.status !== 'completed' && run.status !== 'failed' && run.status !== 'cancelled') ?? [],
@@ -731,7 +740,7 @@ export default function RuntimePage() {
                 <p className="text-xs text-zinc-500 mt-1">The active runs and their latest visible steps.</p>
               </div>
               <span className={`text-xs font-medium ${(preferLocalBridge || connected) ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                {preferLocalBridge ? 'local live' : connected ? 'stream connected' : 'reconnecting'}
+                {preferLocalBridge ? 'local live' : eventStreamEnabled ? (connected ? 'stream connected' : 'reconnecting') : 'polling'}
               </span>
             </div>
 
