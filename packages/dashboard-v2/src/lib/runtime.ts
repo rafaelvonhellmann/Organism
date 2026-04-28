@@ -41,6 +41,7 @@ const HOME = process.env.USERPROFILE ?? process.env.HOME ?? '.';
 const STATE_DIR = process.env.ORGANISM_STATE_DIR ?? resolve(HOME, '.organism', 'state');
 const DEFAULT_CORE_AGENTS = ['ceo', 'product-manager', 'engineering', 'devops', 'quality-agent', 'security-audit', 'legal', 'quality-guardian', 'codex-review'];
 const ACTIVE_RUN_STALE_MS = 20 * 60 * 1000;
+const BLOCKER_STALE_MS = 24 * 60 * 60 * 1000;
 const FINAL_GRADUATION_RUNS = 3;
 const ROLLOUT_STAGES = [
   { stage: 'bounded', label: 'bounded autonomy', threshold: 1 },
@@ -919,9 +920,13 @@ export async function getRuntimeSnapshot(projectId?: string) {
   const projectFilter = projectId ? 'WHERE project_id = ?' : '';
   const projectArgs = projectId ? [projectId] : [];
   const taskOutputFilter = projectId ? 'WHERE project_id = ? AND output IS NOT NULL' : 'WHERE output IS NOT NULL';
+  const blockerCutoff = Date.now() - BLOCKER_STALE_MS;
   const blockerFilter = projectId
-    ? `WHERE project_id = ? AND status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')`
-    : `WHERE status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')`;
+    ? `WHERE project_id = ? AND status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')
+       AND COALESCE(retry_at, completed_at, started_at, created_at) >= ?`
+    : `WHERE status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')
+       AND COALESCE(retry_at, completed_at, started_at, created_at) >= ?`;
+  const blockerArgs = projectId ? [projectId, blockerCutoff] : [blockerCutoff];
 
   const [goalsRows, runsRows, interruptsRows, approvalsRows, eventsRows, artifactsRows, outputRows, blockerRows] = await Promise.all([
     execute(
@@ -986,7 +991,7 @@ export async function getRuntimeSnapshot(projectId?: string) {
        ${blockerFilter}
        ORDER BY COALESCE(completed_at, created_at) DESC
        LIMIT 24`,
-      projectArgs,
+      blockerArgs,
     ),
   ]);
 
