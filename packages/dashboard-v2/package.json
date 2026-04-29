@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "next dev --turbopack -p 3391",
+    "prebuild": "node scripts/clean-next-build.mjs",
     "build": "next build",
     "start": "next start -p 3391"
   },

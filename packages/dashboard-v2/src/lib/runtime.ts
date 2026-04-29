@@ -31,6 +31,96 @@ function tryParse(value: unknown): unknown {
   }
 }
 
+function parseRecord(value: unknown): Record<string, unknown> | null {
+  const parsed = tryParse(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
+}
+
+function normalizeDecisionKind(value: unknown): string {
+  const text = s(value);
+  return text.length > 0 ? text : 'none';
+}
+
+function hasDecisionSignal(value: string): boolean {
+  return value.length > 0 && value !== 'none';
+}
+
+function decisionReason(parts: Array<string | null>, fallback: string | null = null): string | null {
+  const present = parts.filter((part): part is string => !!part);
+  return present.length > 0 ? present.join(' / ') : fallback;
+}
+
+function decisionPart(label: string, value: string): string | null {
+  return hasDecisionSignal(value) ? `${label}: ${value}` : null;
+}
+
+function deriveRunDisplay(row: Row): { displayStatus: string; displayReason: string | null } {
+  const status = s(row.status) || 'unknown';
+  const retryClass = normalizeDecisionKind(row.retry_class);
+  const providerFailureKind = normalizeDecisionKind(row.provider_failure_kind);
+  const retryReason = decisionPart('retry', retryClass);
+  const providerReason = decisionPart('provider', providerFailureKind);
+
+  if (status === 'claimed') {
+    return { displayStatus: 'claimed', displayReason: 'Worker has claimed the run but has not started execution.' };
+  }
+  if (status === 'pending' || status === 'running') {
+    return { displayStatus: status, displayReason: null };
+  }
+  if (status === 'completed') {
+    return { displayStatus: 'succeeded', displayReason: null };
+  }
+  if (status === 'cancelled') {
+    return { displayStatus: 'cancelled', displayReason: null };
+  }
+  if (status === 'blocked') {
+    return {
+      displayStatus: 'blocked',
+      displayReason: decisionReason([retryReason, providerReason], 'Run is blocked until policy, approval, or operator input changes.'),
+    };
+  }
+  if (status === 'error') {
+    return {
+      displayStatus: 'error',
+      displayReason: decisionReason([retryReason, providerReason], 'Run stopped because of runtime or infrastructure error.'),
+    };
+  }
+  if (status === 'retry_scheduled') {
+    const blocked = retryClass === 'policy_block' || retryClass === 'manual_pause' || providerFailureKind === 'policy_block';
+    return {
+      displayStatus: blocked ? 'blocked' : 'retry_scheduled',
+      displayReason: decisionReason([retryReason, providerReason]),
+    };
+  }
+  if (status === 'paused') {
+    const blocked = retryClass === 'policy_block' || retryClass === 'manual_pause' || providerFailureKind === 'policy_block';
+    return {
+      displayStatus: blocked ? 'blocked' : 'retry_scheduled',
+      displayReason: decisionReason([retryReason, providerReason], 'Run is paused.'),
+    };
+  }
+  if (status === 'failed') {
+    if (providerFailureKind === 'policy_block' || retryClass === 'policy_block') {
+      return { displayStatus: 'blocked', displayReason: 'Run failed because policy blocked execution.' };
+    }
+    if (['auth_failure', 'missing_secret', 'tool_failure', 'transport_error', 'timeout'].includes(providerFailureKind)) {
+      return { displayStatus: 'error', displayReason: `Runtime failure: ${providerFailureKind}` };
+    }
+    return {
+      displayStatus: 'failed',
+      displayReason: decisionReason([retryReason, providerReason]),
+    };
+  }
+  return { displayStatus: 'unknown', displayReason: `Unknown run status: ${status}` };
+}
+
+function formatConfigSnapshot(value: unknown): Record<string, unknown> | null {
+  const parsed = parseRecord(value);
+  if (!parsed) return null;
+  return compactRuntimeValue(parsed) as Record<string, unknown>;
+}
+
 function workspacePath(...segments: string[]): string {
   const direct = resolve(process.cwd(), ...segments);
   if (existsSync(direct)) return direct;
@@ -363,6 +453,7 @@ function formatGoal(row: Row) {
 type RuntimeGoal = ReturnType<typeof formatGoal>;
 
 function formatRun(row: Row) {
+  const display = deriveRunDisplay(row);
   return {
     id: s(row.id),
     goalId: s(row.goal_id),
@@ -370,9 +461,12 @@ function formatRun(row: Row) {
     agent: s(row.agent),
     workflowKind: s(row.workflow_kind),
     status: s(row.status),
-    retryClass: s(row.retry_class),
+    displayStatus: display.displayStatus,
+    displayReason: display.displayReason,
+    retryClass: normalizeDecisionKind(row.retry_class),
     retryAt: row.retry_at != null ? n(row.retry_at) : null,
-    providerFailureKind: s(row.provider_failure_kind),
+    providerFailureKind: normalizeDecisionKind(row.provider_failure_kind),
+    configSnapshot: formatConfigSnapshot(row.config_snapshot),
     createdAt: n(row.created_at),
     updatedAt: n(row.updated_at),
     completedAt: row.completed_at != null ? n(row.completed_at) : null,

@@ -29,9 +29,12 @@ export interface LocalRuntimeBridgeSnapshot {
     agent: string;
     workflowKind: string;
     status: string;
+    displayStatus?: string;
+    displayReason?: string | null;
     retryClass: string;
     retryAt: number | null;
     providerFailureKind: string;
+    configSnapshot?: Record<string, unknown> | null;
     createdAt: number;
     updatedAt: number;
     completedAt: number | null;

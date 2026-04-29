@@ -40,6 +40,12 @@ interface Options {
   listChecks: boolean;
 }
 
+interface CommandInvocation {
+  command: string;
+  args: string[];
+  printable: string;
+}
+
 const ROOT = path.resolve(import.meta.dirname, '..');
 const node = process.execPath;
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -162,12 +168,36 @@ function changedFileCount(): number {
   return status.split(/\r?\n/).filter(Boolean).length;
 }
 
+function quoteWindowsShellArg(value: string): string {
+  if (!/[\s"]/u.test(value)) return value;
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function commandInvocation(check: Check): CommandInvocation {
+  if (process.platform === 'win32' && check.command.toLowerCase().endsWith('.cmd')) {
+    const command = process.env.ComSpec ?? 'cmd.exe';
+    const printable = [check.command, ...check.args].join(' ');
+    return {
+      command,
+      args: ['/d', '/s', '/c', [check.command, ...check.args].map(quoteWindowsShellArg).join(' ')],
+      printable,
+    };
+  }
+
+  return {
+    command: check.command,
+    args: check.args,
+    printable: [check.command, ...check.args].join(' '),
+  };
+}
+
 function runCheck(check: Check): CheckResult {
   const started = Date.now();
+  const invocation = commandInvocation(check);
   console.log(`\n--- ${check.label} ---`);
-  console.log([check.command, ...check.args].join(' '));
+  console.log(invocation.printable);
 
-  const result = spawnSync(check.command, check.args, {
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: ROOT,
     encoding: 'utf8',
     stdio: 'inherit',
