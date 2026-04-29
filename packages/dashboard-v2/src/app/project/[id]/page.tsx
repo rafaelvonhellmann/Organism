@@ -1,7 +1,9 @@
 'use client';
 
-import { use } from 'react';
+import { use, useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { usePolling } from '@/hooks/use-polling';
+import { Header } from '@/components/header';
 import { MetricCard } from '@/components/metric-card';
 import { StatusBadge } from '@/components/status-badge';
 
@@ -81,7 +83,20 @@ function timeAgo(ts: number): string {
 
 export default function ProjectDashboard({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
+  const [selectedProject, setSelectedProject] = useState(id);
   const { data, loading, lastUpdated } = usePolling<ProjectData>(`/api/project/${id}`, 60_000);
+
+  useEffect(() => {
+    setSelectedProject(id);
+  }, [id]);
+
+  const handleProjectChange = useCallback((projectId: string) => {
+    setSelectedProject(projectId);
+    if (projectId && projectId !== id) {
+      router.push(`/project/${projectId}`);
+    }
+  }, [id, router]);
 
   const m = data?.metrics;
   const totalTasks = data ? Object.values(data.byStatus).reduce((a, b) => a + b, 0) : 0;
@@ -89,20 +104,14 @@ export default function ProjectDashboard({ params }: { params: Promise<{ id: str
   return (
     <>
       {/* ── Header ──────────────────────────────────────────── */}
-      <header className="h-14 border-b border-edge bg-gradient-to-r from-surface/90 via-surface/80 to-surface/90 backdrop-blur-md flex items-center justify-between px-4 md:px-6 sticky top-0 z-20">
-        <div className="flex items-center gap-3">
-          <h2 className="text-base font-semibold text-zinc-100">
-            {displayName(id)}
-          </h2>
-          <span className="text-xs text-zinc-500 font-mono">project</span>
-        </div>
-        {lastUpdated && (
-          <span className="text-xs text-zinc-500 flex items-center gap-1.5">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse-dot" />
-            {timeAgo(lastUpdated.getTime())}
-          </span>
-        )}
-      </header>
+      <Header
+        title={displayName(id)}
+        project={selectedProject}
+        onProjectChange={handleProjectChange}
+        lastUpdated={lastUpdated}
+        allowAllProjects={false}
+        autoSelectProject={false}
+      />
 
       <div className="p-4 md:p-6">
         <div className="max-w-4xl mx-auto space-y-6">

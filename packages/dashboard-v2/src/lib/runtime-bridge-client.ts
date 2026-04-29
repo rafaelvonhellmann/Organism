@@ -2,6 +2,12 @@
 
 const LOCAL_DASHBOARD_ORIGIN = 'http://127.0.0.1:7391';
 
+function shouldUseLocalBridge(): boolean {
+  if (process.env.NEXT_PUBLIC_ORGANISM_LOCAL_BRIDGE === '1') return true;
+  if (typeof window === 'undefined') return false;
+  return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+}
+
 export interface LocalRuntimeBridgeSnapshot {
   generatedAt: number;
   projectId: string | null;
@@ -153,6 +159,7 @@ function buildQuery(project?: string): string {
 }
 
 export async function loadLocalRuntimeBridge(project?: string): Promise<LocalRuntimeBridgeSnapshot | null> {
+  if (!shouldUseLocalBridge()) return null;
   try {
     const response = await fetch(`${LOCAL_DASHBOARD_ORIGIN}/api/runtime${buildQuery(project)}`, {
       cache: 'no-store',
@@ -167,6 +174,7 @@ export async function loadLocalRuntimeBridge(project?: string): Promise<LocalRun
 }
 
 export async function loadLocalDaemonStatus(): Promise<LocalDaemonStatusSnapshot | null> {
+  if (!shouldUseLocalBridge()) return null;
   try {
     const response = await fetch(`${LOCAL_DASHBOARD_ORIGIN}/api/daemon-status`, {
       cache: 'no-store',
@@ -181,6 +189,7 @@ export async function loadLocalDaemonStatus(): Promise<LocalDaemonStatusSnapshot
 }
 
 export async function loadLocalStartDecision(project?: string): Promise<LocalStartDecisionSnapshot | null> {
+  if (!shouldUseLocalBridge()) return null;
   if (!project) return null;
   try {
     const response = await fetch(`${LOCAL_DASHBOARD_ORIGIN}/api/start-decision${buildQuery(project)}`, {
@@ -196,6 +205,7 @@ export async function loadLocalStartDecision(project?: string): Promise<LocalSta
 }
 
 export async function loadLocalLaunchAudit(project?: string): Promise<LocalLaunchAuditSnapshot | null> {
+  if (!shouldUseLocalBridge()) return null;
   if (!project) return null;
   try {
     const response = await fetch(`${LOCAL_DASHBOARD_ORIGIN}/api/launch-readiness${buildQuery(project)}`, {

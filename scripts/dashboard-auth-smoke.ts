@@ -47,6 +47,10 @@ const requiredHeaders = [
   'x-frame-options',
 ];
 
+function cookieDomain(): string {
+  return new URL(baseUrl).hostname;
+}
+
 async function checkAuthStatus(): Promise<void> {
   const response = await fetch(`${baseUrl}/api/auth`, { cache: 'no-store' });
   if (response.status === 401) {
@@ -150,6 +154,90 @@ async function checkAuthenticatedProjectFlow(): Promise<void> {
   }
 }
 
+async function checkBrowserProjectFlow(): Promise<void> {
+  if (!dashboardAuthToken) {
+    console.log('Skipping browser project smoke: DASHBOARD_AUTH_TOKEN is not set.');
+    return;
+  }
+  if (process.env.DASHBOARD_SMOKE_BROWSER === '0') {
+    console.log('Skipping browser project smoke: DASHBOARD_SMOKE_BROWSER=0.');
+    return;
+  }
+
+  const { chromium } = await import('playwright');
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    await context.addCookies([{
+      name: 'organism-auth',
+      value: dashboardAuthToken,
+      domain: cookieDomain(),
+      path: '/',
+      httpOnly: true,
+      secure: baseUrl.startsWith('https://'),
+      sameSite: 'Strict',
+    }]);
+
+    const page = await context.newPage();
+    const browserFailures: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error' || message.type() === 'warning') {
+        browserFailures.push(`console:${message.type()}: ${message.text()}`);
+      }
+    });
+    page.on('pageerror', (error) => browserFailures.push(`pageerror: ${error.message}`));
+    page.on('response', (response) => {
+      const status = response.status();
+      const url = response.url();
+      if (status >= 400 && url.startsWith(baseUrl)) {
+        browserFailures.push(`http:${status}: ${url}`);
+      }
+    });
+
+    await page.goto(`${baseUrl}/runtime`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await page.waitForSelector('select', { timeout: 30_000 });
+
+    const options = await page.locator('select option').evaluateAll((items) => (
+      items.map((option) => option.getAttribute('value') ?? '')
+    ));
+    if (!options.includes('synapse')) {
+      throw new Error(`Runtime project selector must include synapse, got ${JSON.stringify(options)}`);
+    }
+
+    await page.locator('select').selectOption('synapse');
+    await page.waitForResponse(
+      (response) => response.url().includes('/api/runtime?project=synapse'),
+      { timeout: 30_000 },
+    ).catch(() => null);
+
+    const runtimeSelection = await page.locator('select').inputValue();
+    if (runtimeSelection !== 'synapse') {
+      throw new Error(`Runtime selector did not stay on synapse; got ${runtimeSelection}`);
+    }
+
+    await page.goto(`${baseUrl}/project/synapse`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await page.waitForSelector('select', { timeout: 30_000 });
+    const projectSelection = await page.locator('select').inputValue();
+    if (projectSelection !== 'synapse') {
+      throw new Error(`Project page selector did not initialize to synapse; got ${projectSelection}`);
+    }
+
+    await page.locator('select').selectOption('tokens-for-good');
+    await page.waitForURL('**/project/tokens-for-good', { timeout: 30_000 });
+
+    const bodyText = await page.locator('body').innerText({ timeout: 5_000 });
+    if (/internal server error/i.test(bodyText)) {
+      throw new Error('Browser project flow showed an internal server error');
+    }
+
+    if (browserFailures.length > 0) {
+      throw new Error(`Browser project flow reported failures: ${browserFailures.join(' | ')}`);
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
 async function main(): Promise<void> {
   console.log(`Dashboard auth smoke: ${baseUrl}`);
 
@@ -159,6 +247,7 @@ async function main(): Promise<void> {
   }
   await checkSecurityHeaders();
   await checkAuthenticatedProjectFlow();
+  await checkBrowserProjectFlow();
 
   console.log('Dashboard auth smoke passed.');
 }
