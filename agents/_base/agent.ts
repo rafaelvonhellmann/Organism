@@ -11,6 +11,8 @@ import { storeTaskMemory, getWorkingMemory, isStixDBAvailable, searchAcrossAgent
 import { getCompactContext } from '../../packages/core/src/context-brief.js';
 import { recordBetSpend, checkBetCircuitBreaker } from '../../packages/core/src/shapeup.js';
 import { resolveTaskSources, loadDistilledSources } from '../../packages/core/src/palate.js';
+import { buildAgentSkillRuntime } from './agent-skills.js';
+import { withAgentRuntime } from './agent-runtime.js';
 import { canAgentExecute, loadRegistry } from '../../packages/core/src/registry.js';
 import { normalizeAgentEnvelope, extractEnvelopeText } from '../../packages/core/src/agent-envelope.js';
 import { createArtifact, createRunSession, getLatestRunForGoal, mapProviderFailure, updateRunStatus, createRunStep, updateRunStep } from '../../packages/core/src/run-state.js';
@@ -543,8 +545,32 @@ export abstract class BaseAgent {
       }
     }
 
+    // Agent skill runtime: attach the relevant Matt Pocock skills to each
+    // specialist run without changing Paperclip's orchestration boundary.
+    const skillRuntime = buildAgentSkillRuntime({
+      agentName: this.name,
+      capability: this.config.capability,
+      taskDescription: task.description,
+    });
+
+    if (skillRuntime) {
+      const currentInput = task.input;
+      const input = currentInput && typeof currentInput === 'object' && !Array.isArray(currentInput)
+        ? currentInput as Record<string, unknown>
+        : { value: currentInput };
+      input.agentSkillRuntime = skillRuntime.context;
+      (task as { input: unknown }).input = input;
+
+      const skillNames = skillRuntime.context.selectedSkills.map((skill) => skill.name).join(', ');
+      console.log(`[${this.name}] Skills loaded: ${skillNames}`);
+    }
+
     try {
-      const result = await this.execute(task);
+      const result = await withAgentRuntime({
+        agentName: this.name,
+        capability: this.config.capability,
+        skillSystemPrompt: skillRuntime?.systemPrompt,
+      }, () => this.execute(task));
       clearTimeout(timeoutHandle);
       const envelope = normalizeAgentEnvelope(this.name, task, result.output);
 
