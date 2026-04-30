@@ -74,9 +74,14 @@ const quickChecks: Check[] = [
     timeoutMs: 180_000,
   },
   {
-    label: 'Dashboard auth',
+    label: 'Dashboard auth and ledger',
     command: node,
-    args: ['node_modules/tsx/dist/cli.mjs', '--test', 'packages/dashboard-v2/src/lib/auth.test.ts'],
+    args: [
+      'node_modules/tsx/dist/cli.mjs',
+      '--test',
+      'packages/dashboard-v2/src/lib/auth.test.ts',
+      'packages/dashboard-v2/src/lib/autoresearch-ledger.test.ts',
+    ],
     timeoutMs: 60_000,
   },
 ];
