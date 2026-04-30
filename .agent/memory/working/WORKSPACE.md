@@ -3,30 +3,24 @@
 Live per-agent workspace snapshots.
 
 ## Active agents
-- codex-review — completed — organism — validate
-  Task: Codex review: "Run a bounded self-audit on Organism, identify the next safe improvements, and k"
+- quality-agent — completed — synapse — review
+  Task: Medical-safe read-only canary review for Synapse. Validate that Organism can inspect Synapse repository readiness through the quality-agent canary path. Do not edit files, do not deploy, do not contact anyone, do not change content or grading behavior. Report whether the next safe Organism step should be review, validation, planning, or pause.
   Next: Pick the next safe bounded task or hand off to validation.
-  Updated: 2026-04-17T13:35:08.093Z
-  Detail: ## Codex Review
-
-**Decision:** APPROVED
-
-**Summary:** Directionally correct and safely conservative, but too abstract to drive the next bounded engineering changes without extra interpretation.
-
-### Issues
-
-| # | Severity | Category | Location | Description | Suggested Fix |
-|---|----------|----------|----------|-------------|---------------|
-| 1 | MEDIUM | Logic | `packages/dashboard-v2/src/lib/q
+  Updated: 2026-04-28T21:16:33.359Z
+  Detail: The quality-agent canary can safely inspect Synapse in read-only mode, but Synapse is not ready for autonomous implementation beyond safe validation. The next safe Organism step should be validation of auth/content exposure and repo-state drift.
 - engineering — running — organism — recover
-  Task: Reuse branch `agent/engineering/4de21b25/fix-build-in-preserved-worktree-for-` in preserved isolated worktree `C:\Users\rafae\.organism\s...
+  Task: Recover daemon startup run
   Next: Continue the current bounded task and record the next safe step before handing off.
-  Updated: 2026-04-17T13:32:50.069Z
-- quality-agent — completed — organism — review
-  Task: Run a bounded self-audit on Organism, identify the next safe improvements, and keep follow-up work inside the stabilization envelope.
-  Next: Pick the next safe bounded task or hand off to validation.
-  Updated: 2026-04-17T13:31:25.146Z
-  Detail: Organism is structurally close to a safe stabilization loop, but dashboard truth is still split across duplicated selectors and read-side mutations, and a native OpenAI fallback bug is creating avoidable retry debt. Fix those control-plane seams before adding more autonomy or dashboard surface area.
+  Updated: 2026-04-28T20:59:12.721Z
+- codex-review — retry_scheduled — tokens-for-good — validate
+  Task: MEDIUM-lane review (codex-review): "Recover `packages/contracts` in an isolated worktree, then rebase or restack the"
+  Next: Retry the current bounded task after recovery or reroute to the smallest validation step.
+  Updated: 2026-04-25T14:34:32.178Z
+  Detail: Error: OpenAI lane transport error: fetch failed
+- competitive-intel — running — organism — review
+  Task: Run a shadow innovation radar pass for Organism and surface only fresh external ideas that map to active autonomy, orchestration, or developer-workflow bottlenecks.
+  Next: Continue the current bounded task and record the next safe step before handing off.
+  Updated: 2026-04-21T23:56:57.208Z
 - product-manager — running — synapse — shaping
   Task: [SHAPING] implement the next bounded ci task for synapse
   Next: Continue the current bounded task and record the next safe step before handing off.
