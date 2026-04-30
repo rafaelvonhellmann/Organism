@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 
 const STARTUP_COMMANDS = [
   { cmd: 'pnpm install', desc: 'Install workspace dependencies.' },
-  { cmd: 'npx tsx --experimental-sqlite scripts/ensure-services.ts', desc: 'Start the local dashboard bridge, daemon, and supporting services together.' },
+  { cmd: 'npm run ensure-services', desc: 'Start the local dashboard bridge, daemon, and supporting services together.' },
   { cmd: 'npm run organism "status"', desc: 'Check what is running, what is blocked, and whether the local runtime is healthy.' },
 ];
 
@@ -101,7 +101,7 @@ const LIMITS = [
 ];
 
 const TROUBLESHOOTING = [
-  'If Launch says "failed to fetch", restart services with `npx tsx --experimental-sqlite scripts/ensure-services.ts`.',
+  'If Launch says "failed to fetch", restart services with `npm run ensure-services`.',
   'If the daemon looks inactive but tasks appear in progress, check Runtime first and then `npm run organism "status"` locally.',
   'If the website looks stale, hard refresh once. The local runtime is usually more truthful than hosted history when remote writes are blocked.',
   'If a project seems stuck, prefer Review or Validate over vague commands. Organism routes explicit workflow names much better than fuzzy text.',

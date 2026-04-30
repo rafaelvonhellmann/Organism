@@ -30,6 +30,8 @@ export interface ProjectLaunchReadiness {
   vercelTokenPresent: boolean;
   vercelAuthReady: boolean;
   vercelAuthMode: 'token' | 'session' | 'none';
+  dashboardAuthReady: boolean;
+  dashboardAuthRequired: boolean;
   tasklistPresent: boolean;
   configPresent: boolean;
   rootAgentsPresent: boolean;
@@ -45,6 +47,7 @@ function tryRun(command: string, args: string[], cwd?: string): string {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      timeout: 10_000,
     });
     return result.status === 0 ? (result.stdout || '').trim() : '';
   } catch {
@@ -113,6 +116,10 @@ export function getProjectLaunchReadiness(projectId: string): ProjectLaunchReadi
   const minimax = getMiniMaxStatus(policy);
   const prAuth = getPrAuthStatus(repoPath, gitRemoteUrl);
   const vercelAuth = getVercelAuthStatus();
+  const dashboardAuthRequired = process.env.NODE_ENV === 'production'
+    || process.env.VERCEL === '1'
+    || /^(1|true|yes)$/i.test(process.env.DASHBOARD_REQUIRE_AUTH ?? '');
+  const dashboardAuthReady = Boolean(process.env.DASHBOARD_AUTH_TOKEN?.trim());
 
   const blockers: string[] = [];
   const warnings: string[] = [];
@@ -148,6 +155,14 @@ export function getProjectLaunchReadiness(projectId: string): ProjectLaunchReadi
   }
   if (policy.allowedActions.includes('deploy') && !vercelAuth.ready) {
     warnings.push(vercelAuth.reason ?? 'Deploy actions may pause because Vercel auth is not ready.');
+  }
+  if (projectId === 'organism' && policy.allowedActions.includes('deploy') && !dashboardAuthReady) {
+    const message = 'Dashboard command surface has no DASHBOARD_AUTH_TOKEN configured.';
+    if (dashboardAuthRequired) {
+      blockers.push(message);
+    } else {
+      warnings.push(`${message} Local development can run open, but production will reject unauthenticated requests.`);
+    }
   }
   if (gitRemoteProtocol === 'ssh' && !hostTrusted) {
     blockers.push('GitHub SSH host trust is not established for this machine.');
@@ -190,6 +205,8 @@ export function getProjectLaunchReadiness(projectId: string): ProjectLaunchReadi
     vercelTokenPresent: vercelAuth.tokenPresent,
     vercelAuthReady: vercelAuth.ready,
     vercelAuthMode: vercelAuth.mode,
+    dashboardAuthReady,
+    dashboardAuthRequired,
     tasklistPresent: tasklistPath ? fs.existsSync(tasklistPath) : false,
     configPresent: fs.existsSync(configPath),
     rootAgentsPresent: fs.existsSync(rootAgentsPath),

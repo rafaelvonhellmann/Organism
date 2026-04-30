@@ -71,7 +71,7 @@ export default class CodexReviewAgent extends BaseAgent {
         collaborators: [],
         reviewerLane: 'MEDIUM',
         description: 'OpenAI review lane for logic, security, edge cases, and performance blind-spot coverage',
-        status: 'shadow',
+        status: 'active',
         model: 'gpt5.4',
         frequencyTier: 'on-demand',
         projectScope: 'all',

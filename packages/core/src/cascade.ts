@@ -1,9 +1,9 @@
-import { createTask, getDb } from './task-queue.js';
-import { writeAudit } from './audit.js';
+import { getDb } from './task-queue.js';
 import { extractFindings, extractHandoffs } from './agent-envelope.js';
 import { hasEquivalentFollowup } from './followup-dedupe.js';
 import { canCreatePolicyFollowup, inheritFollowupPolicy, parseFollowupPolicy } from './followup-policy.js';
-import { HandoffRequest, RiskLane, TypedFinding } from '../../shared/src/types.js';
+import { HandoffRequest, RiskLane, TypedFinding, WorkflowKind } from '../../shared/src/types.js';
+import { createGovernedFollowupTask } from './governed-tasks.js';
 
 const CASCADE_ELIGIBLE_AGENTS = new Set(['security-audit', 'product-manager', 'cto', 'devops']);
 const MAX_DAILY_CASCADES_PER_AGENT = 3;
@@ -30,7 +30,7 @@ function recentCascadeCount(agent: string, projectId: string): number {
   return row?.c ?? 0;
 }
 
-function createCascadeTask(task: {
+async function createCascadeTask(task: {
   id: string;
   agent: string;
   description: string;
@@ -38,57 +38,54 @@ function createCascadeTask(task: {
   input: string | null;
   project_id: string;
   goal_id: string | null;
-}, targetAgent: string, workflowKind: string, description: string, lane: RiskLane, detail: Record<string, unknown>): boolean {
+}, targetAgent: string, workflowKind: WorkflowKind, description: string, lane: RiskLane, detail: Record<string, unknown>): Promise<boolean> {
   if (hasEquivalentFollowup({
     goalId: task.goal_id,
     projectId: task.project_id,
     agent: targetAgent,
-    workflowKind,
+    workflowKind: workflowKind,
     description,
     sourceTaskId: task.id,
   })) return false;
   if (recentCascadeCount(targetAgent, task.project_id) >= MAX_DAILY_CASCADES_PER_AGENT) return false;
 
   try {
-    const created = createTask({
-      agent: targetAgent,
+    const created = await createGovernedFollowupTask({
+      source: {
+        id: task.id,
+        agent: task.agent,
+        projectId: task.project_id,
+        goalId: task.goal_id,
+      },
+      preferredAgent: targetAgent,
+      workflowKind,
       lane,
       description,
-      input: {
+      input: (route) => ({
         ...detail,
         sourceTaskId: task.id,
         sourceAgent: task.agent,
         sourceOutput: task.output.slice(0, 3000),
         projectId: task.project_id,
-        execution: workflowKind === 'implement',
+        execution: route.workflowKind === 'implement' || route.workflowKind === 'recover',
         ...inheritFollowupPolicy(task.input ? JSON.parse(task.input) : null),
-      },
+      }),
       parentTaskId: task.id,
       projectId: task.project_id,
-      goalId: task.goal_id ?? undefined,
-      workflowKind,
-      sourceKind: 'agent_followup',
-    });
-
-    writeAudit({
-      agent: 'cascade',
-      taskId: created.id,
-      action: 'task_created',
-      payload: {
-        sourceTaskId: task.id,
-        sourceAgent: task.agent,
-        targetAgent,
+      goalId: task.goal_id,
+      allowReadOnlyDegrade: true,
+      auditPayload: {
+        followupType: 'cascade',
         workflowKind,
       },
-      outcome: 'success',
     });
-    return true;
+    return created !== null;
   } catch {
     return false;
   }
 }
 
-function fallbackFindingCascade(task: {
+async function fallbackFindingCascade(task: {
   id: string;
   agent: string;
   description: string;
@@ -96,13 +93,13 @@ function fallbackFindingCascade(task: {
   input: string | null;
   project_id: string;
   goal_id: string | null;
-}, findings: TypedFinding[], followupPolicy: ReturnType<typeof parseFollowupPolicy>, isAgentFollowup: boolean): number {
+}, findings: TypedFinding[], followupPolicy: ReturnType<typeof parseFollowupPolicy>, isAgentFollowup: boolean): Promise<number> {
   let created = 0;
   for (const finding of findings) {
     if (!finding.actionable || !finding.remediation) continue;
     const workflowKind = finding.followupKind ?? 'implement';
     if (!canCreatePolicyFollowup(followupPolicy, workflowKind, created, isAgentFollowup)) continue;
-    if (createCascadeTask(
+    if (await createCascadeTask(
       task,
       'engineering',
       workflowKind,
@@ -119,7 +116,7 @@ function fallbackFindingCascade(task: {
   return created;
 }
 
-function handoffCascade(task: {
+async function handoffCascade(task: {
   id: string;
   agent: string;
   description: string;
@@ -127,11 +124,11 @@ function handoffCascade(task: {
   input: string | null;
   project_id: string;
   goal_id: string | null;
-}, handoffs: HandoffRequest[], followupPolicy: ReturnType<typeof parseFollowupPolicy>, isAgentFollowup: boolean): number {
+}, handoffs: HandoffRequest[], followupPolicy: ReturnType<typeof parseFollowupPolicy>, isAgentFollowup: boolean): Promise<number> {
   let created = 0;
   for (const handoff of handoffs) {
     if (!canCreatePolicyFollowup(followupPolicy, handoff.workflowKind, created, isAgentFollowup)) continue;
-    if (createCascadeTask(
+    if (await createCascadeTask(
       task,
       handoff.targetAgent,
       handoff.workflowKind,
@@ -152,7 +149,7 @@ function handoffCascade(task: {
  * Check recently completed tasks and create typed cascade follow-ups.
  * Cascades are now limited to structured handoffs and critical actionable findings.
  */
-export function processCascades(): number {
+export async function processCascades(): Promise<number> {
   const completed = getDb().prepare(`
     SELECT id, agent, description, input, output, project_id, goal_id, source_kind
     FROM tasks
@@ -186,10 +183,10 @@ export function processCascades(): number {
         .filter((finding) => finding.actionable && (finding.severity === 'CRITICAL' || finding.severity === 'HIGH'))
         .slice(0, 2);
 
-      created += handoffCascade(task, handoffs, followupPolicy, isAgentFollowup);
+      created += await handoffCascade(task, handoffs, followupPolicy, isAgentFollowup);
 
       if (handoffs.length === 0) {
-        created += fallbackFindingCascade(task, findings, followupPolicy, isAgentFollowup);
+        created += await fallbackFindingCascade(task, findings, followupPolicy, isAgentFollowup);
       }
     } catch {
       // Ignore legacy outputs without structured follow-ups.

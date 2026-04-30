@@ -30,6 +30,7 @@ function buildPolicy(overrides: Partial<ProjectPolicy> = {}): ProjectPolicy {
       minimumHealthyRunsForDeploy: 3,
       initialWorkflowLimit: 0,
       initialAllowedWorkflows: [],
+      autoDeployAfterHealthyStreak: false,
     },
     autonomySurfaces: {
       readOnlyCanary: false,
@@ -44,6 +45,7 @@ function buildPolicy(overrides: Partial<ProjectPolicy> = {}): ProjectPolicy {
       cadence: 'daily',
       dayOfWeek: null,
       hour: 8,
+      idleCooldownMinutes: 24 * 60,
       workflows: ['review', 'validate', 'recover', 'implement'],
       maxFollowups: 0,
       description: 'Disabled in unit tests',

@@ -8,10 +8,11 @@
  * 2. One-shot: dispatchPendingTasks() — dispatch once and return (tests, scripts)
  */
 
-import { getPendingTasks, getRecentCompletedTasks, isTaskShadowMode, markQualityReviewed, createTask, releaseRetryScheduledTasks } from './task-queue.js';
+import { getPendingTasks, getRecentCompletedTasks, getTask, isTaskShadowMode, markQualityReviewed, releaseRetryScheduledTasks } from './task-queue.js';
 import { BaseAgent } from '../../../agents/_base/agent.js';
 import { isRateLimited, getRateLimitStatus } from '../../../agents/_base/mcp-client.js';
 import { isAgentBudgetFrozen } from './budget.js';
+import { createGovernedFollowupTask } from './governed-tasks.js';
 
 // Concrete agent implementations — add each new agent here as it's built.
 // The key must match the `owner` field in capability-registry.json.
@@ -273,6 +274,33 @@ export async function dispatchPendingTasks(maxPasses = 4): Promise<number> {
   }
 }
 
+export async function dispatchTaskById(taskId: string): Promise<boolean> {
+  if (isRateLimited()) {
+    const status = getRateLimitStatus();
+    const resetDate = status.resetsAt ? new Date(status.resetsAt) : null;
+    console.log(`[Runner] Rate limited — single-task dispatch paused until ${resetDate?.toLocaleString('en-AU', { timeZone: 'Australia/Sydney' }) ?? 'unknown'}.`);
+    return false;
+  }
+
+  const task = getTask(taskId);
+  if (!task) {
+    throw new Error(`Task ${taskId} was not found`);
+  }
+  if (task.status !== 'pending') {
+    console.log(`[Runner] Task ${taskId} is ${task.status}; single-task dispatch skipped.`);
+    return false;
+  }
+
+  const AgentClass = AGENT_MAP[task.agent];
+  if (!AgentClass) {
+    throw new Error(`No implementation registered for '${task.agent}'. Add it to AGENT_MAP in agent-runner.ts.`);
+  }
+
+  const agent = new AgentClass();
+  await agent.runTaskById(taskId);
+  return true;
+}
+
 /**
  * Collect recently completed tasks that haven't been quality-reviewed,
  * and create ONE batched quality-agent task per group of 5+ instead of one per task.
@@ -289,8 +317,16 @@ async function batchQualityReviews(): Promise<void> {
 
   if (needsQualityReview.length >= 5) {
     try {
-      createTask({
-        agent: 'quality-agent',
+      const projectId = needsQualityReview[0]?.projectId ?? 'organism';
+      const created = await createGovernedFollowupTask({
+        source: {
+          id: needsQualityReview[0]!.id,
+          agent: 'agent-runner',
+          projectId,
+          goalId: needsQualityReview[0]?.goalId ?? null,
+        },
+        preferredAgent: 'quality-agent',
+        workflowKind: 'validate',
         lane: 'LOW',
         description: `Batch quality review: ${needsQualityReview.length} tasks`,
         input: {
@@ -303,8 +339,13 @@ async function batchQualityReviews(): Promise<void> {
               : JSON.stringify(t.output).slice(0, 500),
           })),
         },
-        projectId: needsQualityReview[0]?.projectId ?? 'organism',
+        projectId,
+        goalId: needsQualityReview[0]?.goalId ?? null,
+        parentTaskId: needsQualityReview[0]!.id,
+        allowReadOnlyDegrade: true,
+        auditPayload: { followupType: 'batch_quality_review' },
       });
+      if (!created) return;
 
       // Mark these tasks as quality-reviewed so they are not batched again
       markQualityReviewed(needsQualityReview.map(t => t.id));

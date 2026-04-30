@@ -1,10 +1,8 @@
-import { getDb, createTask, getTask } from './task-queue.js';
-import { writeAudit } from './audit.js';
+import { getDb, getTask } from './task-queue.js';
 import { extractFindings, extractHandoffs } from './agent-envelope.js';
 import { loadRegistry } from './registry.js';
-import { hasEquivalentFollowup } from './followup-dedupe.js';
 import { canCreatePolicyFollowup, inheritFollowupPolicy, parseFollowupPolicy } from './followup-policy.js';
-import { resolveFollowupRoute } from './followup-routing.js';
+import { createGovernedFollowupTask } from './governed-tasks.js';
 import { RiskLane, TypedFinding, HandoffRequest, WorkflowKind } from '../../shared/src/types.js';
 
 const PROJECT_REVIEW_MODES = new Set(['project_review', 'autonomy_cycle_review', 'self_audit_review']);
@@ -206,7 +204,7 @@ function tightenTaskSummary(description: string, maxLength = 140): string {
   return compacted.length > maxLength ? `${compacted.slice(0, maxLength - 3).trimEnd()}...` : compacted;
 }
 
-function createFindingTask(task: {
+async function createFindingTask(task: {
   id: string;
   agent: string;
   description: string;
@@ -214,36 +212,27 @@ function createFindingTask(task: {
   input: string | null;
   project_id: string;
   goal_id: string | null;
-}, finding: TypedFinding): boolean {
+}, finding: TypedFinding): Promise<boolean> {
   const requestedAgent = resolveTargetAgent(finding.targetCapability, 'engineering');
   const requestedWorkflowKind = finding.followupKind ?? 'implement';
   const requestedLane = laneFromSeverity(finding.severity);
   const followupDescription = tightenTaskSummary(finding.remediation ?? finding.summary);
-  const route = resolveFollowupRoute({
-    projectId: task.project_id,
+  const created = await createGovernedFollowupTask({
+    source: {
+      id: task.id,
+      agent: task.agent,
+      projectId: task.project_id,
+      goalId: task.goal_id,
+    },
     preferredAgent: requestedAgent,
     workflowKind: requestedWorkflowKind,
     lane: requestedLane,
     description: followupDescription,
-    allowReadOnlyDegrade: true,
-  });
-  if (!route) return false;
-
-  if (hasEquivalentFollowup({
-    goalId: task.goal_id,
     projectId: task.project_id,
-    agent: route.agent,
-    workflowKind: route.workflowKind,
-    description: followupDescription,
-    sourceTaskId: task.id,
-  })) return false;
-
-  try {
-    const created = createTask({
-      agent: route.agent,
-      lane: route.lane,
-      description: followupDescription,
-      input: {
+    goalId: task.goal_id,
+    parentTaskId: task.id,
+    allowReadOnlyDegrade: true,
+    input: (route) => ({
         sourceTaskId: task.id,
         sourceAgent: task.agent,
         sourceFindingId: finding.id,
@@ -253,42 +242,17 @@ function createFindingTask(task: {
         autoExecuted: true,
         execution: route.workflowKind === 'implement' || route.workflowKind === 'recover',
         projectId: task.project_id,
-        requestedTargetAgent: requestedAgent,
-        requestedWorkflowKind,
-        routedFollowup: route.rerouted,
         ...inheritFollowupPolicy(task.input ? JSON.parse(task.input) : null),
-      },
-      parentTaskId: task.id,
-      projectId: task.project_id,
-      goalId: task.goal_id ?? undefined,
-      workflowKind: route.workflowKind,
-      sourceKind: 'agent_followup',
-    });
-
-    writeAudit({
-      agent: 'auto-executor',
-      taskId: created.id,
-      action: 'task_created',
-      payload: {
-        sourceTaskId: task.id,
-        sourceAgent: task.agent,
+      }),
+    auditPayload: {
         followupType: 'finding',
-        targetAgent: route.agent,
         findingId: finding.id,
-        workflowKind: route.workflowKind,
-        requestedTargetAgent: requestedAgent,
-        requestedWorkflowKind,
-        rerouted: route.rerouted,
       },
-      outcome: 'success',
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  });
+  return created !== null;
 }
 
-function createHandoffTask(task: {
+async function createHandoffTask(task: {
   id: string;
   agent: string;
   description: string;
@@ -296,32 +260,23 @@ function createHandoffTask(task: {
   input: string | null;
   project_id: string;
   goal_id: string | null;
-}, handoff: HandoffRequest): boolean {
-  const route = resolveFollowupRoute({
-    projectId: task.project_id,
+}, handoff: HandoffRequest): Promise<boolean> {
+  const created = await createGovernedFollowupTask({
+    source: {
+      id: task.id,
+      agent: task.agent,
+      projectId: task.project_id,
+      goalId: task.goal_id,
+    },
     preferredAgent: handoff.targetAgent,
     workflowKind: handoff.workflowKind,
     lane: handoff.workflowKind === 'validate' ? 'LOW' : 'MEDIUM',
     description: handoff.summary,
-    allowReadOnlyDegrade: true,
-  });
-  if (!route) return false;
-
-  if (hasEquivalentFollowup({
-    goalId: task.goal_id,
     projectId: task.project_id,
-    agent: route.agent,
-    workflowKind: route.workflowKind,
-    description: handoff.summary,
-    sourceTaskId: task.id,
-  })) return false;
-
-  try {
-    const created = createTask({
-      agent: route.agent,
-      lane: route.lane,
-      description: handoff.summary,
-      input: {
+    goalId: task.goal_id,
+    parentTaskId: task.id,
+    allowReadOnlyDegrade: true,
+    input: (route) => ({
         sourceTaskId: task.id,
         sourceAgent: task.agent,
         handoffId: handoff.id,
@@ -330,42 +285,17 @@ function createHandoffTask(task: {
         autoExecuted: true,
         execution: handoff.execution === true && (route.workflowKind === 'implement' || route.workflowKind === 'recover'),
         projectId: task.project_id,
-        requestedTargetAgent: handoff.targetAgent,
-        requestedWorkflowKind: handoff.workflowKind,
-        routedFollowup: route.rerouted,
         ...inheritFollowupPolicy(task.input ? JSON.parse(task.input) : null),
-      },
-      parentTaskId: task.id,
-      projectId: task.project_id,
-      goalId: task.goal_id ?? undefined,
-      workflowKind: route.workflowKind,
-      sourceKind: 'agent_followup',
-    });
-
-    writeAudit({
-      agent: 'auto-executor',
-      taskId: created.id,
-      action: 'task_created',
-      payload: {
-        sourceTaskId: task.id,
-        sourceAgent: task.agent,
+      }),
+    auditPayload: {
         followupType: 'handoff',
         handoffId: handoff.id,
-        targetAgent: route.agent,
-        workflowKind: route.workflowKind,
-        requestedTargetAgent: handoff.targetAgent,
-        requestedWorkflowKind: handoff.workflowKind,
-        rerouted: route.rerouted,
       },
-      outcome: 'success',
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  });
+  return created !== null;
 }
 
-function createRevisionFollowupTask(
+async function createRevisionFollowupTask(
   task: {
     id: string;
     agent: string;
@@ -376,7 +306,7 @@ function createRevisionFollowupTask(
     goal_id: string | null;
   },
   output: Record<string, unknown>,
-): boolean {
+): Promise<boolean> {
   const decision = extractDecision(output);
   if (decision !== 'NEEDS_REVISION') return false;
 
@@ -394,78 +324,43 @@ function createRevisionFollowupTask(
   const requestedAgent = originalTask.agent === 'quality-agent' ? 'engineering' : originalTask.agent;
   const requestedWorkflowKind = reviewFollowupWorkflow(originalTask.workflowKind);
   const summary = tightenTaskSummary(`Address ${task.agent} findings for "${compactTaskFocus(originalTask.description)}"`);
-  const route = resolveFollowupRoute({
-    projectId: originalTask.projectId ?? task.project_id,
+  const reviewText = extractReviewText(output).slice(0, 6000);
+  const created = await createGovernedFollowupTask({
+    source: {
+      id: task.id,
+      agent: task.agent,
+      projectId: task.project_id,
+      goalId: task.goal_id,
+    },
     preferredAgent: requestedAgent,
     workflowKind: requestedWorkflowKind,
     lane: originalTask.lane === 'HIGH' ? 'MEDIUM' : 'LOW',
     description: summary,
-    allowReadOnlyDegrade: true,
-  });
-  if (!route) return false;
-
-  if (hasEquivalentFollowup({
-    goalId: originalTask.goalId ?? task.goal_id,
     projectId: originalTask.projectId ?? task.project_id,
-    agent: route.agent,
-    workflowKind: route.workflowKind,
-    description: summary,
-    sourceTaskId: task.id,
-  })) return false;
-
-  const reviewText = extractReviewText(output).slice(0, 6000);
-
-    try {
-      const created = createTask({
-        agent: route.agent,
-        lane: route.lane,
-        description: summary,
-        input: {
+    goalId: originalTask.goalId ?? task.goal_id,
+    parentTaskId: originalTask.id,
+    allowReadOnlyDegrade: true,
+    input: (route) => ({
           sourceTaskId: task.id,
           sourceAgent: task.agent,
           originalTaskId: originalTask.id,
-        originalDescription: originalTask.description,
+          originalDescription: originalTask.description,
           qualityFeedback: reviewText,
           sourceOutput: reviewText,
           autoExecuted: true,
           execution: route.agent === 'engineering' && (route.workflowKind === 'implement' || route.workflowKind === 'recover'),
           projectId: originalTask.projectId ?? task.project_id,
-          requestedTargetAgent: requestedAgent,
-          requestedWorkflowKind,
-          routedFollowup: route.rerouted,
           ...inheritFollowupPolicy(task.input ? JSON.parse(task.input) : null),
-        },
-        parentTaskId: originalTask.id,
-        projectId: originalTask.projectId ?? task.project_id,
-        goalId: originalTask.goalId ?? task.goal_id ?? undefined,
-        workflowKind: route.workflowKind,
-        sourceKind: 'agent_followup',
-      });
-
-    writeAudit({
-      agent: 'auto-executor',
-      taskId: created.id,
-      action: 'task_created',
-      payload: {
-          sourceTaskId: task.id,
-          sourceAgent: task.agent,
+        }),
+    auditPayload: {
           followupType: 'review_revision',
           originalTaskId: originalTask.id,
-          targetAgent: route.agent,
-          workflowKind: route.workflowKind,
-          requestedTargetAgent: requestedAgent,
-          requestedWorkflowKind,
-          rerouted: route.rerouted,
         },
-        outcome: 'success',
-      });
-    return true;
-  } catch {
-    return false;
-  }
+  });
+  return created !== null;
 }
 
-function createEngineeringRecoveryTask(
+async function createEngineeringRecoveryTask(
   task: {
     id: string;
     agent: string;
@@ -476,7 +371,7 @@ function createEngineeringRecoveryTask(
     goal_id: string | null;
   },
   output: Record<string, unknown>,
-): boolean {
+): Promise<boolean> {
   if (task.agent !== 'engineering') return false;
 
   const payload = typeof output.payload === 'object' && output.payload
@@ -527,31 +422,22 @@ function createEngineeringRecoveryTask(
   const summary = failedVerification
     ? `Fix ${primaryVerificationTarget} in preserved worktree for "${compactFocus}"`
     : `Recover preserved worktree handoff for "${compactFocus}"`;
-  const route = resolveFollowupRoute({
-    projectId: task.project_id,
+  const created = await createGovernedFollowupTask({
+    source: {
+      id: task.id,
+      agent: task.agent,
+      projectId: task.project_id,
+      goalId: task.goal_id,
+    },
     preferredAgent: 'engineering',
     workflowKind: 'recover',
     lane: failedVerification ? 'MEDIUM' : 'LOW',
     description: summary,
-    allowReadOnlyDegrade: true,
-  });
-  if (!route) return false;
-
-  if (hasEquivalentFollowup({
-    goalId: task.goal_id,
     projectId: task.project_id,
-    agent: route.agent,
-    workflowKind: route.workflowKind,
-    description: summary,
-    sourceTaskId: task.id,
-  })) return false;
-
-  try {
-    const created = createTask({
-      agent: route.agent,
-      lane: route.lane,
-      description: summary,
-      input: {
+    goalId: task.goal_id,
+    parentTaskId: task.id,
+    allowReadOnlyDegrade: true,
+    input: (route) => ({
         sourceTaskId: task.id,
         sourceAgent: task.agent,
         sourceOutput: extractReviewText(output).slice(0, 6000),
@@ -560,40 +446,17 @@ function createEngineeringRecoveryTask(
         autoExecuted: true,
         execution: route.agent === 'engineering' && (route.workflowKind === 'implement' || route.workflowKind === 'recover'),
         projectId: task.project_id,
-        requestedTargetAgent: 'engineering',
-        requestedWorkflowKind: 'recover',
-        routedFollowup: route.rerouted,
         ...inheritFollowupPolicy(task.input ? JSON.parse(task.input) : null),
-      },
-      parentTaskId: task.id,
-      projectId: task.project_id,
-      goalId: task.goal_id ?? undefined,
-      workflowKind: route.workflowKind,
-      sourceKind: 'agent_followup',
-    });
-
-    writeAudit({
-      agent: 'auto-executor',
-      taskId: created.id,
-      action: 'task_created',
-      payload: {
-        sourceTaskId: task.id,
-        sourceAgent: task.agent,
+      }),
+    auditPayload: {
         followupType: 'engineering_recovery',
         recoverWorktreePath,
-        targetAgent: route.agent,
-        workflowKind: route.workflowKind,
-        rerouted: route.rerouted,
       },
-      outcome: 'success',
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  });
+  return created !== null;
 }
 
-function createEngineeringValidationTask(
+async function createEngineeringValidationTask(
   task: {
     id: string;
     agent: string;
@@ -605,7 +468,7 @@ function createEngineeringValidationTask(
     workflow_kind?: WorkflowKind;
   },
   output: Record<string, unknown>,
-): boolean {
+): Promise<boolean> {
   if (task.agent !== 'engineering') return false;
   if (task.workflow_kind !== 'implement' && task.workflow_kind !== 'recover') return false;
 
@@ -647,31 +510,22 @@ function createEngineeringValidationTask(
 
   const compactFocus = compactTaskFocus(task.description);
   const summary = tightenTaskSummary(`Validate implementation for "${compactFocus}"`);
-  const route = resolveFollowupRoute({
-    projectId: task.project_id,
+  const created = await createGovernedFollowupTask({
+    source: {
+      id: task.id,
+      agent: task.agent,
+      projectId: task.project_id,
+      goalId: task.goal_id,
+    },
     preferredAgent: 'quality-agent',
     workflowKind: 'validate',
     lane: 'LOW',
     description: summary,
-    allowReadOnlyDegrade: true,
-  });
-  if (!route) return false;
-
-  if (hasEquivalentFollowup({
-    goalId: task.goal_id,
     projectId: task.project_id,
-    agent: route.agent,
-    workflowKind: route.workflowKind,
-    description: summary,
-    sourceTaskId: task.id,
-  })) return false;
-
-  try {
-    const created = createTask({
-      agent: route.agent,
-      lane: route.lane,
-      description: summary,
-      input: {
+    goalId: task.goal_id,
+    parentTaskId: task.id,
+    allowReadOnlyDegrade: true,
+    input: () => ({
         sourceTaskId: task.id,
         sourceAgent: task.agent,
         originalTaskId: task.id,
@@ -681,36 +535,13 @@ function createEngineeringValidationTask(
         autoExecuted: true,
         execution: false,
         projectId: task.project_id,
-        requestedTargetAgent: 'quality-agent',
-        requestedWorkflowKind: 'validate',
-        routedFollowup: route.rerouted,
         ...inheritFollowupPolicy(task.input ? JSON.parse(task.input) : null),
-      },
-      parentTaskId: task.id,
-      projectId: task.project_id,
-      goalId: task.goal_id ?? undefined,
-      workflowKind: route.workflowKind,
-      sourceKind: 'agent_followup',
-    });
-
-    writeAudit({
-      agent: 'auto-executor',
-      taskId: created.id,
-      action: 'task_created',
-      payload: {
-        sourceTaskId: task.id,
-        sourceAgent: task.agent,
+      }),
+    auditPayload: {
         followupType: 'engineering_validation',
-        targetAgent: route.agent,
-        workflowKind: route.workflowKind,
-        rerouted: route.rerouted,
       },
-      outcome: 'success',
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  });
+  return created !== null;
 }
 
 /**
@@ -757,27 +588,27 @@ export async function processApprovedFindings(): Promise<number> {
       for (const finding of findings) {
         const workflowKind = finding.followupKind ?? 'implement';
         if (!canCreatePolicyFollowup(followupPolicy, workflowKind, createdForTask, isAgentFollowup)) continue;
-        if (createFindingTask(task, finding)) {
+        if (await createFindingTask(task, finding)) {
           created++;
           createdForTask++;
         }
       }
       for (const handoff of handoffs) {
         if (!canCreatePolicyFollowup(followupPolicy, handoff.workflowKind, createdForTask, isAgentFollowup)) continue;
-        if (createHandoffTask(task, handoff)) {
+        if (await createHandoffTask(task, handoff)) {
           created++;
           createdForTask++;
         }
       }
-      if (canCreatePolicyFollowup(followupPolicy, 'implement', createdForTask, isAgentFollowup) && createRevisionFollowupTask(task, output)) {
+      if (canCreatePolicyFollowup(followupPolicy, 'implement', createdForTask, isAgentFollowup) && await createRevisionFollowupTask(task, output)) {
         created++;
         createdForTask++;
       }
-      if (canCreatePolicyFollowup(followupPolicy, 'validate', createdForTask, isAgentFollowup) && createEngineeringValidationTask(task, output)) {
+      if (canCreatePolicyFollowup(followupPolicy, 'validate', createdForTask, isAgentFollowup) && await createEngineeringValidationTask(task, output)) {
         created++;
         createdForTask++;
       }
-      if (canCreatePolicyFollowup(followupPolicy, 'recover', createdForTask, isAgentFollowup) && createEngineeringRecoveryTask(task, output)) {
+      if (canCreatePolicyFollowup(followupPolicy, 'recover', createdForTask, isAgentFollowup) && await createEngineeringRecoveryTask(task, output)) {
         created++;
         createdForTask++;
       }

@@ -1,8 +1,14 @@
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createTask, getDb, getTask } from './task-queue.js';
-import { createRunSession, createRunStep, ensureGoal, getRunSession, listArtifacts, listRunSteps } from './run-state.js';
-import { autoHealPausedReviewTasks, recoverInterruptedWork } from './run-recovery.js';
+import { configureTestState } from './test-state.js';
+
+configureTestState(import.meta.url);
+
+const { createTask, getDb, getTask } = await import('./task-queue.js');
+const { createRunSession, createRunStep, ensureGoal, getRunSession, listArtifacts, listRunSteps } = await import(
+  './run-state.js'
+);
+const { autoHealPausedReviewTasks, recoverInterruptedWork } = await import('./run-recovery.js');
 
 function resetRuntimeState() {
   const db = getDb();
@@ -208,7 +214,7 @@ describe('run-recovery', () => {
     assert.equal(updatedTask?.retryAt, null);
   });
 
-  it('auto-heals paused review work after transport failures', () => {
+  it('auto-heals paused review work after transport failures', async () => {
     const goal = ensureGoal({
       projectId: 'tokens-for-good',
       title: 'Resume paused review pipeline',
@@ -244,7 +250,7 @@ describe('run-recovery', () => {
       WHERE id = ?
     `).run(1_000_000 - 10_000, task.id);
 
-    const healed = autoHealPausedReviewTasks({
+    const healed = await autoHealPausedReviewTasks({
       now: 1_000_000,
       retryDelayMs: 120_000,
       cooldownMs: 1_000,
@@ -263,7 +269,7 @@ describe('run-recovery', () => {
     assert.equal(updatedTask?.retryAt, 1_120_000);
   });
 
-  it('retires paused review debt when a newer execution pass supersedes it', () => {
+  it('retires paused review debt when a newer execution pass supersedes it', async () => {
     const goal = ensureGoal({
       projectId: 'tokens-for-good',
       title: 'Autonomy cycle: tokens-for-good',
@@ -316,7 +322,7 @@ describe('run-recovery', () => {
       WHERE id = ?
     `).run(1_000_000, executionTask.id);
 
-    const healed = autoHealPausedReviewTasks({
+    const healed = await autoHealPausedReviewTasks({
       now: 1_200_000,
       retryDelayMs: 120_000,
       cooldownMs: 1_000,
@@ -334,7 +340,7 @@ describe('run-recovery', () => {
     assert.match(updatedTask?.error ?? '', /superseded/i);
   });
 
-  it('reroutes exhausted paused review work into one bounded fallback task', () => {
+  it('reroutes exhausted paused review work into one bounded fallback task', async () => {
     const goal = ensureGoal({
       projectId: 'tokens-for-good',
       title: 'Recover hosted validator work',
@@ -345,7 +351,7 @@ describe('run-recovery', () => {
     const original = createTask({
       agent: 'engineering',
       lane: 'MEDIUM',
-      description: 'Extend hosted validator canary mode with bounded seeded data',
+      description: 'Hosted validator fix',
       input: { projectId: 'tokens-for-good', execution: true },
       projectId: 'tokens-for-good',
       goalId: goal.id,
@@ -363,7 +369,7 @@ describe('run-recovery', () => {
     const pausedTask = createTask({
       agent: 'codex-review',
       lane: 'LOW',
-      description: 'Codex review: "Extend hosted validator canary mode with bounded seeded data"',
+      description: 'Codex review: "Hosted validator fix"',
       input: { projectId: 'tokens-for-good', originalTaskId: original.id, sourceTaskId: original.id },
       projectId: 'tokens-for-good',
       goalId: goal.id,
@@ -381,7 +387,7 @@ describe('run-recovery', () => {
       WHERE id = ?
     `).run(1_400_000, pausedTask.id);
 
-    const healed = autoHealPausedReviewTasks({
+    const healed = await autoHealPausedReviewTasks({
       now: 1_500_000,
       retryDelayMs: 120_000,
       cooldownMs: 1_000,
@@ -416,7 +422,7 @@ describe('run-recovery', () => {
     assert.match(fallback.description, /Resolve blocked codex-review review/i);
   });
 
-  it('reroutes exhausted Synapse review work into one allowed read-only fallback task', () => {
+  it('reroutes exhausted Synapse review work into one allowed read-only fallback task', async () => {
     const goal = ensureGoal({
       projectId: 'synapse',
       title: 'Medical-safe review recovery',
@@ -463,7 +469,7 @@ describe('run-recovery', () => {
       WHERE id = ?
     `).run(1_400_000, pausedTask.id);
 
-    const healed = autoHealPausedReviewTasks({
+    const healed = await autoHealPausedReviewTasks({
       now: 1_500_000,
       retryDelayMs: 120_000,
       cooldownMs: 1_000,
@@ -489,7 +495,7 @@ describe('run-recovery', () => {
     assert.equal(getRunSession(pausedRun.id)?.status, 'failed');
   });
 
-  it('auto-heals masked paused review work by inferring historical transport failures', () => {
+  it('auto-heals masked paused review work by inferring historical transport failures', async () => {
     const goal = ensureGoal({
       projectId: 'organism',
       title: 'Scheduled self-audit of organism',
@@ -544,7 +550,7 @@ describe('run-recovery', () => {
       WHERE id = ?
     `).run(900_000, pausedTask.id);
 
-    const healed = autoHealPausedReviewTasks({
+    const healed = await autoHealPausedReviewTasks({
       now: 1_000_000,
       retryDelayMs: 120_000,
       cooldownMs: 1_000,

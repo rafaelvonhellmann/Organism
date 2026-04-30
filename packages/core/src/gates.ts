@@ -1,5 +1,5 @@
 import * as crypto from 'crypto';
-import { getDb } from './task-queue.js';
+import { approveTask, getDb, rejectTask } from './task-queue.js';
 import { getSecretOrNull } from '../../shared/src/secrets.js';
 import { GateId, GateDecision, GateRecord } from '../../shared/src/types.js';
 import { OrganismError } from '../../shared/src/error-taxonomy.js';
@@ -44,7 +44,29 @@ export function triggerG4Gate(taskId: string, summary: string): GateRecord {
 
 // Called when Rafael clicks APPROVE or REJECT in Telegram
 export function resolveG4Gate(gateId: string, decision: 'approved' | 'rejected', reason?: string): GateRecord {
-  return updateGate(gateId, decision, 'rafael', reason);
+  const existingGate = getGate(gateId);
+  if (!existingGate) {
+    throw new Error(`${OrganismError.GATE_BLOCKED} GATE_BLOCKED: Gate ${gateId} does not exist`);
+  }
+  if (existingGate.gate !== 'G4') {
+    throw new Error(`${OrganismError.GATE_BLOCKED} GATE_BLOCKED: Gate ${gateId} is ${existingGate.gate}, not G4`);
+  }
+  if (existingGate.decision !== 'pending') {
+    if (existingGate.decision === decision) {
+      return existingGate;
+    }
+    throw new Error(
+      `${OrganismError.GATE_BLOCKED} GATE_BLOCKED: G4 gate ${gateId} is already ${existingGate.decision} and cannot be changed to ${decision}`
+    );
+  }
+
+  const gate = updateGate(gateId, decision, 'rafael', reason);
+  if (decision === 'approved') {
+    approveTask(gate.taskId);
+  } else {
+    rejectTask(gate.taskId, reason ?? 'Rafael rejected the G4 gate');
+  }
+  return gate;
 }
 
 function updateGate(gateId: string, decision: GateDecision, decidedBy: string, reason?: string): GateRecord {
@@ -84,6 +106,16 @@ export function getPendingG4Gates(): GateRecord[] {
     decidedAt: row.decided_at as number | undefined,
     patchPath: row.patch_path as string | undefined,
   }));
+}
+
+export function hasPendingG4GateForTask(taskId: string): boolean {
+  const row = getDb().prepare(`
+    SELECT id
+    FROM gates
+    WHERE task_id = ? AND gate = 'G4' AND decision = 'pending'
+    LIMIT 1
+  `).get(taskId) as { id: string } | undefined;
+  return !!row?.id;
 }
 
 function sendTelegramG4Notification(taskId: string, gateId: string, summary: string): void {

@@ -1,7 +1,11 @@
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { getDb, getTask } from './task-queue.js';
-import { submitTask } from './orchestrator.js';
+import { configureTestState } from './test-state.js';
+
+configureTestState(import.meta.url);
+
+const { getDb, getTask } = await import('./task-queue.js');
+const { submitTask } = await import('./orchestrator.js');
 
 describe('orchestrator early canary guard', () => {
   beforeEach(() => {
@@ -30,7 +34,7 @@ describe('orchestrator early canary guard', () => {
           workflowKind: 'ship',
         },
       ),
-      /EARLY CANARY GUARD/i,
+      /EARLY LAUNCH GUARD/i,
     );
   });
 

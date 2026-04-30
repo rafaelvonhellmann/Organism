@@ -4,12 +4,13 @@ import * as path from 'path';
 import { execFileSync, execSync } from 'child_process';
 import { getProjectAutonomyHealth } from './autonomy-governor.js';
 import { appendCommandLog, updateRunProgress } from './run-memory.js';
-import { loadProjectPolicy, getV2DeployTargets, isActionAllowed, isActionBlocked, normalizePolicyCommand, requiresApproval } from './project-policy.js';
+import { loadProjectPolicy, getV2DeployTargets, isActionBlocked, normalizePolicyCommand, requiresApproval } from './project-policy.js';
 import { createGitHubPullRequest, getPrAuthStatus } from './runtime-auth.js';
 import { createApprovalRecord, createArtifact, createInterrupt, getLatestRunForGoal } from './run-state.js';
 import { recordRuntimeEvent } from './runtime-events.js';
 import { Task, CommandProposal, ApprovalRequest, ProjectAction, ProjectPolicy } from '../../shared/src/types.js';
 import { STATE_DIR } from '../../shared/src/state-dir.js';
+import { evaluateRuntimeAction } from './action-gate.js';
 
 interface GitStatusEntry {
   code: string;
@@ -473,12 +474,25 @@ async function runOpenPrAction(task: Task, workspace: EngineeringWorkspace, comm
 }
 
 export async function runPolicyCommand(task: Task, workspace: EngineeringWorkspace, action: ProjectAction, command: string): Promise<ControllerCommandResult> {
-  if (!isActionAllowed(workspace.policy, action)) {
+  const gate = await evaluateRuntimeAction({
+    projectId: workspace.projectId,
+    action,
+    actor: 'controller',
+    taskId: task.id,
+    description: task.description,
+    command,
+    workflowKind: task.workflowKind,
+    policy: workspace.policy,
+    context: { cwd: workspace.projectPath, branchName: workspace.branchName },
+  });
+  if (!gate.allowed || gate.requiresApproval) {
     return {
       action,
       command,
       ok: false,
-      output: `Action "${action}" is not allowed by policy for ${workspace.projectId}`,
+      output: gate.allowed
+        ? gate.reason
+        : `Action "${action}" is not allowed by policy for ${workspace.projectId}: ${gate.reason}`,
     };
   }
 
@@ -529,12 +543,30 @@ function needsWorkspaceInstall(workspace: EngineeringWorkspace): boolean {
   return !fs.existsSync(path.join(workspace.projectPath, 'node_modules'));
 }
 
-function ensureWorkspaceDependencies(task: Task, workspace: EngineeringWorkspace): { ok: boolean; output: string | null } {
+async function ensureWorkspaceDependencies(task: Task, workspace: EngineeringWorkspace): Promise<{ ok: boolean; output: string | null }> {
   if (!needsWorkspaceInstall(workspace)) {
     return { ok: true, output: null };
   }
 
   const installCommand = normalizePolicyCommand(workspace.policy.commands.install) ?? workspace.policy.commands.install!;
+  const gate = await evaluateRuntimeAction({
+    projectId: workspace.projectId,
+    action: 'build',
+    actor: 'controller',
+    taskId: task.id,
+    description: task.description,
+    command: installCommand,
+    workflowKind: task.workflowKind,
+    policy: workspace.policy,
+    context: { phase: 'install', cwd: workspace.projectPath },
+  });
+  if (!gate.allowed || gate.requiresApproval) {
+    return {
+      ok: false,
+      output: gate.allowed ? gate.reason : `Dependency install blocked: ${gate.reason}`,
+    };
+  }
+
   recordToolEvent(task, 'tool.started', {
     action: 'install',
     command: installCommand,
@@ -572,18 +604,30 @@ function ensureWorkspaceDependencies(task: Task, workspace: EngineeringWorkspace
   }
 }
 
-function commitIfSafe(task: Task, workspace: EngineeringWorkspace, changedFiles: string[]): { proposals: CommandProposal[]; committed: boolean } {
+async function commitIfSafe(task: Task, workspace: EngineeringWorkspace, changedFiles: string[]): Promise<{ proposals: CommandProposal[]; committed: boolean }> {
   const proposals: CommandProposal[] = [];
   if (!changedFiles.length) return { proposals, committed: false };
 
   const commitMessage = `[agent] ${task.description.replace(/\s+/g, ' ').slice(0, 68)}`;
-  if (!isActionAllowed(workspace.policy, 'commit')) {
+  const commitCommand = `git commit -m ${quoteForCmd(commitMessage)}`;
+  const gate = await evaluateRuntimeAction({
+    projectId: workspace.projectId,
+    action: 'commit',
+    actor: 'controller',
+    taskId: task.id,
+    description: task.description,
+    command: commitCommand,
+    workflowKind: task.workflowKind,
+    policy: workspace.policy,
+    context: { changedFiles, cwd: workspace.projectPath },
+  });
+  if (!gate.allowed || gate.requiresApproval) {
     proposals.push({
       id: crypto.randomUUID(),
       action: 'commit',
-      command: `git commit -m ${quoteForCmd(commitMessage)}`,
+      command: commitCommand,
       cwd: workspace.projectPath,
-      reason: 'Commit is disabled by project policy.',
+      reason: gate.allowed ? gate.reason : `Commit is blocked by runtime policy: ${gate.reason}`,
       requiresApproval: true,
     });
     return { proposals, committed: false };
@@ -593,7 +637,7 @@ function commitIfSafe(task: Task, workspace: EngineeringWorkspace, changedFiles:
     proposals.push({
       id: crypto.randomUUID(),
       action: 'commit',
-      command: `git commit -m ${quoteForCmd(commitMessage)}`,
+      command: commitCommand,
       cwd: workspace.projectPath,
       reason: 'Workspace was already dirty before the run, so commit was deferred to avoid mixing Rafael changes with agent changes.',
       requiresApproval: true,
@@ -617,7 +661,7 @@ function commitIfSafe(task: Task, workspace: EngineeringWorkspace, changedFiles:
     proposals.push({
       id: crypto.randomUUID(),
       action: 'commit',
-      command: `git commit -m ${quoteForCmd(commitMessage)}`,
+      command: commitCommand,
       cwd: workspace.projectPath,
       reason: output,
       requiresApproval: true,
@@ -727,7 +771,7 @@ export async function finalizeEngineeringExecution(task: Task, workspace: Engine
   const changedFiles = collectChangedFiles(workspace);
   const verification: ControllerCommandResult[] = [];
   const controllerActions: ControllerCommandResult[] = [];
-  const installResult = ensureWorkspaceDependencies(task, workspace);
+  const installResult = await ensureWorkspaceDependencies(task, workspace);
 
   if (!installResult.ok) {
     verification.push({
@@ -748,7 +792,7 @@ export async function finalizeEngineeringExecution(task: Task, workspace: Engine
     verification.push(await runPolicyCommand(task, workspace, 'build', workspace.policy.commands.build));
   }
 
-  const commitResult = commitIfSafe(task, workspace, changedFiles);
+  const commitResult = await commitIfSafe(task, workspace, changedFiles);
   const commandProposals = [...commitResult.proposals];
   const approvalRequests: ApprovalRequest[] = [];
   const verificationPassed = verification.every((step) => step.ok);

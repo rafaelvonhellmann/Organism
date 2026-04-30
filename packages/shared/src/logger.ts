@@ -1,13 +1,5 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import { AuditEntry } from './types.js';
-
-const AUDIT_LOG_PATH = path.resolve(process.cwd(), 'state/audit.log');
-
-function ensureAuditDir() {
-  const dir = path.dirname(AUDIT_LOG_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
+import { appendAuditJsonl, readRecentAuditEntriesFromJsonl } from './audit-log.js';
 
 // Structured JSON log to stdout + append to audit.log
 export function log(entry: Omit<AuditEntry, 'ts'>) {
@@ -15,8 +7,7 @@ export function log(entry: Omit<AuditEntry, 'ts'>) {
   const line = JSON.stringify(full);
   console.log(line);
   try {
-    ensureAuditDir();
-    fs.appendFileSync(AUDIT_LOG_PATH, line + '\n');
+    appendAuditJsonl(full);
   } catch {
     // Never crash the agent because logging failed
   }
@@ -58,14 +49,5 @@ export function logMcpCall(
 
 // Read the last N audit entries for a given agent (for session start context)
 export function readRecentAuditEntries(agent: string, limit = 5): AuditEntry[] {
-  try {
-    if (!fs.existsSync(AUDIT_LOG_PATH)) return [];
-    const lines = fs.readFileSync(AUDIT_LOG_PATH, 'utf8').trim().split('\n').filter(Boolean);
-    return lines
-      .map((l) => { try { return JSON.parse(l) as AuditEntry; } catch { return null; } })
-      .filter((e): e is AuditEntry => e !== null && e.agent === agent)
-      .slice(-limit);
-  } catch {
-    return [];
-  }
+  return readRecentAuditEntriesFromJsonl({ agent }, limit);
 }

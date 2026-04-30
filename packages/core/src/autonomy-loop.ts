@@ -7,8 +7,7 @@ import { ProjectPolicy } from '../../shared/src/types.js';
 
 const PROJECTS_DIR = path.resolve(process.cwd(), 'knowledge', 'projects');
 const REVIEW_AGENTS = ['quality-agent', 'quality-guardian', 'codex-review', 'domain-model', 'grill-me', 'legal', 'security-audit'];
-const AUTONOMY_CYCLE_COOLDOWN_MS = 60 * 1000;
-const AUTONOMY_PERIOD_BUCKET_MINUTES = 1;
+const MIN_STABILIZATION_IDLE_COOLDOWN_MINUTES = 30;
 const STALE_ORPHAN_REVIEW_MS = 15 * 60 * 1000;
 
 interface ProjectAutonomyMeta {
@@ -51,11 +50,12 @@ function loadProjectAutonomyMeta(projectId: string): ProjectAutonomyMeta {
   }
 }
 
-function autonomyPeriodKey(now = Date.now()): string {
+function autonomyPeriodKey(now = Date.now(), bucketMinutes = 24 * 60): string {
   const date = new Date(now);
-  const hour = date.getUTCHours();
-  const minuteBucket = Math.floor(date.getUTCMinutes() / AUTONOMY_PERIOD_BUCKET_MINUTES) * AUTONOMY_PERIOD_BUCKET_MINUTES;
-  return `${date.toISOString().slice(0, 10)}T${String(hour).padStart(2, '0')}:${String(minuteBucket).padStart(2, '0')}`;
+  const safeBucketMinutes = Math.max(1, bucketMinutes);
+  const totalMinutes = Math.floor(date.getTime() / 60_000);
+  const bucketStartMinutes = Math.floor(totalMinutes / safeBucketMinutes) * safeBucketMinutes;
+  return new Date(bucketStartMinutes * 60_000).toISOString().slice(0, 16);
 }
 
 function isSafeIdleAutonomyProject(policy: ProjectPolicy, meta: ProjectAutonomyMeta): boolean {
@@ -195,20 +195,28 @@ function loadProjectAutonomyState(projectId: string): ProjectAutonomyState {
   };
 }
 
-function shouldSeedIdleAutonomyCycle(state: ProjectAutonomyState, now = Date.now()): boolean {
+function idleCooldownMs(policy: ProjectPolicy): number {
+  const configured = policy.selfAudit.idleCooldownMinutes;
+  const minutes = policy.autonomyMode === 'stabilization'
+    ? Math.max(MIN_STABILIZATION_IDLE_COOLDOWN_MINUTES, configured)
+    : Math.max(1, configured);
+  return minutes * 60 * 1000;
+}
+
+function shouldSeedIdleAutonomyCycle(policy: ProjectPolicy, state: ProjectAutonomyState, now = Date.now()): boolean {
   if (state.activeTasks > 0) return false;
   if (state.activeGoals > 0) return false;
   if (state.blockedTasks > 0) return false;
   if (state.pendingApprovals > 0) return false;
   if (state.pendingInterrupts > 0) return false;
-  if (state.latestAutonomyCycleAt && now - state.latestAutonomyCycleAt < AUTONOMY_CYCLE_COOLDOWN_MS) {
+  if (state.latestAutonomyCycleAt && now - state.latestAutonomyCycleAt < idleCooldownMs(policy)) {
     return false;
   }
   return true;
 }
 
 function buildAutonomySubmission(policy: ProjectPolicy, meta: ProjectAutonomyMeta, now = Date.now()) {
-  const periodKey = autonomyPeriodKey(now);
+  const periodKey = autonomyPeriodKey(now, policy.selfAudit.idleCooldownMinutes);
   if (policy.projectId === 'organism') {
     return {
       title: `Self review: ${policy.projectId}`,
@@ -290,7 +298,7 @@ export async function seedIdleAutonomyCycles(now = Date.now()): Promise<number> 
     }
 
     const state = loadProjectAutonomyState(policy.projectId);
-    if (!shouldSeedIdleAutonomyCycle(state, now)) continue;
+    if (!shouldSeedIdleAutonomyCycle(policy, state, now)) continue;
 
     const submission = buildAutonomySubmission(policy, meta, now);
     try {

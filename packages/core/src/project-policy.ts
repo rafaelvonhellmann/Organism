@@ -66,6 +66,7 @@ function normalizeLaunchGuards(raw: unknown, autonomyMode: AutonomyMode): Projec
     minimumHealthyRunsForDeploy,
     initialWorkflowLimit,
     initialAllowedWorkflows,
+    autoDeployAfterHealthyStreak: record.autoDeployAfterHealthyStreak === true,
   };
 }
 
@@ -151,6 +152,12 @@ function normalizeSelfAudit(raw: unknown, projectId: string): ProjectPolicy['sel
     : null;
   const rawHour = typeof record.hour === 'number' ? Math.trunc(record.hour) : 8;
   const hour = Math.min(23, Math.max(0, rawHour));
+  const rawIdleCooldownMinutes = typeof record.idleCooldownMinutes === 'number'
+    ? Math.trunc(record.idleCooldownMinutes)
+    : cadence === 'weekly'
+      ? 7 * 24 * 60
+      : 24 * 60;
+  const idleCooldownMinutes = Math.max(1, rawIdleCooldownMinutes);
   const rawMaxFollowups = typeof record.maxFollowups === 'number' ? Math.trunc(record.maxFollowups) : 4;
   const maxFollowups = Math.max(0, rawMaxFollowups);
   const description = typeof record.description === 'string' && record.description.trim().length > 0
@@ -162,6 +169,7 @@ function normalizeSelfAudit(raw: unknown, projectId: string): ProjectPolicy['sel
     cadence,
     dayOfWeek,
     hour,
+    idleCooldownMinutes,
     workflows: workflows.length > 0 ? workflows : DEFAULT_SELF_AUDIT_WORKFLOWS,
     maxFollowups,
     description,
@@ -429,6 +437,9 @@ export function requiresHumanReviewGate(
 }
 
 export function requiresApproval(policy: ProjectPolicy, action: ProjectAction): boolean {
+  if (action === 'deploy') {
+    return !(policy.autonomyMode === 'full_autonomy' && policy.launchGuards.autoDeployAfterHealthyStreak);
+  }
   return policy.approvalThresholds.majorActions.includes(action) || isActionBlocked(policy, action);
 }
 

@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { readRecentForAgent } from '../../packages/core/src/audit.js';
 import { assertBudget, recordSpend, estimateCost, getAgentSpend, checkOverspend, getPerTaskHardCap } from '../../packages/core/src/budget.js';
-import { checkoutTask, completeTask, failTask, awaitReviewTask, getPendingTasks, createTask, getSiblingTaskOutputs, isTaskShadowMode, recordShadowRun, updateTaskRuntimeState } from '../../packages/core/src/task-queue.js';
+import { checkoutTask, completeTask, failTask, awaitReviewTask, getPendingTasks, getTask, createTask, getSiblingTaskOutputs, isTaskShadowMode, recordShadowRun, registerTaskReviewRequirement, updateTaskRuntimeState } from '../../packages/core/src/task-queue.js';
 import { writeAudit } from '../../packages/core/src/audit.js';
 import { evaluateG1 } from '../../packages/core/src/gates.js';
 import { Task, AgentCapability } from '../../packages/shared/src/types.js';
@@ -15,7 +15,9 @@ import { canAgentExecute, loadRegistry } from '../../packages/core/src/registry.
 import { normalizeAgentEnvelope, extractEnvelopeText } from '../../packages/core/src/agent-envelope.js';
 import { createArtifact, createRunSession, getLatestRunForGoal, mapProviderFailure, updateRunStatus, createRunStep, updateRunStep } from '../../packages/core/src/run-state.js';
 import { readRunMemory } from '../../packages/core/src/run-memory.js';
-import { loadProjectPolicy, requiresHumanReviewGate } from '../../packages/core/src/project-policy.js';
+import { loadProjectPolicy } from '../../packages/core/src/project-policy.js';
+import { applyTaskReviewDecision } from '../../packages/core/src/review-pipeline.js';
+import { extractShadowQualityScore } from '../../packages/core/src/shadow-quality.js';
 import {
   appendPortableLearning,
   buildPortableWorkspaceSnapshot,
@@ -172,8 +174,7 @@ export abstract class BaseAgent {
     return null;
   }
 
-  // Main entry point — polls for pending tasks and processes them
-  async run() {
+  private async prepareRunContext() {
     ensurePortableAgentStack();
     this.loadBreadcrumbs();
     this.loadTasklist(); // logs tasklist presence; subclasses access via execute() input
@@ -189,12 +190,49 @@ export abstract class BaseAgent {
     } catch { /* StixDB optional */ }
 
     console.log(`[${this.name}] Starting. Model: ${this.model}`);
+  }
 
+  // Main entry point — polls for pending tasks and processes them
+  async run() {
+    await this.prepareRunContext();
     // Start heartbeat
     this.heartbeatInterval = setInterval(() => this.heartbeat(), 30 * 1000);
 
     try {
       await this.processPendingTasks();
+    } finally {
+      if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+    }
+  }
+
+  async runTaskById(taskId: string) {
+    await this.prepareRunContext();
+    const task = getTask(taskId);
+    if (!task) {
+      throw new Error(`Task ${taskId} was not found`);
+    }
+    if (task.agent !== this.name) {
+      throw new Error(`Task ${taskId} belongs to ${task.agent}, not ${this.name}`);
+    }
+    if (task.status !== 'pending') {
+      console.log(`[${this.name}] Task ${task.id} is ${task.status}; skipping single-task dispatch.`);
+      return;
+    }
+
+    const taskShadowMode = isTaskShadowMode(task);
+    if (!canAgentExecute(this.name, task.projectId, { includeShadow: taskShadowMode })) {
+      updateTaskRuntimeState({
+        taskId: task.id,
+        status: 'paused',
+        error: `Agent ${this.name} is not enabled for project ${task.projectId ?? 'organism'}`,
+        retryClass: 'manual_pause',
+      });
+      return;
+    }
+
+    this.heartbeatInterval = setInterval(() => this.heartbeat(), 30 * 1000);
+    try {
+      await this.processTask(task);
     } finally {
       if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
     }
@@ -552,113 +590,6 @@ export abstract class BaseAgent {
         }
       }
 
-      // HIGH lane + primary agents: queue review pipeline then pause for Rafael's review.
-      // Pipeline internals (domain-model, legacy grill-me alias, codex-review, quality-agent, quality-guardian)
-      // auto-complete as before — they ARE the review pipeline.
-      const PIPELINE_INTERNAL_AGENTS = [
-        'domain-model', 'grill-me', 'codex-review', 'quality-agent', 'quality-guardian',
-        'legal', 'security-audit',
-      ];
-      const isPipelineInternal = PIPELINE_INTERNAL_AGENTS.includes(this.name);
-      const policy = loadProjectPolicy(task.projectId ?? 'organism');
-      const needsHumanReviewGate = requiresHumanReviewGate(
-        policy,
-        task.description,
-        task.workflowKind ?? 'implement',
-        task.lane,
-      );
-
-      if (needsHumanReviewGate && !isPipelineInternal && !taskShadowMode) {
-        // Queue the HIGH-lane review pipeline with TRIGGER DISCIPLINE:
-        // Not all reviewers fire for every task. Match reviewers to task content.
-        const outputSummary = extractEnvelopeText(envelope).slice(0, 3000);
-
-        // Determine which reviewers are relevant to this task
-        const reviewAgents = selectReviewers(task.description, this.name);
-
-        writeAudit({
-          agent: this.name,
-          taskId: task.id,
-          action: 'task_created',
-          payload: { reviewerSelection: reviewAgents, reason: 'trigger-discipline', allAvailable: ['legal', 'security-audit', 'quality-guardian', 'codex-review'] },
-          outcome: 'success',
-        });
-
-        for (const reviewer of reviewAgents) {
-          try {
-            createTask({
-              agent: reviewer,
-              lane: 'LOW', // review tasks themselves are LOW — they're read-only assessments
-              description: `HIGH-lane review (${reviewer}): "${task.description.slice(0, 80)}"`,
-              input: {
-                originalTaskId: task.id,
-                originalAgent: this.name,
-                originalDescription: task.description,
-                output: outputSummary,
-                reviewType: 'high-lane-pipeline',
-              },
-              parentTaskId: task.id,
-              projectId: task.projectId ?? 'organism',
-              goalId: task.goalId,
-              workflowKind: 'validate',
-              sourceKind: 'agent_followup',
-            });
-            console.log(`[${this.name}] Queued HIGH-lane review: ${reviewer} for task ${task.id}`);
-          } catch {
-            // Duplicate detection may fire — safe to ignore
-            console.warn(`[${this.name}] Skipped ${reviewer} review for task ${task.id} (duplicate or error)`);
-          }
-        }
-
-        awaitReviewTask(task.id, envelope, tokensUsed, costUsd);
-        if (run && runStep) {
-          updateRunStep({ stepId: runStep.id, status: 'completed', detail: `Awaiting review: ${envelope.summary}` });
-          createArtifact({
-            runId: run.id,
-            goalId: run.goalId,
-            kind: 'report',
-            title: `${this.name} awaiting review`,
-            content: extractEnvelopeText(envelope).slice(0, 4000),
-          });
-          updateRunStatus({
-            runId: run.id,
-            status: 'paused',
-            retryClass: 'manual_pause',
-            summary: `Awaiting Rafael review: ${envelope.summary}`,
-          });
-        }
-        console.log(`[${this.name}] Task ${task.id} → awaiting_review (G4 gate). Cost: $${costUsd.toFixed(4)}`);
-
-        writeAudit({
-          agent: this.name,
-          taskId: task.id,
-          action: 'task_completed',
-          payload: { durationMs: Date.now() - startedAt, tokensUsed, costUsd, awaitingReview: true, reviewsQueued: reviewAgents },
-          outcome: 'success',
-        });
-        appendPortableLearning({
-          ts: Date.now(),
-          agent: this.name,
-          projectId: task.projectId ?? 'organism',
-          taskId: task.id,
-          workflowKind: task.workflowKind ?? 'implement',
-          lane: task.lane,
-          status: 'awaiting_review',
-          summary: `Queued for human review: ${envelope.summary}`,
-        });
-        updatePortableWorkspace(
-          buildPortableWorkspaceSnapshot(
-            task,
-            this.name,
-            'awaiting_review',
-            'Wait for the human review gate before any further autonomous work.',
-            envelope.summary,
-          ),
-        );
-        this.activeTaskHeartbeat = null;
-        return; // Stop here — no auto-chaining until Rafael approves
-      }
-
       // Silent-failure guard: refuse $0 completions with empty output.
       // Prevents agents from marking tasks "done" when they short-circuited
       // (missing API key, rate-limited guard, stub return) — which would
@@ -688,12 +619,128 @@ export abstract class BaseAgent {
         }
       }
 
+      const isPipelineInternal = PIPELINE_INTERNAL_AGENTS.includes(this.name);
+      const reviewPlan = getRuntimeReviewPlan(task);
+      if (shouldEnforceRuntimeReviewPipeline(task, isPipelineInternal, taskShadowMode) && reviewPlan.all.length > 0) {
+        const outputSummary = extractEnvelopeText(envelope).slice(0, 3000);
+        const policy = loadProjectPolicy(task.projectId ?? 'organism');
+
+        writeAudit({
+          agent: this.name,
+          taskId: task.id,
+          action: 'task_created',
+          payload: {
+            reviewerSelection: reviewPlan.all,
+            requiredReviewers: reviewPlan.required,
+            advisoryReviewers: reviewPlan.advisory,
+            reason: 'runtime-review-pipeline',
+            autonomyMode: policy.autonomyMode,
+          },
+          outcome: 'success',
+        });
+
+        for (const reviewer of reviewPlan.required) {
+          registerTaskReviewRequirement({ parentTaskId: task.id, reviewer });
+        }
+
+        for (const reviewer of reviewPlan.all) {
+          const reviewType = task.lane === 'HIGH' ? 'high-lane-pipeline' : 'runtime-review-pipeline';
+          try {
+            const reviewTask = createTask({
+              agent: reviewer,
+              lane: 'LOW',
+              description: `${task.lane}-lane review (${reviewer}): "${task.description.slice(0, 80)}"`,
+              input: {
+                originalTaskId: task.id,
+                originalAgent: this.name,
+                originalDescription: task.description,
+                output: outputSummary,
+                reviewType,
+              },
+              parentTaskId: task.id,
+              projectId: task.projectId ?? 'organism',
+              goalId: task.goalId,
+              workflowKind: 'validate',
+              sourceKind: 'agent_followup',
+            });
+            if (reviewPlan.required.includes(reviewer)) {
+              registerTaskReviewRequirement({
+                parentTaskId: task.id,
+                reviewer,
+                reviewTaskId: reviewTask.id,
+              });
+            }
+            console.log(`[${this.name}] Queued ${task.lane}-lane review: ${reviewer} for task ${task.id}`);
+          } catch {
+            console.warn(`[${this.name}] Skipped ${reviewer} review for task ${task.id} (duplicate or error)`);
+          }
+        }
+
+        awaitReviewTask(task.id, envelope, tokensUsed, costUsd);
+        if (run && runStep) {
+          updateRunStep({ stepId: runStep.id, status: 'completed', detail: `Awaiting review: ${envelope.summary}` });
+          createArtifact({
+            runId: run.id,
+            goalId: run.goalId,
+            kind: 'report',
+            title: `${this.name} awaiting review`,
+            content: extractEnvelopeText(envelope).slice(0, 4000),
+          });
+          updateRunStatus({
+            runId: run.id,
+            status: 'paused',
+            retryClass: 'manual_pause',
+            summary: `Awaiting ${task.lane} review pipeline: ${envelope.summary}`,
+          });
+        }
+        console.log(`[${this.name}] Task ${task.id} → awaiting_review (${task.lane} pipeline). Cost: $${costUsd.toFixed(4)}`);
+
+        writeAudit({
+          agent: this.name,
+          taskId: task.id,
+          action: 'task_completed',
+          payload: {
+            durationMs: Date.now() - startedAt,
+            tokensUsed,
+            costUsd,
+            awaitingReview: true,
+            requiredReviewers: reviewPlan.required,
+            advisoryReviewers: reviewPlan.advisory,
+          },
+          outcome: 'success',
+        });
+        appendPortableLearning({
+          ts: Date.now(),
+          agent: this.name,
+          projectId: task.projectId ?? 'organism',
+          taskId: task.id,
+          workflowKind: task.workflowKind ?? 'implement',
+          lane: task.lane,
+          status: 'awaiting_review',
+          summary: `Queued for ${task.lane} review pipeline: ${envelope.summary}`,
+        });
+        updatePortableWorkspace(
+          buildPortableWorkspaceSnapshot(
+            task,
+            this.name,
+            'awaiting_review',
+            task.lane === 'HIGH'
+              ? 'Wait for the full review pipeline and G4 approval before any further autonomous work.'
+              : 'Wait for the required review stages before auto-shipping this task.',
+            envelope.summary,
+          ),
+        );
+        this.activeTaskHeartbeat = null;
+        return;
+      }
+
       completeTask(task.id, envelope, tokensUsed, costUsd);
       if (taskShadowMode) {
         recordShadowRun({
           agent: this.name,
           taskId: task.id,
           output: envelope,
+          qualityScore: extractShadowQualityScore(result.output) ?? extractShadowQualityScore(envelope),
           projectId: task.projectId,
           lane: task.lane,
           description: task.description,
@@ -708,6 +755,19 @@ export abstract class BaseAgent {
             summary: envelope.summary,
           },
           outcome: 'success',
+        });
+      }
+
+      const reviewDecision = extractTaskReviewDecision(result.output);
+      if (reviewDecision) {
+        applyTaskReviewDecision({
+          parentTaskId: reviewDecision.originalTaskId,
+          reviewer: this.name,
+          reviewTaskId: task.id,
+          approved: reviewDecision.approved,
+          decision: reviewDecision.decision,
+          summary: envelope.summary,
+          reason: reviewDecision.reason,
         });
       }
 
@@ -748,29 +808,6 @@ export abstract class BaseAgent {
         } else if (overspend.action === 'PAUSE') {
           console.warn(`[${this.name}] Overspend pause signal: ${overspend.overPct.toFixed(0)}% over budget for task ${task.id}`);
         }
-      }
-
-      // Auto-chain: for MEDIUM tasks, queue codex-review
-      if (task.lane === 'MEDIUM' && !taskShadowMode) {
-        try {
-          createTask({
-            agent: 'codex-review',
-            lane: 'LOW',
-            description: `Codex review: "${task.description.slice(0, 80)}"`,
-            input: {
-              originalTaskId: task.id,
-              originalDescription: task.description,
-              output: typeof result.output === 'object' && result.output !== null
-                ? extractEnvelopeText(envelope).slice(0, 3000)
-                : String(result.output).slice(0, 3000),
-            },
-            parentTaskId: task.id,
-            projectId: task.projectId ?? 'organism',
-            goalId: task.goalId,
-            workflowKind: 'validate',
-            sourceKind: 'agent_followup',
-          });
-        } catch { /* codex-review optional — don't fail the task */ }
       }
 
       // Store task completion in agent's long-term memory
@@ -985,6 +1022,39 @@ const CODEX_TRIGGERS = [
   'engineering', 'architecture', 'performance', 'component',
 ];
 
+const PIPELINE_INTERNAL_AGENTS = [
+  'domain-model', 'grill-me', 'codex-review', 'quality-agent', 'quality-guardian',
+  'legal', 'security-audit',
+];
+
+const REVIEW_PIPELINE_WORKFLOWS = new Set(['implement', 'ship', 'recover']);
+
+function shouldEnforceRuntimeReviewPipeline(task: Task, isPipelineInternal: boolean, taskShadowMode: boolean): boolean {
+  if (isPipelineInternal || taskShadowMode) return false;
+  return REVIEW_PIPELINE_WORKFLOWS.has(task.workflowKind ?? 'implement');
+}
+
+function getRuntimeReviewPlan(task: Task): { required: string[]; advisory: string[]; all: string[] } {
+  switch (task.lane) {
+    case 'LOW': {
+      const required = ['quality-agent'];
+      return { required, advisory: [], all: required };
+    }
+    case 'MEDIUM': {
+      const required = ['quality-agent', 'codex-review'];
+      return { required, advisory: [], all: required };
+    }
+    case 'HIGH': {
+      const required = ['quality-agent', 'codex-review', 'quality-guardian'];
+      const advisory = selectReviewers(task.description, task.agent)
+        .filter((reviewer) => reviewer === 'legal' || reviewer === 'security-audit')
+        .filter((reviewer) => canAgentExecute(reviewer, task.projectId))
+        .filter((reviewer, index, all) => all.indexOf(reviewer) === index);
+      return { required, advisory, all: [...required, ...advisory] };
+    }
+  }
+}
+
 function selectReviewers(taskDescription: string, sourceAgent: string): string[] {
   const desc = taskDescription.toLowerCase();
   const reviewers: string[] = [];
@@ -1018,4 +1088,27 @@ function selectReviewers(taskDescription: string, sourceAgent: string): string[]
   }
 
   return reviewers;
+}
+
+function extractTaskReviewDecision(output: unknown): {
+  originalTaskId: string;
+  approved: boolean;
+  decision: string;
+  reason?: string | null;
+} | null {
+  if (!output || typeof output !== 'object') return null;
+  const record = output as Record<string, unknown>;
+  if (typeof record.originalTaskId !== 'string' || typeof record.decision !== 'string') {
+    return null;
+  }
+
+  const decision = record.decision.trim();
+  if (decision.length === 0) return null;
+
+  return {
+    originalTaskId: record.originalTaskId,
+    approved: /^approved$/i.test(decision),
+    decision,
+    reason: typeof record.review === 'string' ? record.review.slice(0, 500) : null,
+  };
 }

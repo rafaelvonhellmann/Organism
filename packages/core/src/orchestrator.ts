@@ -13,6 +13,7 @@ import {
 } from './shapeup.js';
 import { ensureGoal, getGoal, mapProviderFailure } from './run-state.js';
 import { loadProjectPolicy, isActionBlocked, resolveTaskSafetyEnvelope } from './project-policy.js';
+import { evaluateRuntimeAction, workflowToRuntimeAction } from './action-gate.js';
 
 // Orchestrator is the single main loop. Agents submit tasks here.
 // Paperclip is the ONLY orchestrator — PraisonAI is a tool provider only.
@@ -254,18 +255,19 @@ export async function submitTask(
     }
   }
 
-  // 0. Policy check — sensitive actions stay inside the current autonomy envelope.
-  const blockedAction = resolveBlockedRequestedAction(description, policy);
-  if (blockedAction) {
-    writeAudit({
-      agent: options.agent ?? 'orchestrator',
-      taskId: 'blocked',
-      action: 'gate_eval',
-      payload: { type: 'policy_block', description, action: blockedAction, autonomyMode: policy.autonomyMode },
-      outcome: 'blocked',
-      errorCode: OrganismError.GATE_BLOCKED,
-    });
-    throw new Error(`POLICY BLOCK: "${description.slice(0, 80)}" — action "${blockedAction}" is blocked in ${policy.autonomyMode} mode for ${projectId}.`);
+  // 0. Runtime action gate — project policy + sidecar policy before task creation.
+  const actionGate = await evaluateRuntimeAction({
+    projectId,
+    action: workflowToRuntimeAction(workflowKind),
+    actor: options.agent ?? 'orchestrator',
+    taskId: 'submission',
+    description,
+    workflowKind,
+    policy,
+    context: { sourceKind },
+  });
+  if (!actionGate.allowed) {
+    throw new Error(`POLICY BLOCK: "${description.slice(0, 80)}" — ${actionGate.reason}`);
   }
 
   // 1. Classify risk

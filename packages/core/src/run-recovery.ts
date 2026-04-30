@@ -1,8 +1,8 @@
-import { createTask, getDb, getTask, updateTaskRuntimeState } from './task-queue.js';
+import { getDb, getTask, updateTaskRuntimeState } from './task-queue.js';
 import { appendRunProgress } from './run-memory.js';
 import { createArtifact, getRunSession, listRunSteps, mapProviderFailure, updateRunStatus, updateRunStep } from './run-state.js';
-import { resolveFollowupRoute } from './followup-routing.js';
 import { canAgentExecute } from './registry.js';
+import { createGovernedFollowupTask } from './governed-tasks.js';
 import type { RiskLane, WorkflowKind } from '../../shared/src/types.js';
 
 const DEFAULT_RETRY_DELAY_MS = 60_000;
@@ -351,7 +351,7 @@ function hasEquivalentReviewFallback(params: {
   );
 }
 
-function createReviewFallbackTask(task: PausedReviewTaskRow): boolean {
+async function createReviewFallbackTask(task: PausedReviewTaskRow): Promise<boolean> {
   const fullTask = getTask(task.id);
   if (!fullTask) return false;
 
@@ -379,35 +379,22 @@ function createReviewFallbackTask(task: PausedReviewTaskRow): boolean {
     ? `Resolve blocked ${task.agent} review for "${focus}"`
     : `Continue bounded validation for "${focus}"`;
   const providerFailureKind = resolveAutoHealFailureKind(task) ?? 'transport_error';
-  const route = resolveFollowupRoute({
-    projectId: task.project_id,
+  const created = await createGovernedFollowupTask({
+    source: {
+      id: task.id,
+      agent: task.agent,
+      projectId: task.project_id,
+      goalId: task.goal_id,
+    },
     preferredAgent: requestedAgent,
     workflowKind: requestedWorkflowKind,
     lane: requestedLane,
     description,
-    allowReadOnlyDegrade: true,
-  });
-  if (!route) {
-    return false;
-  }
-
-  if (hasEquivalentReviewFallback({
-    goalId: task.goal_id,
     projectId: task.project_id,
-    agent: route.agent,
-    workflowKind: route.workflowKind,
-    description,
-    sourceTaskId: task.id,
-    originalTaskId: originalTask?.id ?? null,
-  })) {
-    return false;
-  }
-
-  createTask({
-    agent: route.agent,
-    lane: route.lane,
-    description,
-    input: {
+    goalId: task.goal_id,
+    parentTaskId: originalTask?.id ?? task.id,
+    allowReadOnlyDegrade: true,
+    input: (route) => ({
       sourceTaskId: task.id,
       sourceAgent: task.agent,
       originalTaskId: originalTask?.id ?? null,
@@ -417,18 +404,16 @@ function createReviewFallbackTask(task: PausedReviewTaskRow): boolean {
       sourceError: task.error ?? null,
       projectId: task.project_id,
       execution: executionParent && (route.workflowKind === 'implement' || route.workflowKind === 'recover'),
-      requestedTargetAgent: requestedAgent,
-      requestedWorkflowKind,
-      routedFollowup: route.rerouted,
+    }),
+    auditPayload: {
+      followupType: 'review_fallback',
+      blockedReviewAgent: task.agent,
+      originalTaskId: originalTask?.id ?? null,
     },
-    parentTaskId: originalTask?.id ?? task.id,
-    projectId: task.project_id,
-    goalId: task.goal_id ?? undefined,
-    workflowKind: route.workflowKind,
-    sourceKind: 'agent_followup',
   });
+  if (!created) return false;
 
-  const summary = `Rerouted paused ${task.agent} review work into a bounded ${route.agent} ${route.workflowKind} task after retry exhaustion.`;
+  const summary = `Rerouted paused ${task.agent} review work into a bounded ${created.agent} ${created.workflowKind} task after retry exhaustion.`;
   updateTaskRuntimeState({
     taskId: task.id,
     status: 'failed',
@@ -452,7 +437,7 @@ function createReviewFallbackTask(task: PausedReviewTaskRow): boolean {
 
   if (task.goal_id) {
     appendRunProgress(task.goal_id, [
-      `- Rerouted exhausted **${task.agent}** review work into **${route.agent}** (${route.workflowKind})`,
+      `- Rerouted exhausted **${task.agent}** review work into **${created.agent}** (${created.workflowKind})`,
     ]);
   }
 
@@ -686,14 +671,14 @@ export function recoverStaleWork(options: {
   return counts;
 }
 
-export function autoHealPausedReviewTasks(options: {
+export async function autoHealPausedReviewTasks(options: {
   now?: number;
   retryDelayMs?: number;
   cooldownMs?: number;
   lookbackMs?: number;
   maxAttempts?: number;
   reviewMaxAttempts?: number;
-} = {}): AutoHealCounts {
+} = {}): Promise<AutoHealCounts> {
   const now = options.now ?? Date.now();
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_REVIEW_RETRY_DELAY_MS;
   const cooldownMs = options.cooldownMs ?? DEFAULT_REVIEW_COOLDOWN_MS;
@@ -784,7 +769,7 @@ export function autoHealPausedReviewTasks(options: {
       continue;
     }
     if ((task.attempt_count ?? 0) >= allowedAttempts) {
-      if (createReviewFallbackTask(task)) {
+      if (await createReviewFallbackTask(task)) {
         counts.reroutedTasks += 1;
         continue;
       }

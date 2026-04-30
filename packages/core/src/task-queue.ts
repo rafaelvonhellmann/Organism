@@ -36,6 +36,33 @@ export function getDb(): DatabaseSync {
   return _db;
 }
 
+export type TaskReviewRequirementStatus = 'pending' | 'approved' | 'needs_revision' | 'failed';
+
+export interface TaskReviewRequirement {
+  parentTaskId: string;
+  reviewer: string;
+  reviewTaskId?: string | null;
+  status: TaskReviewRequirementStatus;
+  decision?: string | null;
+  reason?: string | null;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number | null;
+}
+
+export interface TaskReviewSummary {
+  total: number;
+  pending: number;
+  approved: number;
+  needsRevision: number;
+  failed: number;
+  allApproved: boolean;
+  reviewers: string[];
+  approvedReviewers: string[];
+  pendingReviewers: string[];
+  blockingReviewers: string[];
+}
+
 export function resetDbForTests(): void {
   if (!_db) return;
   try {
@@ -72,7 +99,7 @@ function hasRequiredSchema(db: DatabaseSync): boolean {
   const requiredTables = new Map<string, string[]>([
     ['tasks', ['id', 'agent', 'status', 'project_id', 'goal_id', 'workflow_kind', 'retry_at', 'provider_failure_kind', 'created_at', 'started_at', 'completed_at', 'error']],
     ['goals', ['id', 'project_id', 'status', 'workflow_kind', 'updated_at']],
-    ['run_sessions', ['id', 'goal_id', 'project_id', 'agent', 'workflow_kind', 'status', 'retry_class', 'retry_at', 'provider_failure_kind', 'created_at', 'updated_at', 'completed_at']],
+    ['run_sessions', ['id', 'goal_id', 'project_id', 'agent', 'workflow_kind', 'status', 'retry_class', 'retry_at', 'provider_failure_kind', 'config_snapshot', 'created_at', 'updated_at', 'completed_at']],
     ['run_steps', ['id', 'run_id', 'name', 'status', 'detail', 'created_at', 'updated_at', 'completed_at']],
     ['dashboard_actions', ['id', 'action', 'payload', 'status', 'result', 'created_at', 'completed_at']],
     ['audit_log', ['id', 'ts', 'agent', 'task_id', 'action', 'payload', 'outcome', 'error_code']],
@@ -198,6 +225,7 @@ function runMigrations(db: DatabaseSync) {
       retry_class TEXT NOT NULL DEFAULT 'none',
       retry_at INTEGER,
       provider_failure_kind TEXT NOT NULL DEFAULT 'none',
+      config_snapshot TEXT,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       completed_at INTEGER
@@ -257,6 +285,19 @@ function runMigrations(db: DatabaseSync) {
       ts INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
 
+    CREATE TABLE IF NOT EXISTS task_review_requirements (
+      parent_task_id TEXT NOT NULL,
+      reviewer TEXT NOT NULL,
+      review_task_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      decision TEXT,
+      reason TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      completed_at INTEGER,
+      PRIMARY KEY (parent_task_id, reviewer)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent);
     CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent);
@@ -269,6 +310,10 @@ function runMigrations(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_runtime_events_run ON runtime_events(run_id, id);
     CREATE INDEX IF NOT EXISTS idx_innovation_feedback_project ON innovation_radar_feedback(project_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_innovation_feedback_task ON innovation_radar_feedback(task_id);
+    CREATE INDEX IF NOT EXISTS idx_task_review_requirements_parent ON task_review_requirements(parent_task_id, status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_task_review_requirements_review_task
+      ON task_review_requirements(review_task_id)
+      WHERE review_task_id IS NOT NULL;
     `);
   } catch (error) {
     if (!(isDatabaseLockedError(error) && hasRequiredSchema(db))) {
@@ -471,11 +516,13 @@ function runMigrations(db: DatabaseSync) {
       retry_class TEXT NOT NULL DEFAULT 'none',
       retry_at INTEGER,
       provider_failure_kind TEXT NOT NULL DEFAULT 'none',
+      config_snapshot TEXT,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       completed_at INTEGER
     )`,
     `CREATE INDEX IF NOT EXISTS idx_run_sessions_goal ON run_sessions(goal_id, created_at)`,
+    `ALTER TABLE run_sessions ADD COLUMN config_snapshot TEXT`,
     `CREATE TABLE IF NOT EXISTS run_steps (
       id TEXT PRIMARY KEY,
       run_id TEXT NOT NULL,
@@ -529,6 +576,22 @@ function runMigrations(db: DatabaseSync) {
       ts INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_runtime_events_run ON runtime_events(run_id, id)`,
+    `CREATE TABLE IF NOT EXISTS task_review_requirements (
+      parent_task_id TEXT NOT NULL,
+      reviewer TEXT NOT NULL,
+      review_task_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      decision TEXT,
+      reason TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      completed_at INTEGER,
+      PRIMARY KEY (parent_task_id, reviewer)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_task_review_requirements_parent ON task_review_requirements(parent_task_id, status)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_task_review_requirements_review_task
+      ON task_review_requirements(review_task_id)
+      WHERE review_task_id IS NOT NULL`,
   ];
   for (const sql of additiveMigrations) {
     try { db.exec(sql); } catch { /* column/index already exists — safe to ignore */ }
@@ -660,6 +723,130 @@ export function failTask(taskId: string, error: string): void {
     UPDATE tasks SET status = 'failed', error = ?, completed_at = ?
     WHERE id = ?
   `).run(error, Date.now(), taskId);
+}
+
+export function registerTaskReviewRequirement(params: {
+  parentTaskId: string;
+  reviewer: string;
+  reviewTaskId?: string | null;
+}): void {
+  const now = Date.now();
+  getDb().prepare(`
+    INSERT INTO task_review_requirements (
+      parent_task_id, reviewer, review_task_id, status, decision, reason, created_at, updated_at, completed_at
+    )
+    VALUES (?, ?, ?, 'pending', NULL, NULL, ?, ?, NULL)
+    ON CONFLICT(parent_task_id, reviewer) DO UPDATE SET
+      review_task_id = COALESCE(excluded.review_task_id, task_review_requirements.review_task_id),
+      status = 'pending',
+      decision = NULL,
+      reason = NULL,
+      updated_at = excluded.updated_at,
+      completed_at = NULL
+  `).run(params.parentTaskId, params.reviewer, params.reviewTaskId ?? null, now, now);
+}
+
+export function recordTaskReviewDecision(params: {
+  parentTaskId: string;
+  reviewer: string;
+  reviewTaskId?: string | null;
+  approved: boolean;
+  decision: string;
+  reason?: string | null;
+}): boolean {
+  const now = Date.now();
+  const status: TaskReviewRequirementStatus = params.approved ? 'approved' : 'needs_revision';
+  const result = getDb().prepare(`
+    UPDATE task_review_requirements
+    SET review_task_id = COALESCE(?, review_task_id),
+        status = ?,
+        decision = ?,
+        reason = COALESCE(?, reason),
+        updated_at = ?,
+        completed_at = ?
+    WHERE parent_task_id = ? AND reviewer = ?
+  `).run(
+    params.reviewTaskId ?? null,
+    status,
+    params.decision,
+    params.reason ?? null,
+    now,
+    now,
+    params.parentTaskId,
+    params.reviewer,
+  );
+  return (result as { changes: number }).changes > 0;
+}
+
+export function getTaskReviewRequirements(parentTaskId: string): TaskReviewRequirement[] {
+  const rows = getDb().prepare(`
+    SELECT *
+    FROM task_review_requirements
+    WHERE parent_task_id = ?
+    ORDER BY created_at ASC, reviewer ASC
+  `).all(parentTaskId) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    parentTaskId: String(row.parent_task_id),
+    reviewer: String(row.reviewer),
+    reviewTaskId: row.review_task_id ? String(row.review_task_id) : null,
+    status: row.status as TaskReviewRequirementStatus,
+    decision: row.decision ? String(row.decision) : null,
+    reason: row.reason ? String(row.reason) : null,
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+    completedAt: row.completed_at ? Number(row.completed_at) : null,
+  }));
+}
+
+export function getTaskReviewSummary(parentTaskId: string): TaskReviewSummary {
+  const requirements = getTaskReviewRequirements(parentTaskId);
+  const summary: TaskReviewSummary = {
+    total: requirements.length,
+    pending: 0,
+    approved: 0,
+    needsRevision: 0,
+    failed: 0,
+    allApproved: requirements.length > 0,
+    reviewers: requirements.map((requirement) => requirement.reviewer),
+    approvedReviewers: [],
+    pendingReviewers: [],
+    blockingReviewers: [],
+  };
+
+  for (const requirement of requirements) {
+    switch (requirement.status) {
+      case 'approved':
+        summary.approved += 1;
+        summary.approvedReviewers.push(requirement.reviewer);
+        break;
+      case 'needs_revision':
+        summary.needsRevision += 1;
+        summary.blockingReviewers.push(requirement.reviewer);
+        summary.allApproved = false;
+        break;
+      case 'failed':
+        summary.failed += 1;
+        summary.blockingReviewers.push(requirement.reviewer);
+        summary.allApproved = false;
+        break;
+      default:
+        summary.pending += 1;
+        summary.pendingReviewers.push(requirement.reviewer);
+        summary.allApproved = false;
+        break;
+    }
+  }
+
+  return summary;
+}
+
+export function hasPendingTaskReviews(parentTaskId: string): boolean {
+  const row = getDb().prepare(`
+    SELECT COUNT(*) as count
+    FROM task_review_requirements
+    WHERE parent_task_id = ? AND status != 'approved'
+  `).get(parentTaskId) as { count: number } | undefined;
+  return (row?.count ?? 0) > 0;
 }
 
 export function updateTaskRuntimeState(params: {

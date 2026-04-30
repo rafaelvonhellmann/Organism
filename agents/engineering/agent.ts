@@ -281,6 +281,7 @@ After making changes, output:
         maxTurns: 15,
         description: task.description,
         workflowKind: task.workflowKind,
+        projectId: task.projectId ?? workspace.projectId,
         timeoutMs,
         onHeartbeat: ({ executor, elapsedMs }) => {
           if (!activeStep) return;

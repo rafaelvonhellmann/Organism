@@ -1,9 +1,10 @@
 import { getDb } from './task-queue.js';
 import { AuditEntry } from '../../shared/src/types.js';
+import { appendAuditJsonl, readRecentAuditEntriesFromJsonl } from '../../shared/src/audit-log.js';
 
-// Immutable append-only audit log (SQLite + JSONL file mirror).
-// The JSONL file at state/audit.log is the authoritative human-readable record.
-// The SQLite table supports fast agent-specific queries (e.g., readRecent).
+// Immutable append-only audit log.
+// All runtime writers go through this module so the SQLite query model and the
+// JSONL operator ledger stay in the same canonical state root.
 
 export function writeAudit(entry: Omit<AuditEntry, 'ts'>): void {
   const full: AuditEntry = { ...entry, ts: Date.now() };
@@ -19,6 +20,13 @@ export function writeAudit(entry: Omit<AuditEntry, 'ts'>): void {
     full.outcome,
     full.errorCode ?? null
   );
+
+  try {
+    appendAuditJsonl(full);
+  } catch (error) {
+    // Audit mirroring must never crash agent execution, but we still surface it.
+    console.error('[Audit] Failed to append JSONL audit entry:', error);
+  }
 }
 
 // Read the last N entries for a given agent — used for session start breadcrumb context.
@@ -27,14 +35,22 @@ export function readRecentForAgent(agent: string, limit = 5): AuditEntry[] {
     SELECT * FROM audit_log WHERE agent = ? ORDER BY ts DESC LIMIT ?
   `).all(agent, limit) as Array<Record<string, unknown>>;
 
-  return rows.reverse().map(rowToEntry);
+  if (rows.length > 0) {
+    return rows.reverse().map(rowToEntry);
+  }
+
+  return readRecentAuditEntriesFromJsonl({ agent }, limit);
 }
 
 export function readRecentForTask(taskId: string): AuditEntry[] {
   const rows = getDb().prepare(`
     SELECT * FROM audit_log WHERE task_id = ? ORDER BY ts ASC
   `).all(taskId) as Array<Record<string, unknown>>;
-  return rows.map(rowToEntry);
+  if (rows.length > 0) {
+    return rows.map(rowToEntry);
+  }
+
+  return readRecentAuditEntriesFromJsonl({ taskId }, Number.MAX_SAFE_INTEGER);
 }
 
 function rowToEntry(row: Record<string, unknown>): AuditEntry {

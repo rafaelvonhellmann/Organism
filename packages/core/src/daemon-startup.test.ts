@@ -1,8 +1,12 @@
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createTask, getDb, getTask } from './task-queue.js';
-import { createRunSession, createRunStep, ensureGoal, getRunSession } from './run-state.js';
-import { recoverWorkOnStartup } from '../../../scripts/start-daemon.js';
+import { configureTestState } from './test-state.js';
+
+configureTestState(import.meta.url);
+
+const { createTask, getDb, getTask } = await import('./task-queue.js');
+const { createRunSession, createRunStep, ensureGoal, getRunSession } = await import('./run-state.js');
+const { recoverWorkOnStartup } = await import('../../../scripts/start-daemon.js');
 
 function resetRuntimeState() {
   const db = getDb();
@@ -23,7 +27,7 @@ describe('daemon startup recovery', () => {
     resetRuntimeState();
   });
 
-  it('recovers interrupted work before the scheduler and runner resume', () => {
+  it('recovers interrupted work before the scheduler and runner resume', async () => {
     const goal = ensureGoal({
       projectId: 'organism',
       title: 'Daemon restart recovery',
@@ -60,7 +64,7 @@ describe('daemon startup recovery', () => {
     getDb().prepare(`UPDATE tasks SET status = 'in_progress', attempt_count = 1 WHERE id = ?`).run(task.id);
 
     const logs: string[] = [];
-    const recovered = recoverWorkOnStartup((line) => logs.push(line));
+    const recovered = await recoverWorkOnStartup((line) => logs.push(line));
     const updatedRun = getRunSession(run.id);
     const updatedTask = getTask(task.id);
 

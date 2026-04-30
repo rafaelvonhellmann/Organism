@@ -50,7 +50,7 @@ interface SyncResult {
 
 interface AuthDeps {
   commandExists: (command: string) => boolean;
-  runSync: (command: string, args: string[], options?: { cwd?: string; input?: string; env?: NodeJS.ProcessEnv }) => SyncResult;
+  runSync: (command: string, args: string[], options?: { cwd?: string; input?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }) => SyncResult;
   now: () => number;
 }
 
@@ -95,10 +95,11 @@ function defaultCommandExists(command: string): boolean {
 function defaultRunSync(
   command: string,
   args: string[],
-  options: { cwd?: string; input?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { cwd?: string; input?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
 ): SyncResult {
   try {
     const binary = resolveCommandBinary(command);
+    const timeout = options.timeoutMs ?? 10_000;
     const result = process.platform === 'win32' && binary.endsWith('.cmd')
       ? spawnSync('cmd.exe', ['/d', '/s', '/c', `${binary} ${args.map(quoteCmdArg).join(' ')}`.trim()], {
         cwd: options.cwd,
@@ -106,6 +107,7 @@ function defaultRunSync(
         env: options.env,
         encoding: 'utf8',
         stdio: ['pipe', 'pipe', 'pipe'],
+        timeout,
         windowsHide: true,
       })
       : spawnSync(binary, args, {
@@ -114,12 +116,13 @@ function defaultRunSync(
         env: options.env,
         encoding: 'utf8',
         stdio: ['pipe', 'pipe', 'pipe'],
+        timeout,
         windowsHide: true,
       });
     return {
       status: result.status,
       stdout: (result.stdout || '').trim(),
-      stderr: (result.stderr || '').trim(),
+      stderr: ((result.stderr || '').trim() || (result.error instanceof Error ? result.error.message : '')),
     };
   } catch (error) {
     return {

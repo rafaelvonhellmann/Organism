@@ -77,7 +77,7 @@ export default class QualityGuardianAgent extends BaseAgent {
         collaborators: [],
         reviewerLane: 'HIGH',
         description: '6-phase deep audit — Platform Health Score, root cause analysis, auto-fix proposals',
-        status: 'shadow',
+        status: 'active',
         model: 'gpt5.4',
         frequencyTier: 'weekly',
         projectScope: 'all',

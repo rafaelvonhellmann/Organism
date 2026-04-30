@@ -1,28 +1,35 @@
 /**
- * MCP Client — shared Anthropic model access for Organism agents.
+ * Model + sidecar client for Organism agents.
  *
- * Organism keeps its model discipline (Haiku/Sonnet/Opus), but the runtime
- * backend is configurable so the company can be launched smoothly from either
- * Claude Code or Codex:
- *
- * - `claude-cli`: use the local Claude CLI (`claude -p`)
- * - `anthropic-api`: use the Anthropic SDK with `ANTHROPIC_API_KEY`
- * - `auto` (default): prefer Codex CLI first to consume ChatGPT/Codex CLI
- *   capacity, then fall back to Claude CLI, OpenAI API, and finally the
- *   Anthropic API
- *
- * Legacy compatibility: `USE_API_DIRECT=true` still maps to
- * `ORGANISM_MODEL_BACKEND=anthropic-api`.
+ * Organism keeps its model discipline (Haiku/Sonnet/Opus), but runtime model
+ * access now passes through the PraisonAI sidecar contract first. The current
+ * default transport is an embedded implementation that preserves the codex-first
+ * backend policy while keeping the boundary explicit and testable. An external
+ * Python sidecar transport is available for parity work and stricter isolation.
  */
 
 import { spawn, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { getSecretOrNull } from '../../packages/shared/src/secrets.js';
+import { STATE_DIR } from '../../packages/shared/src/state-dir.js';
+import { OrganismError } from '../../packages/shared/src/error-taxonomy.js';
 
 type LogicalModelProfile = 'haiku' | 'sonnet' | 'opus';
 export type SupportedModelProfile = LogicalModelProfile | 'gpt4o' | 'gpt5.4';
+export type SidecarToolName = 'route_model' | 'rag_retrieve' | 'check_policy' | 'detect_doom_loop' | 'persist_memory';
+export type SidecarPreference = 'auto' | 'embedded' | 'external' | 'disabled';
+export type ResolvedSidecarMode = 'embedded' | 'external' | 'disabled';
+
+export const SIDECAR_TOOL_NAMES: SidecarToolName[] = [
+  'route_model',
+  'rag_retrieve',
+  'check_policy',
+  'detect_doom_loop',
+  'persist_memory',
+];
 
 const MODEL_ALIASES: Record<LogicalModelProfile, string> = {
   haiku: 'haiku',
@@ -31,7 +38,7 @@ const MODEL_ALIASES: Record<LogicalModelProfile, string> = {
 };
 
 export type ModelBackendKind = 'claude-cli' | 'anthropic-api' | 'codex-cli' | 'openai-api';
-export type ModelBackendPreference = ModelBackendKind | 'auto';
+export type ModelBackendPreference = ModelBackendKind | 'auto' | 'codex-first';
 
 interface ModelBackendAvailability {
   claudeCli: boolean;
@@ -52,6 +59,14 @@ export interface ModelBackendStatus {
   capabilities: ModelBackendCapabilities;
 }
 
+export interface SidecarStatus {
+  preferred: SidecarPreference;
+  selected: ResolvedSidecarMode;
+  tools: SidecarToolName[];
+  externalAvailable: boolean;
+  scriptPath: string;
+}
+
 interface OpenAiModelSpec {
   cliModel: string;
   apiModel: string;
@@ -61,7 +76,10 @@ interface OpenAiModelSpec {
 type BackendFailureClass = 'rate_limit' | 'credit' | 'transport' | 'auth' | 'generic';
 
 const BACKEND_HEALTH_PATH = join(homedir(), '.organism', 'state', 'model-backend-health.json');
+const SIDECAR_SERVER_PATH = join(process.cwd(), 'packages', 'mcp-sidecar', 'server.py');
+const SIDECAR_MEMORY_PATH = join(STATE_DIR, 'sidecar-memory.jsonl');
 const backendCooldownUntil = new Map<ModelBackendKind, number>();
+const sidecarCallSequences = new Map<string, string[]>();
 
 export function resolveOpenAiModelSpec(model: SupportedModelProfile): OpenAiModelSpec {
   const routerModel = process.env.ORGANISM_OPENAI_ROUTER_MODEL
@@ -90,6 +108,68 @@ export function resolveOpenAiModelSpec(model: SupportedModelProfile): OpenAiMode
     case 'gpt5.4':
       return { cliModel: 'gpt-5.4', apiModel: 'gpt-5.4', reasoningEffort: 'medium' };
   }
+}
+
+function resolveSidecarPreference(preference?: SidecarPreference): SidecarPreference {
+  if (preference) return preference;
+
+  const envPreference = process.env.ORGANISM_SIDECAR_MODE;
+  if (
+    envPreference === 'auto'
+    || envPreference === 'embedded'
+    || envPreference === 'external'
+    || envPreference === 'disabled'
+  ) {
+    return envPreference;
+  }
+
+  return 'embedded';
+}
+
+function resolvePythonCommand(): 'python' | 'py' | null {
+  if (commandExists('python')) return 'python';
+  if (commandExists('py')) return 'py';
+  return null;
+}
+
+function externalSidecarAvailable(): boolean {
+  return resolvePythonCommand() !== null && existsSync(SIDECAR_SERVER_PATH);
+}
+
+export function resolveSidecarStatus(preference?: SidecarPreference): SidecarStatus {
+  const preferred = resolveSidecarPreference(preference);
+  const externalAvailable = externalSidecarAvailable();
+
+  if (preferred === 'disabled') {
+    return {
+      preferred,
+      selected: 'disabled',
+      tools: [...SIDECAR_TOOL_NAMES],
+      externalAvailable,
+      scriptPath: SIDECAR_SERVER_PATH,
+    };
+  }
+
+  if (preferred === 'external') {
+    if (!externalAvailable) {
+      throw new Error(`${OrganismError.MCP_SIDECAR_UNREACHABLE}: external PraisonAI sidecar is unavailable`);
+    }
+    return {
+      preferred,
+      selected: 'external',
+      tools: [...SIDECAR_TOOL_NAMES],
+      externalAvailable,
+      scriptPath: SIDECAR_SERVER_PATH,
+    };
+  }
+
+  return {
+    preferred,
+    selected: preferred === 'auto' && externalAvailable ? 'external' : 'embedded',
+    tools: [...SIDECAR_TOOL_NAMES],
+    externalAvailable,
+    scriptPath: SIDECAR_SERVER_PATH,
+  };
 }
 
 function supportsReasoningEffort(model: string): boolean {
@@ -151,6 +231,351 @@ function spawnCliCommand(command: string, args: string[], cwd: string, env?: Nod
     shell: false,
     env,
   });
+}
+
+export interface SidecarStoredMemory {
+  id: string;
+  fact: string;
+  context?: Record<string, unknown>;
+}
+
+function readPersistedSidecarMemory(): SidecarStoredMemory[] {
+  try {
+    if (!existsSync(SIDECAR_MEMORY_PATH)) return [];
+    return readFileSync(SIDECAR_MEMORY_PATH, 'utf8')
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line) as SidecarStoredMemory];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+async function callExternalSidecarTool<T>(tool: SidecarToolName, args: Record<string, unknown>): Promise<T> {
+  const pythonCommand = resolvePythonCommand();
+  if (!pythonCommand) {
+    throw new Error(`${OrganismError.MCP_SIDECAR_UNREACHABLE}: python runtime unavailable for PraisonAI sidecar`);
+  }
+
+  return new Promise((resolve, reject) => {
+    const prompt = typeof args.prompt === 'string' ? args.prompt : '';
+    const system = typeof args.system === 'string' ? args.system : undefined;
+    const maxTokens = typeof args.max_tokens === 'number' ? args.max_tokens : 2048;
+    const timeoutMs = Math.min(resolveAdaptiveModelTimeout(prompt, system, maxTokens), 10 * 60 * 1000);
+
+    const child = spawnCliCommand(pythonCommand, [SIDECAR_SERVER_PATH, '--cli', tool], process.cwd(), { ...process.env });
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`${OrganismError.MCP_SIDECAR_UNREACHABLE}: PraisonAI sidecar timed out after ${Math.round(timeoutMs / 60_000)} minutes`));
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim();
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
+
+      if (code !== 0) {
+        reject(new Error(`${OrganismError.MCP_SIDECAR_UNREACHABLE}: PraisonAI sidecar exited ${code}${stderr ? ` — ${stderr}` : ''}`));
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(stdout) as T);
+      } catch (error) {
+        reject(new Error(`${OrganismError.MCP_SIDECAR_UNREACHABLE}: PraisonAI sidecar returned invalid JSON (${error instanceof Error ? error.message : String(error)})`));
+      }
+    });
+
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(new Error(`${OrganismError.MCP_SIDECAR_UNREACHABLE}: PraisonAI sidecar spawn error — ${error.message}`));
+    });
+
+    child.stdin.write(JSON.stringify(args));
+    child.stdin.end();
+  });
+}
+
+async function callEmbeddedSidecarTool<T>(tool: SidecarToolName, args: Record<string, unknown>): Promise<T> {
+  switch (tool) {
+    case 'route_model': {
+      const modelPreference = (args.model_preference as SupportedModelProfile | undefined) ?? 'sonnet';
+      const prompt = String(args.prompt ?? '');
+      const system = typeof args.system === 'string' ? args.system : undefined;
+      const maxTokens = typeof args.max_tokens === 'number' ? args.max_tokens : 2048;
+      const result = await callSelectedBackendDirect(prompt, modelPreference, system, maxTokens);
+      return {
+        content: result.text,
+        model: modelPreference,
+        tokens_in: result.inputTokens,
+        tokens_out: result.outputTokens,
+      } as T;
+    }
+    case 'rag_retrieve': {
+      const query = String(args.query ?? '').trim().toLowerCase();
+      const k = typeof args.k === 'number' ? Math.max(1, Math.trunc(args.k)) : 5;
+      const queryWords = new Set(query.split(/\s+/).filter(Boolean));
+      const memoryEntries = readPersistedSidecarMemory();
+      const results = memoryEntries
+        .map((entry) => {
+          const factWords = new Set(entry.fact.toLowerCase().split(/\s+/).filter(Boolean));
+          let score = 0;
+          for (const word of queryWords) {
+            if (factWords.has(word)) score += 1;
+          }
+          return { score, entry };
+        })
+        .filter((row) => row.score > 0)
+        .sort((left, right) => right.score - left.score)
+        .slice(0, k)
+        .map((row) => row.entry);
+
+      return {
+        results,
+        total_in_store: memoryEntries.length,
+      } as T;
+    }
+    case 'check_policy': {
+      const action = String(args.action ?? '');
+      const blockedActions: Array<[string, string]> = [
+        ['delete user data', 'E001: User data deletion requires explicit human approval'],
+        ['drop table', 'E001: Database destructive operations are blocked'],
+        ['push --force', 'Engineering agent git rules: force push is blocked'],
+        ['git reset --hard', 'Engineering agent git rules: hard reset is blocked'],
+      ];
+
+      const actionLower = action.toLowerCase();
+      for (const [pattern, reason] of blockedActions) {
+        if (actionLower.includes(pattern)) {
+          return {
+            result: 'FAIL',
+            reason,
+            action,
+          } as T;
+        }
+      }
+
+      return {
+        result: 'PASS',
+        reason: 'No policy violations detected',
+        action,
+      } as T;
+    }
+    case 'detect_doom_loop': {
+      const sequence = Array.isArray(args.call_sequence)
+        ? args.call_sequence.filter((item): item is string => typeof item === 'string')
+        : [];
+      const agentId = String(args.agent_id ?? 'unknown');
+      const history = sidecarCallSequences.get(agentId) ?? [];
+      sidecarCallSequences.set(agentId, [...history, ...sequence].slice(-50));
+
+      if (sequence.length >= 3) {
+        for (let index = 0; index <= sequence.length - 3; index += 1) {
+          if (sequence[index] === sequence[index + 1] && sequence[index] === sequence[index + 2]) {
+            return {
+              signal: true,
+              code: OrganismError.DOOM_LOOP_DETECTED,
+              evidence: `Action '${sequence[index]}' repeated 3 times consecutively`,
+              recommendation: 'Break the loop: add a stop condition or escalate to CEO',
+            } as T;
+          }
+        }
+      }
+
+      if (sequence.length >= 4) {
+        const fingerprint = createHash('md5').update(JSON.stringify(sequence.slice(-4))).digest('hex');
+        const fingerprintKey = `${agentId}:fingerprints`;
+        const fingerprintHistory = sidecarCallSequences.get(fingerprintKey) ?? [];
+        if (fingerprintHistory.includes(fingerprint)) {
+          return {
+            signal: true,
+            code: OrganismError.DOOM_LOOP_DETECTED,
+            evidence: `Sequence fingerprint ${fingerprint.slice(0, 8)} seen before (cycle)`,
+            recommendation: 'Agent is cycling — stop and report to orchestrator',
+          } as T;
+        }
+        sidecarCallSequences.set(fingerprintKey, [...fingerprintHistory, fingerprint].slice(-20));
+      }
+
+      return {
+        signal: false,
+        evidence: 'No doom loop detected',
+      } as T;
+    }
+    case 'persist_memory': {
+      const fact = String(args.fact ?? '').trim();
+      const graphContext = args.graph_context && typeof args.graph_context === 'object'
+        ? args.graph_context as Record<string, unknown>
+        : {};
+      const entry: SidecarStoredMemory = {
+        id: createHash('sha256').update(fact).digest('hex').slice(0, 16),
+        fact,
+        context: graphContext,
+      };
+
+      const existing = readPersistedSidecarMemory();
+      if (!existing.some((item) => item.id === entry.id)) {
+        mkdirSync(STATE_DIR, { recursive: true });
+        appendFileSync(SIDECAR_MEMORY_PATH, JSON.stringify(entry) + '\n', 'utf8');
+      }
+
+      return {
+        status: 'persisted',
+        id: entry.id,
+        total_in_store: readPersistedSidecarMemory().length,
+      } as T;
+    }
+  }
+
+  const unreachableTool: never = tool;
+  throw new Error(`Unknown sidecar tool: ${String(unreachableTool)}`);
+}
+
+async function callSidecarTool<T>(tool: SidecarToolName, args: Record<string, unknown>): Promise<T> {
+  const status = resolveSidecarStatus();
+
+  if (status.selected === 'external') {
+    try {
+      return await callExternalSidecarTool<T>(tool, args);
+    } catch (error) {
+      if (status.preferred !== 'external') {
+        console.warn(`[Sidecar] External PraisonAI sidecar failed (${errorMessage(error)}). Falling back to embedded contract.`);
+        return callEmbeddedSidecarTool<T>(tool, args);
+      }
+      throw error;
+    }
+  }
+
+  return callEmbeddedSidecarTool<T>(tool, args);
+}
+
+export async function routeModelViaSidecar(
+  prompt: string,
+  model: SupportedModelProfile,
+  systemPrompt: string | undefined,
+  maxTokens: number,
+): Promise<ModelCallResult> {
+  const status = resolveSidecarStatus();
+  if (status.selected === 'disabled') {
+    return callSelectedBackendDirect(prompt, model, systemPrompt, maxTokens);
+  }
+
+  const result = await callSidecarTool<{
+    content?: string;
+    tokens_in?: number;
+    tokens_out?: number;
+    error?: string;
+  }>('route_model', {
+    prompt,
+    model_preference: model,
+    system: systemPrompt,
+    max_tokens: maxTokens,
+  });
+
+  if (result.error) {
+    throw new Error(result.error);
+  }
+
+  return {
+    text: result.content ?? '',
+    inputTokens: result.tokens_in ?? 0,
+    outputTokens: result.tokens_out ?? 0,
+  };
+}
+
+export async function checkPolicyViaSidecar(action: string, context: Record<string, unknown> = {}): Promise<{
+  result: 'PASS' | 'FAIL';
+  reason: string;
+  action: string;
+}> {
+  return callSidecarTool<{
+    result: 'PASS' | 'FAIL';
+    reason: string;
+    action: string;
+  }>('check_policy', { action, context });
+}
+
+export async function detectDoomLoopViaSidecar(callSequence: string[], agentId: string): Promise<{
+  signal: boolean;
+  code?: string;
+  evidence: string;
+  recommendation?: string;
+}> {
+  return callSidecarTool<{
+    signal: boolean;
+    code?: string;
+    evidence: string;
+    recommendation?: string;
+  }>('detect_doom_loop', {
+    call_sequence: callSequence,
+    agent_id: agentId,
+  });
+}
+
+export async function persistMemoryViaSidecar(fact: string, graphContext: Record<string, unknown> = {}): Promise<{
+  status: string;
+  id: string;
+  total_in_store: number;
+}> {
+  return callSidecarTool<{
+    status: string;
+    id: string;
+    total_in_store: number;
+  }>('persist_memory', {
+    fact,
+    graph_context: graphContext,
+  });
+}
+
+export async function ragRetrieveViaSidecar(query: string, k = 5): Promise<{
+  results: SidecarStoredMemory[];
+  total_in_store: number;
+}> {
+  return callSidecarTool<{
+    results: SidecarStoredMemory[];
+    total_in_store: number;
+  }>('rag_retrieve', { query, k });
+}
+
+export async function probeSidecarStatus(preference?: SidecarPreference): Promise<SidecarStatus & { fallbackReason?: string | null }> {
+  const status = resolveSidecarStatus(preference);
+
+  if (status.selected === 'disabled') {
+    return { ...status, fallbackReason: 'PraisonAI sidecar contract is explicitly disabled.' };
+  }
+
+  if (status.selected === 'external') {
+    try {
+      await callExternalSidecarTool('check_policy', {
+        action: 'git status',
+        context: { probe: true },
+      });
+      return { ...status, fallbackReason: null };
+    } catch (error) {
+      if (status.preferred !== 'external') {
+        return {
+          ...status,
+          selected: 'embedded',
+          fallbackReason: errorMessage(error),
+        };
+      }
+      throw error;
+    }
+  }
+
+  return { ...status, fallbackReason: null };
 }
 
 function availableModelBackends(): ModelBackendAvailability {
@@ -274,6 +699,7 @@ function resolveBackendPreference(preference?: ModelBackendPreference): ModelBac
     || envPreference === 'anthropic-api'
     || envPreference === 'codex-cli'
     || envPreference === 'openai-api'
+    || envPreference === 'codex-first'
     || envPreference === 'auto'
   ) {
     return envPreference;
@@ -335,6 +761,80 @@ export function resolveModelBackend(
       available,
       capabilities: { webSearch: false, cliRateLimits: false },
     };
+  }
+
+  if (requested === 'codex-first') {
+    if (available.codexCli && !backendOnCooldown('codex-cli')) {
+      return {
+        preferred: requested,
+        selected: 'codex-cli',
+        available,
+        capabilities: { webSearch: false, cliRateLimits: false },
+      };
+    }
+
+    if (available.openaiApi && !backendOnCooldown('openai-api')) {
+      return {
+        preferred: requested,
+        selected: 'openai-api',
+        available,
+        capabilities: { webSearch: false, cliRateLimits: false },
+      };
+    }
+
+    if (available.claudeCli && !backendOnCooldown('claude-cli')) {
+      return {
+        preferred: requested,
+        selected: 'claude-cli',
+        available,
+        capabilities: { webSearch: true, cliRateLimits: true },
+      };
+    }
+
+    if (available.anthropicApi && !backendOnCooldown('anthropic-api')) {
+      return {
+        preferred: requested,
+        selected: 'anthropic-api',
+        available,
+        capabilities: { webSearch: false, cliRateLimits: false },
+      };
+    }
+
+    if (available.codexCli) {
+      return {
+        preferred: requested,
+        selected: 'codex-cli',
+        available,
+        capabilities: { webSearch: false, cliRateLimits: false },
+      };
+    }
+
+    if (available.openaiApi) {
+      return {
+        preferred: requested,
+        selected: 'openai-api',
+        available,
+        capabilities: { webSearch: false, cliRateLimits: false },
+      };
+    }
+
+    if (available.claudeCli) {
+      return {
+        preferred: requested,
+        selected: 'claude-cli',
+        available,
+        capabilities: { webSearch: true, cliRateLimits: true },
+      };
+    }
+
+    if (available.anthropicApi) {
+      return {
+        preferred: requested,
+        selected: 'anthropic-api',
+        available,
+        capabilities: { webSearch: false, cliRateLimits: false },
+      };
+    }
   }
 
   if (available.codexCli && !backendOnCooldown('codex-cli')) {
@@ -939,12 +1439,9 @@ async function callOpenAiDirect(
 }
 
 function autoFallbackOrder(status: ModelBackendStatus): ModelBackendKind[] {
-  const candidates: ModelBackendKind[] = [
-    'codex-cli',
-    'claude-cli',
-    'openai-api',
-    'anthropic-api',
-  ];
+  const candidates: ModelBackendKind[] = status.preferred === 'codex-first'
+    ? ['codex-cli', 'openai-api', 'claude-cli', 'anthropic-api']
+    : ['codex-cli', 'claude-cli', 'openai-api', 'anthropic-api'];
 
   const prioritized = candidates.filter((backend) => {
     switch (backend) {
@@ -1009,14 +1506,14 @@ function shouldTryNextBackend(backend: ModelBackendKind, error: unknown): boolea
   }
 }
 
-async function callSelectedBackend(
+async function callSelectedBackendDirect(
   prompt: string,
   model: SupportedModelProfile,
   systemPrompt: string | undefined,
   maxTokens: number,
 ): Promise<ModelCallResult> {
   const backend = resolveModelBackend();
-  if (backend.preferred !== 'auto') {
+  if (backend.preferred !== 'auto' && backend.preferred !== 'codex-first') {
     return callBackend(backend.selected, prompt, model, systemPrompt, maxTokens);
   }
 
@@ -1048,7 +1545,7 @@ export async function callModel(
   model: 'haiku' | 'sonnet' | 'opus',
   systemPrompt?: string,
 ): Promise<ModelCallResult> {
-  return callSelectedBackend(prompt, model, systemPrompt, 2048);
+  return routeModelViaSidecar(prompt, model, systemPrompt, 2048);
 }
 
 export async function callModelLong(
@@ -1057,7 +1554,7 @@ export async function callModelLong(
   systemPrompt?: string,
   maxTokens = 4096,
 ): Promise<ModelCallResult> {
-  return callSelectedBackend(prompt, model, systemPrompt, maxTokens);
+  return routeModelViaSidecar(prompt, model, systemPrompt, maxTokens);
 }
 
 export async function callModelUltra(
@@ -1065,7 +1562,7 @@ export async function callModelUltra(
   model: 'haiku' | 'sonnet' | 'opus',
   systemPrompt?: string,
 ): Promise<ModelCallResult> {
-  return callSelectedBackend(prompt, model, systemPrompt, 8192);
+  return routeModelViaSidecar(prompt, model, systemPrompt, 8192);
 }
 
 export async function callNativeModel(
@@ -1074,5 +1571,5 @@ export async function callNativeModel(
   systemPrompt?: string,
   maxTokens = 4096,
 ): Promise<ModelCallResult> {
-  return callSelectedBackend(prompt, model, systemPrompt, maxTokens);
+  return routeModelViaSidecar(prompt, model, systemPrompt, maxTokens);
 }

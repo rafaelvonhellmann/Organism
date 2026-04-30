@@ -12,18 +12,205 @@ import {
   GoalStatus,
   Interrupt,
   InterruptStatus,
+  ProjectPolicy,
   ProjectAction,
   ProviderFailureKind,
   RetryClass,
+  RiskLane,
+  RunConfigSnapshot,
+  RunDisplayStatus,
   RunSession,
   RunSessionStatus,
   RunStep,
   RunStepStatus,
   WorkflowKind,
 } from '../../shared/src/types.js';
+import { loadProjectPolicy } from './project-policy.js';
+
+const SIDECAR_TOOL_NAMES = [
+  'route_model',
+  'rag_retrieve',
+  'check_policy',
+  'detect_doom_loop',
+  'persist_memory',
+];
 
 function now(): number {
   return Date.now();
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, inner]) => `${JSON.stringify(key)}:${stableJson(inner)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function policyHash(policy: ProjectPolicy | null): string | undefined {
+  if (!policy) return undefined;
+  return crypto.createHash('sha256')
+    .update(stableJson({
+      projectId: policy.projectId,
+      autonomyMode: policy.autonomyMode,
+      allowedActions: policy.allowedActions,
+      blockedActions: policy.blockedActions,
+      approvalThresholds: policy.approvalThresholds,
+      workspaceMode: policy.workspaceMode,
+      launchGuards: policy.launchGuards,
+      autonomySurfaces: policy.autonomySurfaces,
+      envRequirements: policy.envRequirements,
+    }))
+    .digest('hex');
+}
+
+function safeLoadPolicy(projectId: string): ProjectPolicy | null {
+  try {
+    return loadProjectPolicy(projectId);
+  } catch {
+    return null;
+  }
+}
+
+function parseJsonObject<T>(raw: unknown): T | null {
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function requiredReviewStages(lane: RiskLane | null | undefined): string[] {
+  switch (lane) {
+    case 'LOW':
+      return ['quality-agent'];
+    case 'MEDIUM':
+      return ['quality-agent', 'codex-review'];
+    case 'HIGH':
+      return ['quality-agent', 'codex-review', 'quality-guardian', 'g4-board'];
+    default:
+      return [];
+  }
+}
+
+export function deriveRunDisplayStatus(input: {
+  status: RunSessionStatus;
+  retryClass?: RetryClass | null;
+  providerFailureKind?: ProviderFailureKind | null;
+}): { displayStatus: RunDisplayStatus; displayReason: string | null } {
+  if (input.status === 'claimed') {
+    return { displayStatus: 'claimed', displayReason: 'Worker has claimed the run but has not started execution.' };
+  }
+  if (input.status === 'pending') {
+    return { displayStatus: 'pending', displayReason: null };
+  }
+  if (input.status === 'running') {
+    return { displayStatus: 'running', displayReason: null };
+  }
+  if (input.status === 'completed') {
+    return { displayStatus: 'succeeded', displayReason: null };
+  }
+  if (input.status === 'cancelled') {
+    return { displayStatus: 'cancelled', displayReason: null };
+  }
+  if (input.status === 'blocked') {
+    return { displayStatus: 'blocked', displayReason: 'Run is blocked until policy, approval, or operator input changes.' };
+  }
+  if (input.status === 'error') {
+    return { displayStatus: 'error', displayReason: 'Run stopped because of runtime or infrastructure error.' };
+  }
+  if (input.status === 'retry_scheduled') {
+    return {
+      displayStatus: input.retryClass === 'policy_block' || input.retryClass === 'manual_pause'
+        ? 'blocked'
+        : 'retry_scheduled',
+      displayReason: input.retryClass ? `Retry class: ${input.retryClass}` : null,
+    };
+  }
+  if (input.status === 'paused') {
+    return {
+      displayStatus: input.retryClass === 'policy_block' || input.retryClass === 'manual_pause'
+        ? 'blocked'
+        : 'retry_scheduled',
+      displayReason: input.retryClass && input.retryClass !== 'none' ? `Paused: ${input.retryClass}` : 'Run is paused.',
+    };
+  }
+  if (input.status === 'failed') {
+    if (
+      input.providerFailureKind === 'auth_failure'
+      || input.providerFailureKind === 'missing_secret'
+      || input.providerFailureKind === 'tool_failure'
+      || input.providerFailureKind === 'transport_error'
+      || input.providerFailureKind === 'timeout'
+    ) {
+      return { displayStatus: 'error', displayReason: `Runtime failure: ${input.providerFailureKind}` };
+    }
+    if (input.providerFailureKind === 'policy_block' || input.retryClass === 'policy_block') {
+      return { displayStatus: 'blocked', displayReason: 'Run failed because policy blocked execution.' };
+    }
+    return { displayStatus: 'failed', displayReason: null };
+  }
+  return { displayStatus: 'unknown', displayReason: `Unknown run status: ${input.status}` };
+}
+
+export function createRunConfigSnapshot(params: {
+  goalId: string;
+  projectId: string;
+  agent: string;
+  workflowKind: WorkflowKind;
+  sourceKind?: GoalSourceKind | null;
+  riskLane?: RiskLane | null;
+  modelProfile?: RunConfigSnapshot['modelProfile'];
+  modelBackend?: string | null;
+  codeExecutor?: string | null;
+  notes?: Record<string, unknown>;
+}): RunConfigSnapshot {
+  const policy = safeLoadPolicy(params.projectId);
+  return {
+    schemaVersion: 1,
+    capturedAt: now(),
+    projectId: params.projectId,
+    goalId: params.goalId,
+    agent: params.agent,
+    workflowKind: params.workflowKind,
+    sourceKind: params.sourceKind ?? null,
+    riskLane: params.riskLane ?? null,
+    modelProfile: params.modelProfile ?? null,
+    modelBackend: params.modelBackend ?? process.env.ORGANISM_MODEL_BACKEND ?? null,
+    codeExecutor: params.codeExecutor ?? process.env.ORGANISM_CODE_EXECUTOR ?? 'auto',
+    sidecar: {
+      mode: process.env.ORGANISM_SIDECAR_MODE === 'embedded'
+        || process.env.ORGANISM_SIDECAR_MODE === 'external'
+        || process.env.ORGANISM_SIDECAR_MODE === 'disabled'
+        ? process.env.ORGANISM_SIDECAR_MODE
+        : 'unknown',
+      toolNames: [...SIDECAR_TOOL_NAMES],
+    },
+    workspace: {
+      mode: policy?.workspaceMode ?? null,
+      repoPath: policy?.repoPath ?? null,
+      defaultBranch: policy?.defaultBranch ?? null,
+    },
+    policy: {
+      autonomyMode: policy?.autonomyMode ?? null,
+      allowedActions: policy?.allowedActions ?? [],
+      blockedActions: policy?.blockedActions ?? [],
+      envRequirements: policy?.envRequirements ?? [],
+      hash: policyHash(policy),
+    },
+    review: {
+      lane: params.riskLane ?? null,
+      requiredStages: requiredReviewStages(params.riskLane),
+    },
+    workflowRecipe: null,
+    notes: params.notes,
+  };
 }
 
 function normalizeDescription(description: string): string {
@@ -57,16 +244,23 @@ function rowToGoal(row: Record<string, unknown>): Goal {
 }
 
 function rowToRun(row: Record<string, unknown>): RunSession {
+  const status = row.status as RunSessionStatus;
+  const retryClass = row.retry_class as RetryClass;
+  const providerFailureKind = row.provider_failure_kind as ProviderFailureKind;
+  const display = deriveRunDisplayStatus({ status, retryClass, providerFailureKind });
   return {
     id: String(row.id),
     goalId: String(row.goal_id),
     projectId: String(row.project_id),
     agent: String(row.agent),
     workflowKind: row.workflow_kind as WorkflowKind,
-    status: row.status as RunSessionStatus,
-    retryClass: row.retry_class as RetryClass,
+    status,
+    displayStatus: display.displayStatus,
+    displayReason: display.displayReason,
+    retryClass,
     retryAt: row.retry_at ? Number(row.retry_at) : null,
-    providerFailureKind: row.provider_failure_kind as ProviderFailureKind,
+    providerFailureKind,
+    configSnapshot: parseJsonObject<RunConfigSnapshot>(row.config_snapshot),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
     completedAt: row.completed_at ? Number(row.completed_at) : null,
@@ -200,24 +394,60 @@ export function createRunSession(params: {
   agent: string;
   workflowKind: WorkflowKind;
   status?: RunSessionStatus;
+  sourceKind?: GoalSourceKind | null;
+  riskLane?: RiskLane | null;
+  modelProfile?: RunConfigSnapshot['modelProfile'];
+  modelBackend?: string | null;
+  codeExecutor?: string | null;
+  configSnapshot?: RunConfigSnapshot | null;
+  notes?: Record<string, unknown>;
 }): RunSession {
   const db = getDb();
   const id = crypto.randomUUID();
   const ts = now();
   const initialStatus = params.status ?? 'running';
+  const configSnapshot = params.configSnapshot ?? createRunConfigSnapshot({
+    goalId: params.goalId,
+    projectId: params.projectId,
+    agent: params.agent,
+    workflowKind: params.workflowKind,
+    sourceKind: params.sourceKind,
+    riskLane: params.riskLane,
+    modelProfile: params.modelProfile,
+    modelBackend: params.modelBackend,
+    codeExecutor: params.codeExecutor,
+    notes: params.notes,
+  });
   db.prepare(`
     INSERT INTO run_sessions (
-      id, goal_id, project_id, agent, workflow_kind, status, retry_class, retry_at, provider_failure_kind, created_at, updated_at
+      id, goal_id, project_id, agent, workflow_kind, status, retry_class, retry_at, provider_failure_kind, config_snapshot, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, 'none', NULL, 'none', ?, ?)
-  `).run(id, params.goalId, params.projectId, params.agent, params.workflowKind, initialStatus, ts, ts);
+    VALUES (?, ?, ?, ?, ?, ?, 'none', NULL, 'none', ?, ?, ?)
+  `).run(
+    id,
+    params.goalId,
+    params.projectId,
+    params.agent,
+    params.workflowKind,
+    initialStatus,
+    JSON.stringify(configSnapshot),
+    ts,
+    ts,
+  );
 
-  updateGoalStatus(params.goalId, initialStatus === 'paused' ? 'paused' : 'running', id);
+  updateGoalStatus(
+    params.goalId,
+    initialStatus === 'paused' ? 'paused' :
+    initialStatus === 'blocked' ? 'blocked' :
+    initialStatus === 'error' ? 'error' :
+    'running',
+    id,
+  );
   recordRuntimeEvent({
     runId: id,
     goalId: params.goalId,
     eventType: 'run.started',
-    payload: { agent: params.agent, workflowKind: params.workflowKind },
+    payload: { agent: params.agent, workflowKind: params.workflowKind, configSnapshot },
     agent: params.agent,
   });
   recordRuntimeEvent({
@@ -264,7 +494,7 @@ export function updateRunStatus(params: {
   getDb().prepare(`
     UPDATE run_sessions
     SET status = ?, retry_class = COALESCE(?, retry_class), retry_at = ?, provider_failure_kind = COALESCE(?, provider_failure_kind),
-        updated_at = ?, completed_at = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN ? ELSE completed_at END
+        updated_at = ?, completed_at = CASE WHEN ? IN ('completed', 'failed', 'error', 'cancelled') THEN ? ELSE completed_at END
     WHERE id = ?
   `).run(
     params.status,
@@ -281,13 +511,15 @@ export function updateRunStatus(params: {
   const goalStatus: GoalStatus =
     params.status === 'completed' ? 'completed' :
     params.status === 'failed' ? 'failed' :
+    params.status === 'error' ? 'error' :
+    params.status === 'blocked' ? 'blocked' :
     params.status === 'retry_scheduled' ? 'retry_scheduled' :
     params.status === 'paused' ? 'paused' :
     params.status === 'cancelled' ? 'cancelled' :
     'running';
   updateGoalStatus(run.goalId, goalStatus, run.id);
 
-  if (params.status === 'paused' || params.status === 'retry_scheduled') {
+  if (params.status === 'paused' || params.status === 'retry_scheduled' || params.status === 'blocked') {
     recordRuntimeEvent({
       runId: run.id,
       goalId: run.goalId,
@@ -297,6 +529,7 @@ export function updateRunStatus(params: {
         retryAt: params.retryAt ?? run.retryAt,
         providerFailureKind: params.providerFailureKind ?? run.providerFailureKind,
         summary: params.summary ?? null,
+        displayStatus: getRunSession(params.runId)?.displayStatus ?? null,
       },
       agent: run.agent,
     });
@@ -308,7 +541,7 @@ export function updateRunStatus(params: {
       payload: { summary: params.summary ?? null },
       agent: run.agent,
     });
-  } else if (params.status === 'completed' || params.status === 'failed' || params.status === 'cancelled') {
+  } else if (params.status === 'completed' || params.status === 'failed' || params.status === 'error' || params.status === 'cancelled') {
     recordRuntimeEvent({
       runId: run.id,
       goalId: run.goalId,
