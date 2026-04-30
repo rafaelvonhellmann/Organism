@@ -16,6 +16,7 @@ import { homedir, tmpdir } from 'os';
 import { getSecretOrNull } from '../../packages/shared/src/secrets.js';
 import { STATE_DIR } from '../../packages/shared/src/state-dir.js';
 import { OrganismError } from '../../packages/shared/src/error-taxonomy.js';
+import { getAgentRuntime } from './agent-runtime.js';
 
 type LogicalModelProfile = 'haiku' | 'sonnet' | 'opus';
 export type SupportedModelProfile = LogicalModelProfile | 'gpt4o' | 'gpt5.4';
@@ -461,15 +462,22 @@ async function callSidecarTool<T>(tool: SidecarToolName, args: Record<string, un
   return callEmbeddedSidecarTool<T>(tool, args);
 }
 
+function withRuntimeSystemPrompt(systemPrompt: string | undefined): string | undefined {
+  const runtime = getAgentRuntime();
+  if (!runtime?.skillSystemPrompt) return systemPrompt;
+  return [systemPrompt, runtime.skillSystemPrompt].filter(Boolean).join('\n\n');
+}
+
 export async function routeModelViaSidecar(
   prompt: string,
   model: SupportedModelProfile,
   systemPrompt: string | undefined,
   maxTokens: number,
 ): Promise<ModelCallResult> {
+  const runtimeSystemPrompt = withRuntimeSystemPrompt(systemPrompt);
   const status = resolveSidecarStatus();
   if (status.selected === 'disabled') {
-    return callSelectedBackendDirect(prompt, model, systemPrompt, maxTokens);
+    return callSelectedBackendDirect(prompt, model, runtimeSystemPrompt, maxTokens);
   }
 
   const result = await callSidecarTool<{
@@ -480,7 +488,7 @@ export async function routeModelViaSidecar(
   }>('route_model', {
     prompt,
     model_preference: model,
-    system: systemPrompt,
+    system: runtimeSystemPrompt,
     max_tokens: maxTokens,
   });
 
