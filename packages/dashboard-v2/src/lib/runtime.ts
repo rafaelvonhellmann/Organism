@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import type { Client, Row } from '@libsql/client';
 import { getClient, ensureTables } from './db';
 import { summarizeTaskOutput } from './task-output';
@@ -31,16 +32,124 @@ function tryParse(value: unknown): unknown {
   }
 }
 
+function parseRecord(value: unknown): Record<string, unknown> | null {
+  const parsed = tryParse(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
+}
+
+function normalizeDecisionKind(value: unknown): string {
+  const text = s(value);
+  return text.length > 0 ? text : 'none';
+}
+
+function hasDecisionSignal(value: string): boolean {
+  return value.length > 0 && value !== 'none';
+}
+
+function decisionReason(parts: Array<string | null>, fallback: string | null = null): string | null {
+  const present = parts.filter((part): part is string => !!part);
+  return present.length > 0 ? present.join(' / ') : fallback;
+}
+
+function decisionPart(label: string, value: string): string | null {
+  return hasDecisionSignal(value) ? `${label}: ${value}` : null;
+}
+
+function deriveRunDisplay(row: Row): { displayStatus: string; displayReason: string | null } {
+  const status = s(row.status) || 'unknown';
+  const retryClass = normalizeDecisionKind(row.retry_class);
+  const providerFailureKind = normalizeDecisionKind(row.provider_failure_kind);
+  const retryReason = decisionPart('retry', retryClass);
+  const providerReason = decisionPart('provider', providerFailureKind);
+
+  if (status === 'claimed') {
+    return { displayStatus: 'claimed', displayReason: 'Worker has claimed the run but has not started execution.' };
+  }
+  if (status === 'pending' || status === 'running') {
+    return { displayStatus: status, displayReason: null };
+  }
+  if (status === 'completed') {
+    return { displayStatus: 'succeeded', displayReason: null };
+  }
+  if (status === 'cancelled') {
+    return { displayStatus: 'cancelled', displayReason: null };
+  }
+  if (status === 'blocked') {
+    return {
+      displayStatus: 'blocked',
+      displayReason: decisionReason([retryReason, providerReason], 'Run is blocked until policy, approval, or operator input changes.'),
+    };
+  }
+  if (status === 'error') {
+    return {
+      displayStatus: 'error',
+      displayReason: decisionReason([retryReason, providerReason], 'Run stopped because of runtime or infrastructure error.'),
+    };
+  }
+  if (status === 'retry_scheduled') {
+    const blocked = retryClass === 'policy_block' || retryClass === 'manual_pause' || providerFailureKind === 'policy_block';
+    return {
+      displayStatus: blocked ? 'blocked' : 'retry_scheduled',
+      displayReason: decisionReason([retryReason, providerReason]),
+    };
+  }
+  if (status === 'paused') {
+    const blocked = retryClass === 'policy_block' || retryClass === 'manual_pause' || providerFailureKind === 'policy_block';
+    return {
+      displayStatus: blocked ? 'blocked' : 'retry_scheduled',
+      displayReason: decisionReason([retryReason, providerReason], 'Run is paused.'),
+    };
+  }
+  if (status === 'failed') {
+    if (providerFailureKind === 'policy_block' || retryClass === 'policy_block') {
+      return { displayStatus: 'blocked', displayReason: 'Run failed because policy blocked execution.' };
+    }
+    if (['auth_failure', 'missing_secret', 'tool_failure', 'transport_error', 'timeout'].includes(providerFailureKind)) {
+      return { displayStatus: 'error', displayReason: `Runtime failure: ${providerFailureKind}` };
+    }
+    return {
+      displayStatus: 'failed',
+      displayReason: decisionReason([retryReason, providerReason]),
+    };
+  }
+  return { displayStatus: 'unknown', displayReason: `Unknown run status: ${status}` };
+}
+
+function formatConfigSnapshot(value: unknown): Record<string, unknown> | null {
+  const parsed = parseRecord(value);
+  if (!parsed) return null;
+  return compactRuntimeValue(parsed) as Record<string, unknown>;
+}
+
 function workspacePath(...segments: string[]): string {
   const direct = resolve(process.cwd(), ...segments);
   if (existsSync(direct)) return direct;
   return resolve(process.cwd(), '..', '..', ...segments);
 }
 
+function runGit(args: string[], cwd: string): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  }).trim();
+}
+
+function tryGit(args: string[], cwd: string): string {
+  try {
+    return runGit(args, cwd);
+  } catch {
+    return '';
+  }
+}
+
 const HOME = process.env.USERPROFILE ?? process.env.HOME ?? '.';
 const STATE_DIR = process.env.ORGANISM_STATE_DIR ?? resolve(HOME, '.organism', 'state');
 const DEFAULT_CORE_AGENTS = ['ceo', 'product-manager', 'engineering', 'devops', 'quality-agent', 'security-audit', 'legal', 'quality-guardian', 'codex-review'];
 const ACTIVE_RUN_STALE_MS = 20 * 60 * 1000;
+const BLOCKER_STALE_MS = 24 * 60 * 60 * 1000;
 const FINAL_GRADUATION_RUNS = 3;
 const ROLLOUT_STAGES = [
   { stage: 'bounded', label: 'bounded autonomy', threshold: 1 },
@@ -53,26 +162,114 @@ const NON_TERMINAL_STATUSES = new Set(['pending', 'running', 'paused', 'retry_sc
 function readProjectConfig(projectId: string): {
   autonomyMode: string;
   coreAgents: string[];
+  repoPath: string | null;
 } {
   const configPath = workspacePath('knowledge', 'projects', projectId, 'config.json');
   if (!existsSync(configPath)) {
-    return { autonomyMode: 'stabilization', coreAgents: DEFAULT_CORE_AGENTS };
+    return { autonomyMode: 'stabilization', coreAgents: DEFAULT_CORE_AGENTS, repoPath: null };
   }
 
   try {
     const raw = JSON.parse(readFileSync(configPath, 'utf8')) as {
       autonomyMode?: string;
       agents?: { generalist?: string[] };
+      repoPath?: string;
+      projectPath?: string;
     };
     return {
       autonomyMode: raw.autonomyMode ?? 'stabilization',
       coreAgents: Array.isArray(raw.agents?.generalist) && raw.agents.generalist.length > 0
         ? raw.agents.generalist
         : DEFAULT_CORE_AGENTS,
+      repoPath: raw.repoPath ?? raw.projectPath ?? null,
     };
   } catch {
-    return { autonomyMode: 'stabilization', coreAgents: DEFAULT_CORE_AGENTS };
+    return { autonomyMode: 'stabilization', coreAgents: DEFAULT_CORE_AGENTS, repoPath: null };
   }
+}
+
+function slugify(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^\w]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'project';
+}
+
+function shortProjectToken(projectId: string): string {
+  const compact = slugify(projectId).replace(/-/g, '').slice(0, 10);
+  if (compact.length >= 4) return compact;
+  return projectId.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 10) || 'project';
+}
+
+function countDirectories(dirPath: string): number {
+  if (!existsSync(dirPath)) return 0;
+  try {
+    return readdirSync(dirPath, { withFileTypes: true }).filter((entry) => entry.isDirectory()).length;
+  } catch {
+    return 0;
+  }
+}
+
+function countLines(output: string): number {
+  return output.split(/\r?\n/).filter(Boolean).length;
+}
+
+function getBranchHygieneSnapshot(projectId: string) {
+  const config = readProjectConfig(projectId);
+  const repoPath = config.repoPath ? resolve(config.repoPath) : resolve(process.cwd(), '..', '..');
+  const warnings: string[] = [];
+  const stateWorktreeDirs = countDirectories(resolve(STATE_DIR, 'wt', shortProjectToken(projectId)))
+    + countDirectories(resolve(STATE_DIR, 'worktrees', projectId));
+
+  if (!existsSync(resolve(repoPath, '.git'))) {
+    return {
+      projectId,
+      repoPath,
+      stateDir: STATE_DIR,
+      localBranches: 0,
+      remoteBranches: 0,
+      worktreeRecords: 0,
+      detachedWorktrees: 0,
+      stateWorktreeDirs,
+      cleanupStashes: 0,
+      archiveRefs: 0,
+      warnings: [`Repo path is not readable: ${repoPath}`],
+    };
+  }
+
+  const localBranches = countLines(tryGit(['branch', '--format=%(refname:short)'], repoPath));
+  const remoteBranches = countLines(tryGit(['branch', '-r', '--format=%(refname:short)'], repoPath));
+  const worktreeList = tryGit(['worktree', 'list', '--porcelain'], repoPath);
+  const worktreeRecords = countLines(worktreeList.split(/\r?\n/).filter((line) => line.startsWith('worktree ')).join('\n'));
+  const detachedWorktrees = countLines(worktreeList.split(/\r?\n/).filter((line) => line === 'detached').join('\n'));
+  const cleanupStashes = countLines(
+    tryGit(['stash', 'list', '--format=%gs'], repoPath)
+      .split(/\r?\n/)
+      .filter((line) => /branch-cleanup|worktree-disk-cleanup|worktree-janitor|workspace-cleanup/.test(line))
+      .join('\n'),
+  );
+  const archiveRefs = countLines(tryGit(['for-each-ref', 'refs/archive', '--format=%(refname)'], repoPath));
+
+  if (localBranches > 6) warnings.push(`${localBranches} local branches remain`);
+  if (detachedWorktrees > 0) warnings.push(`${detachedWorktrees} detached worktree record(s) remain`);
+  if (stateWorktreeDirs > 0) {
+    warnings.push(`${stateWorktreeDirs} state worktree ${stateWorktreeDirs === 1 ? 'directory remains' : 'directories remain'}`);
+  }
+
+  return {
+    projectId,
+    repoPath,
+    stateDir: STATE_DIR,
+    localBranches,
+    remoteBranches,
+    worktreeRecords,
+    detachedWorktrees,
+    stateWorktreeDirs,
+    cleanupStashes,
+    archiveRefs,
+    warnings,
+  };
 }
 
 interface RecentGoalSnapshotRow {
@@ -362,6 +559,7 @@ function formatGoal(row: Row) {
 type RuntimeGoal = ReturnType<typeof formatGoal>;
 
 function formatRun(row: Row) {
+  const display = deriveRunDisplay(row);
   return {
     id: s(row.id),
     goalId: s(row.goal_id),
@@ -369,9 +567,12 @@ function formatRun(row: Row) {
     agent: s(row.agent),
     workflowKind: s(row.workflow_kind),
     status: s(row.status),
-    retryClass: s(row.retry_class),
+    displayStatus: display.displayStatus,
+    displayReason: display.displayReason,
+    retryClass: normalizeDecisionKind(row.retry_class),
     retryAt: row.retry_at != null ? n(row.retry_at) : null,
-    providerFailureKind: s(row.provider_failure_kind),
+    providerFailureKind: normalizeDecisionKind(row.provider_failure_kind),
+    configSnapshot: formatConfigSnapshot(row.config_snapshot),
     createdAt: n(row.created_at),
     updatedAt: n(row.updated_at),
     completedAt: row.completed_at != null ? n(row.completed_at) : null,
@@ -569,7 +770,7 @@ function formatEvent(row: Row) {
     runId: s(row.run_id),
     goalId: s(row.goal_id),
     eventType: s(row.event_type),
-    payload: tryParse(row.payload),
+    payload: compactRuntimeValue(tryParse(row.payload)),
     ts: n(row.ts),
   };
 }
@@ -582,7 +783,7 @@ function formatArtifact(row: Row) {
     kind: s(row.kind),
     title: s(row.title),
     path: row.path ? s(row.path) : null,
-    content: row.content ? s(row.content) : null,
+    content: row.content ? trimRuntimeText(s(row.content), 1200) : null,
     createdAt: n(row.created_at),
   };
 }
@@ -594,7 +795,7 @@ function formatRecentOutput(row: Row) {
     status: s(row.status),
     lane: s(row.lane),
     description: s(row.description),
-    summary: summarizeTaskOutput(row.output, row.error, row.project_id),
+    summary: trimRuntimeText(summarizeTaskOutput(row.output, row.error, row.project_id), 700),
     completedAt: row.completed_at != null ? n(row.completed_at) : null,
     createdAt: n(row.created_at),
   };
@@ -643,9 +844,33 @@ function buildUsefulOutputs(
 }
 
 function trimUsefulSummary(value: string | null): string | null {
+  return trimRuntimeText(value, 320);
+}
+
+function trimRuntimeText(value: string | null, maxLength: number): string | null {
   if (!value) return null;
   const compact = value.replace(/\s+/g, ' ').trim();
-  return compact.length > 320 ? `${compact.slice(0, 317).trimEnd()}...` : compact;
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 3).trimEnd()}...` : compact;
+}
+
+function compactRuntimeValue(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return trimRuntimeText(value, 700);
+  if (value == null || typeof value !== 'object') return value;
+  if (depth >= 3) return '[truncated]';
+
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 25).map((item) => compactRuntimeValue(item, depth + 1));
+    if (value.length > 25) items.push(`[${value.length - 25} more]`);
+    return items;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>);
+  const compact: Record<string, unknown> = {};
+  for (const [key, item] of entries.slice(0, 25)) {
+    compact[key] = compactRuntimeValue(item, depth + 1);
+  }
+  if (entries.length > 25) compact._truncated = `${entries.length - 25} more field(s)`;
+  return compact;
 }
 
 interface RuntimeBlockerRow {
@@ -895,9 +1120,13 @@ export async function getRuntimeSnapshot(projectId?: string) {
   const projectFilter = projectId ? 'WHERE project_id = ?' : '';
   const projectArgs = projectId ? [projectId] : [];
   const taskOutputFilter = projectId ? 'WHERE project_id = ? AND output IS NOT NULL' : 'WHERE output IS NOT NULL';
+  const blockerCutoff = Date.now() - BLOCKER_STALE_MS;
   const blockerFilter = projectId
-    ? `WHERE project_id = ? AND status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')`
-    : `WHERE status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')`;
+    ? `WHERE project_id = ? AND status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')
+       AND COALESCE(retry_at, completed_at, started_at, created_at) >= ?`
+    : `WHERE status IN ('in_progress', 'paused', 'retry_scheduled', 'awaiting_review')
+       AND COALESCE(retry_at, completed_at, started_at, created_at) >= ?`;
+  const blockerArgs = projectId ? [projectId, blockerCutoff] : [blockerCutoff];
 
   const [goalsRows, runsRows, interruptsRows, approvalsRows, eventsRows, artifactsRows, outputRows, blockerRows] = await Promise.all([
     execute(
@@ -962,7 +1191,7 @@ export async function getRuntimeSnapshot(projectId?: string) {
        ${blockerFilter}
        ORDER BY COALESCE(completed_at, created_at) DESC
        LIMIT 24`,
-      projectArgs,
+      blockerArgs,
     ),
   ]);
 
@@ -1065,6 +1294,7 @@ export async function getRuntimeSnapshot(projectId?: string) {
     recentEvents: eventsRows.map(formatEvent).reverse(),
     compareTargets,
     autonomy,
+    hygiene: getBranchHygieneSnapshot(projectId ?? 'organism'),
     daemon,
   };
 }

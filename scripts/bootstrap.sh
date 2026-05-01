@@ -14,7 +14,7 @@ pnpm install
 
 # 2. State directory
 echo "Creating state directory..."
-mkdir -p state e2e/screenshots
+mkdir -p "${HOME}/.organism/state" e2e/screenshots
 
 # 3. Copy env file if not present
 if [ ! -f .env ]; then
@@ -32,12 +32,12 @@ cd ../..
 
 # 5. Initialize database
 echo "Initializing database..."
-pnpm run migrate 2>/dev/null || npx tsx scripts/migrate.ts
+pnpm run migrate
 
 # 6. Health check
 echo ""
 echo "Running health check..."
-npx tsx scripts/health-check.ts
+pnpm run health-check
 
 echo ""
 echo "=== Bootstrap complete ==="
@@ -45,4 +45,4 @@ echo ""
 echo "Next steps:"
 echo "  1. Fill in API keys in .env"
 echo "  2. Start dashboard: pnpm run dashboard"
-echo "  3. Run smoke test: pnpm run smoke-test"
+echo "  3. Run certification: pnpm run smoke-test"

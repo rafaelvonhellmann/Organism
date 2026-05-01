@@ -9,8 +9,30 @@ const PROJECT_DISPLAY_NAMES: Record<string, string> = {
   'organism': 'Organism (internal)',
 };
 
+const DEFAULT_PROJECTS = ['synapse', 'tokens-for-good', 'organism'];
+
 function displayName(id: string): string {
   return PROJECT_DISPLAY_NAMES[id] ?? id;
+}
+
+function sortProjects(projects: string[]): string[] {
+  return [...projects].sort((a, b) => {
+    if (a === 'organism') return 1;
+    if (b === 'organism') return -1;
+    return a.localeCompare(b);
+  });
+}
+
+function mergeProjects(...sources: Array<string | string[] | undefined>): string[] {
+  const set = new Set<string>();
+  for (const source of sources) {
+    if (!source) continue;
+    const values = Array.isArray(source) ? source : [source];
+    for (const value of values) {
+      if (value) set.add(value);
+    }
+  }
+  return sortProjects([...set]);
 }
 
 /** Pick the best default: keep prior selection when possible, otherwise prefer All Projects. */
@@ -40,7 +62,7 @@ export function Header({
   allowAllProjects = true,
   autoSelectProject = true,
 }: HeaderProps) {
-  const [projects, setProjects] = useState<string[]>([]);
+  const [projects, setProjects] = useState<string[]>(() => mergeProjects(DEFAULT_PROJECTS, project));
   const [ago, setAgo] = useState('');
   const [initialized, setInitialized] = useState(false);
 
@@ -48,9 +70,10 @@ export function Header({
     fetch('/api/projects')
       .then(r => r.json())
       .then((list: string[]) => {
-        setProjects(list);
+        const nextProjects = mergeProjects(DEFAULT_PROJECTS, project, getInitialSelectedProject(), list);
+        setProjects(nextProjects);
         if (!initialized && autoSelectProject) {
-          const nextProject = pickDefault(list, allowAllProjects, project);
+          const nextProject = pickDefault(nextProjects, allowAllProjects, project);
           onProjectChange(nextProject);
           setInitialized(true);
         }
@@ -58,7 +81,10 @@ export function Header({
           setInitialized(true);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        setProjects(current => mergeProjects(DEFAULT_PROJECTS, project, getInitialSelectedProject(), current));
+        if (!initialized) setInitialized(true);
+      });
   }, [allowAllProjects, autoSelectProject, initialized, onProjectChange, project]);
 
   useEffect(() => {

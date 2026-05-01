@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTheme } from './theme-provider';
-import { getInitialSelectedProject, SELECTED_PROJECT_EVENT } from '@/lib/selected-project';
+import { getInitialSelectedProject, persistSelectedProject, SELECTED_PROJECT_EVENT } from '@/lib/selected-project';
 
 interface NavItem {
   href: string;
@@ -27,6 +27,10 @@ const PROJECTS: NavItem[] = [
   { href: '/project/synapse', label: 'Synapse', icon: 'S' },
   { href: '/project/tokens-for-good', label: 'Tokens for Good', icon: 'T' },
 ];
+
+function projectIdFromHref(href: string): string {
+  return href.replace(/^\/project\//, '');
+}
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -115,7 +119,10 @@ export function Sidebar() {
             <Link
               key={href}
               href={href}
-              onClick={() => setMobileOpen(false)}
+              onClick={() => {
+                persistSelectedProject(projectIdFromHref(href));
+                setMobileOpen(false);
+              }}
               className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                 active
                   ? 'bg-emerald-500/15 text-emerald-400'

@@ -2,7 +2,7 @@
  * start-daemon.ts — Main entry point for running Organism autonomously.
  *
  * Usage: pnpm start
- * Or:    tsx --experimental-sqlite scripts/start-daemon.ts
+ * Or:    npm run start
  *
  * Lifecycle cycles:
  *   - Agent runner: polls every DAEMON_POLL_MS (10s) for pending tasks
@@ -11,7 +11,7 @@
  *   - Sync cycle: every 30s — pushes local state to Turso and keeps the hosted dashboard fresh
  *   - Review cycle: daily at configured hour — runs full project review if scheduled
  *
- * Daemon status is persisted to state/daemon-status.json for dashboard consumption.
+ * Daemon status is persisted under the canonical runtime state root for dashboard consumption.
  */
 
 import * as fs from 'fs';
@@ -20,7 +20,7 @@ import { execFileSync } from 'child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { getDb } from '../packages/core/src/task-queue.js';
-import { loadRegistry, checkRegistryCoherence } from '../packages/core/src/registry.js';
+import { loadRegistry, assertRegistryCoherence } from '../packages/core/src/registry.js';
 import { listProjectPolicies } from '../packages/core/src/project-policy.js';
 import { getProjectLaunchReadiness } from '../packages/core/src/project-readiness.js';
 import { startScheduler } from '../packages/core/src/scheduler.js';
@@ -466,7 +466,7 @@ function acquireDaemonLock(): void {
   fs.writeFileSync(PID_FILE, String(process.pid));
 }
 
-export function recoverWorkOnStartup(logger: (line: string) => void = console.log): ReturnType<typeof recoverInterruptedWork> {
+export async function recoverWorkOnStartup(logger: (line: string) => void = console.log): Promise<ReturnType<typeof recoverInterruptedWork>> {
   const recovered = recoverInterruptedWork();
   if (recovered.recoveredRuns > 0 || recovered.retriedTasks > 0 || recovered.pausedTasks > 0) {
     logger(
@@ -475,7 +475,7 @@ export function recoverWorkOnStartup(logger: (line: string) => void = console.lo
   } else {
     logger('[Daemon] No interrupted runs to recover');
   }
-  const healed = autoHealPausedReviewTasks();
+  const healed = await autoHealPausedReviewTasks();
   if (healed.rescheduledTasks > 0 || healed.resumedRuns > 0 || healed.retiredTasks > 0 || healed.reroutedTasks > 0) {
     logger(
       `[Daemon] Auto-healed paused review work: ${healed.rescheduledTasks} task(s) rescheduled, ${healed.resumedRuns} run(s) resumed, ${healed.retiredTasks} superseded task(s) retired, ${healed.reroutedTasks} bounded fallback task(s) created`,
@@ -546,14 +546,34 @@ function loadTursoEnv(): { url: string; token: string } | null {
   const env: Record<string, string> = {};
   const lines = fs.readFileSync(envFile, 'utf-8').split('\n');
   for (const line of lines) {
-    const match = line.match(/^(\w+)="(.+)"$/);
-    if (match) env[match[1]] = match[2];
+    const parsed = parseEnvLine(line);
+    if (parsed) env[parsed.key] = parsed.value;
   }
 
   if (env.TURSO_DATABASE_URL && env.TURSO_AUTH_TOKEN) {
     return { url: env.TURSO_DATABASE_URL, token: env.TURSO_AUTH_TOKEN };
   }
   return null;
+}
+
+function parseEnvLine(line: string): { key: string; value: string } | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+  const eq = trimmed.indexOf('=');
+  if (eq <= 0) return null;
+
+  const key = trimmed.slice(0, eq).trim();
+  if (!/^\w+$/.test(key)) return null;
+
+  let value = trimmed.slice(eq + 1).trim();
+  if (
+    (value.startsWith('"') && value.endsWith('"'))
+    || (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1);
+  }
+
+  return { key, value };
 }
 
 async function runSyncCycle(force = false): Promise<void> {
@@ -674,7 +694,7 @@ async function lifecycleTick(): Promise<void> {
         `[Lifecycle] Recovered stale work: ${stale.recoveredRuns} run(s), ${stale.retriedTasks} retry task(s), ${stale.pausedTasks} paused task(s)`,
       );
     }
-    const healed = autoHealPausedReviewTasks();
+    const healed = await autoHealPausedReviewTasks();
     if (healed.rescheduledTasks > 0 || healed.resumedRuns > 0 || healed.retiredTasks > 0 || healed.reroutedTasks > 0) {
       console.log(
         `[Lifecycle] Auto-healed paused review work: ${healed.rescheduledTasks} task(s) rescheduled, ${healed.resumedRuns} run(s) resumed, ${healed.retiredTasks} superseded task(s) retired, ${healed.reroutedTasks} bounded fallback task(s) created`,
@@ -855,17 +875,11 @@ async function main(): Promise<void> {
   console.log('[Daemon] Database migrations OK');
 
   // 4a. Registry coherence check — fail-fast on drift between registry + runner AGENT_MAP.
-  const coherence = checkRegistryCoherence(getRegisteredAgentNames());
-  if (coherence.missingImplementations.length > 0) {
-    console.error(`[Daemon] Registry drift: ${coherence.missingImplementations.length} active/shadow agent(s) missing from AGENT_MAP: ${coherence.missingImplementations.join(', ')}`);
-  }
-  if (coherence.orphanedImplementations.length > 0) {
-    console.warn(`[Daemon] Registry drift: ${coherence.orphanedImplementations.length} AGENT_MAP entry(ies) have no active/shadow registry record: ${coherence.orphanedImplementations.join(', ')}`);
-  }
+  const coherence = assertRegistryCoherence(getRegisteredAgentNames());
   console.log(`[Daemon] Registry: ${coherence.activeCount} active, ${coherence.shadowCount} shadow, ${coherence.suspendedCount} suspended`);
 
   // 4b. Recover any interrupted work before the scheduler/runner resume.
-  recoverWorkOnStartup();
+  await recoverWorkOnStartup();
   await bootstrapIdleAutonomy();
   persistStatus();
   await runSyncCycle(true);
@@ -933,6 +947,7 @@ const isMainModule = process.argv[1]
 
 if (isMainModule) {
   main().catch((err) => {
+    releaseDaemonLock();
     console.error('[Daemon] Fatal startup error:', err);
     process.exit(1);
   });

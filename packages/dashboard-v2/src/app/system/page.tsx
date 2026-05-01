@@ -16,7 +16,7 @@ import { usePolling } from '@/hooks/use-polling';
 
 // ── Types ──────────────────────────────────────────────────────
 
-type Tab = 'budget' | 'agents' | 'knowledge' | 'logs';
+type Tab = 'budget' | 'agents' | 'knowledge' | 'research' | 'logs';
 
 interface BudgetData {
   date: string;
@@ -109,6 +109,38 @@ interface HealthData {
   minutesSinceActivity: number;
 }
 
+interface AutoresearchCheckResult {
+  label: string;
+  status: 'pass' | 'fail' | 'unknown';
+  detail: string | null;
+}
+
+interface AutoresearchLedgerEntry {
+  timestamp: string;
+  tag: string;
+  profile: string;
+  branch: string;
+  commit: string;
+  status: string;
+  score: number;
+  durationMs: number;
+  changedFiles: number;
+  checks: AutoresearchCheckResult[];
+  notes: string;
+}
+
+interface AutoresearchLedgerData {
+  generatedAt: number;
+  exists: boolean;
+  totalRuns: number;
+  keepCandidates: number;
+  needsRework: number;
+  averageScore: number | null;
+  latest: AutoresearchLedgerEntry | null;
+  entries: AutoresearchLedgerEntry[];
+  updatedAt: number | null;
+}
+
 interface Alert {
   level: 'red' | 'amber';
   message: string;
@@ -132,6 +164,37 @@ function formatLogTime(ms: number): string {
   return new Date(ms).toLocaleTimeString('en-AU', {
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
   });
+}
+
+function formatLedgerTime(value: string): string {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return value;
+  return new Date(ms).toLocaleString('en-AU', {
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function formatLedgerDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return 'n/a';
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s`;
+}
+
+function ledgerStatusTone(status: string): string {
+  if (status === 'keep_candidate') return 'bg-emerald-500/15 text-emerald-300';
+  if (status === 'needs_rework') return 'bg-red-500/15 text-red-300';
+  return 'bg-zinc-700/40 text-zinc-300';
+}
+
+function checkSummary(entry: AutoresearchLedgerEntry): string {
+  const passed = entry.checks.filter((check) => check.status === 'pass').length;
+  return `${passed}/${entry.checks.length}`;
 }
 
 const OUTCOME_STYLE: Record<string, { cls: string; icon: string }> = {
@@ -267,6 +330,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'budget', label: 'Budget' },
   { key: 'agents', label: 'Agents' },
   { key: 'knowledge', label: 'Knowledge' },
+  { key: 'research', label: 'Research' },
   { key: 'logs', label: 'Logs' },
 ];
 
@@ -292,6 +356,11 @@ export default function SystemPage() {
   );
   const { data: palate, lastUpdated: palateUpdated } = usePolling<PalateData>('/api/palate');
   const { data: upstreamSources, lastUpdated: upstreamUpdated } = usePolling<{ sources: UpstreamSource[] }>('/api/upstream-sources');
+  const {
+    data: autoresearchLedger,
+    error: autoresearchError,
+    lastUpdated: autoresearchUpdated,
+  } = usePolling<AutoresearchLedgerData>('/api/autoresearch?limit=12', 30_000);
   const { data: history, lastUpdated: historyUpdated } = usePolling<{ tasks: HistoryTask[] }>('/api/history');
   const { data: health } = usePolling<HealthData>('/api/health');
   const { logs, newIds, polling: logsPolling } = useLiveLogs();
@@ -322,7 +391,13 @@ export default function SystemPage() {
 
   const alerts = computeAlerts(budget, effectiveHealth, effectiveHistory);
   const logsUpdated = logs.length > 0 ? new Date(logs[0].ts) : null;
-  const lastUpdated = { budget: budgetUpdated, agents: agentsUpdated, knowledge: upstreamUpdated ?? palateUpdated, logs: logsUpdated ?? historyUpdated }[tab];
+  const lastUpdated = {
+    budget: budgetUpdated,
+    agents: agentsUpdated,
+    knowledge: upstreamUpdated ?? palateUpdated,
+    research: autoresearchUpdated,
+    logs: logsUpdated ?? historyUpdated,
+  }[tab];
 
   return (
     <>
@@ -634,6 +709,99 @@ export default function SystemPage() {
               )}
             </div>
             {!palate && <div className="text-center py-12 text-zinc-600">Loading knowledge data...</div>}
+          </>
+        )}
+
+        {/* Research */}
+        {tab === 'research' && (
+          <>
+            {autoresearchError && (
+              <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                Autoresearch ledger unavailable: {autoresearchError}
+              </div>
+            )}
+
+            {autoresearchLedger && autoresearchLedger.totalRuns > 0 ? (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="bg-surface rounded-xl border border-edge p-4">
+                    <div className="text-xs text-zinc-500 uppercase tracking-wide">Latest</div>
+                    <div className="mt-2">
+                      <span className={`rounded px-2 py-1 text-xs font-medium ${ledgerStatusTone(autoresearchLedger.latest?.status ?? '')}`}>
+                        {(autoresearchLedger.latest?.status ?? 'unknown').replace(/_/g, ' ')}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="bg-surface rounded-xl border border-edge p-4">
+                    <div className="text-xs text-zinc-500 uppercase tracking-wide">Latest Score</div>
+                    <div className="text-2xl font-bold mt-1 text-zinc-100">
+                      {((autoresearchLedger.latest?.score ?? 0) * 100).toFixed(0)}%
+                    </div>
+                  </div>
+                  <div className="bg-surface rounded-xl border border-edge p-4">
+                    <div className="text-xs text-zinc-500 uppercase tracking-wide">Kept</div>
+                    <div className="text-2xl font-bold mt-1 text-emerald-400">
+                      {autoresearchLedger.keepCandidates}/{autoresearchLedger.totalRuns}
+                    </div>
+                  </div>
+                  <div className="bg-surface rounded-xl border border-edge p-4">
+                    <div className="text-xs text-zinc-500 uppercase tracking-wide">Average</div>
+                    <div className="text-2xl font-bold mt-1 text-zinc-100">
+                      {autoresearchLedger.averageScore == null ? 'n/a' : `${(autoresearchLedger.averageScore * 100).toFixed(0)}%`}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-surface rounded-xl border border-edge overflow-x-auto">
+                  <table className="min-w-[56rem] w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-edge text-xs text-zinc-500 uppercase tracking-wider">
+                        <th className="text-left py-2.5 px-5 font-medium">Time</th>
+                        <th className="text-left py-2.5 px-5 font-medium">Tag</th>
+                        <th className="text-left py-2.5 px-5 font-medium">Profile</th>
+                        <th className="text-left py-2.5 px-5 font-medium">Result</th>
+                        <th className="text-left py-2.5 px-5 font-medium">Checks</th>
+                        <th className="text-left py-2.5 px-5 font-medium">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {autoresearchLedger.entries.map((entry) => (
+                        <tr key={`${entry.timestamp}-${entry.tag}-${entry.commit}`} className="border-b border-edge/50 align-top hover:bg-surface-alt/30 transition-colors">
+                          <td className="py-3 px-5 text-xs text-zinc-500 whitespace-nowrap">
+                            {formatLedgerTime(entry.timestamp)}
+                            <div className="mt-1 text-[10px] text-zinc-600">{formatLedgerDuration(entry.durationMs)}</div>
+                          </td>
+                          <td className="py-3 px-5">
+                            <div className="font-medium text-zinc-200 break-all">{entry.tag}</div>
+                            <div className="mt-1 text-xs text-zinc-500 break-all">{entry.branch}</div>
+                          </td>
+                          <td className="py-3 px-5 text-xs text-zinc-400">{entry.profile}</td>
+                          <td className="py-3 px-5">
+                            <span className={`rounded px-2 py-0.5 text-xs font-medium ${ledgerStatusTone(entry.status)}`}>
+                              {entry.status.replace(/_/g, ' ')}
+                            </span>
+                            <div className="mt-2 text-xs text-zinc-500">{(entry.score * 100).toFixed(0)}% score</div>
+                          </td>
+                          <td className="py-3 px-5 text-xs text-zinc-400">
+                            <div>{checkSummary(entry)} passed</div>
+                            <div className="mt-1 text-zinc-600">{entry.changedFiles} changed files</div>
+                          </td>
+                          <td className="py-3 px-5 text-xs text-zinc-400 max-w-xl break-words">
+                            {entry.notes || 'No notes'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : autoresearchLedger ? (
+              <div className="rounded-xl border border-edge bg-surface p-8 text-center text-sm text-zinc-500">
+                No autoresearch runs recorded yet.
+              </div>
+            ) : (
+              <div className="text-center py-12 text-zinc-600">Loading autoresearch ledger...</div>
+            )}
           </>
         )}
 

@@ -36,9 +36,12 @@ interface RuntimeRun {
   agent: string;
   workflowKind: string;
   status: string;
+  displayStatus?: string;
+  displayReason?: string | null;
   retryClass: string;
   retryAt: number | null;
   providerFailureKind: string;
+  configSnapshot?: Record<string, unknown> | null;
   createdAt: number;
   updatedAt: number;
   completedAt: number | null;
@@ -130,6 +133,20 @@ interface AutonomyHealth {
   coreAgents: string[];
 }
 
+interface BranchHygiene {
+  projectId: string;
+  repoPath: string;
+  stateDir: string;
+  localBranches: number;
+  remoteBranches: number;
+  worktreeRecords: number;
+  detachedWorktrees: number;
+  stateWorktreeDirs: number;
+  cleanupStashes: number;
+  archiveRefs: number;
+  warnings: string[];
+}
+
 interface RuntimeSnapshot {
   generatedAt: number;
   goals: RuntimeGoal[];
@@ -158,6 +175,7 @@ interface RuntimeSnapshot {
   recentEvents: RuntimeEvent[];
   compareTargets: CompareTarget[];
   autonomy: AutonomyHealth[];
+  hygiene: BranchHygiene | null;
   daemon: {
     runtime: {
       modelBackend: string | null;
@@ -210,14 +228,83 @@ function formatTime(ms: number | null): string {
 }
 
 function statusTone(status: string): string {
-  if (status === 'running' || status === 'completed') return 'text-emerald-400';
-  if (status === 'paused' || status === 'retry_scheduled' || status === 'pending') return 'text-amber-400';
+  if (status === 'running' || status === 'completed' || status === 'succeeded') return 'text-emerald-400';
+  if (status === 'blocked') return 'text-amber-300';
+  if (status === 'paused' || status === 'retry_scheduled' || status === 'pending' || status === 'claimed' || status === 'queued') return 'text-amber-400';
+  if (status === 'cancelled') return 'text-zinc-500';
   return 'text-red-400';
 }
 
 function trimPreview(value: string | null, max = 280): string | null {
   if (!value) return null;
   return value.length > max ? `${value.slice(0, max - 3)}...` : value;
+}
+
+function displayLabel(value: string): string {
+  return value.replace(/_/g, ' ');
+}
+
+function hasDecisionSignal(value: string | null | undefined): boolean {
+  return !!value && value !== 'none';
+}
+
+function runDisplayStatus(run: RuntimeRun): string {
+  return run.displayStatus || run.status;
+}
+
+function runDisplayReason(run: RuntimeRun): string | null {
+  return trimPreview(run.displayReason ?? null, 220);
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function stringValue(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function stringArrayValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+}
+
+function addConfigChip(
+  chips: Array<{ label: string; value: string }>,
+  label: string,
+  value: string | null | undefined,
+) {
+  if (!value) return;
+  chips.push({ label, value });
+}
+
+function runConfigChips(run: RuntimeRun): Array<{ label: string; value: string }> {
+  const snapshot = recordValue(run.configSnapshot);
+  if (!snapshot) return [];
+
+  const review = recordValue(snapshot.review);
+  const policy = recordValue(snapshot.policy);
+  const sidecar = recordValue(snapshot.sidecar);
+  const workspace = recordValue(snapshot.workspace);
+  const requiredStages = stringArrayValue(review?.requiredStages);
+  const toolNames = stringArrayValue(sidecar?.toolNames);
+  const policyHash = stringValue(policy?.hash);
+  const sidecarMode = stringValue(sidecar?.mode);
+  const chips: Array<{ label: string; value: string }> = [];
+
+  addConfigChip(chips, 'Lane', stringValue(snapshot.riskLane) ?? stringValue(review?.lane));
+  addConfigChip(chips, 'Model', stringValue(snapshot.modelProfile));
+  addConfigChip(chips, 'Backend', stringValue(snapshot.modelBackend));
+  addConfigChip(chips, 'Executor', stringValue(snapshot.codeExecutor));
+  addConfigChip(chips, 'Policy', policyHash ? policyHash.slice(0, 12) : null);
+  addConfigChip(chips, 'Review', requiredStages.length > 0 ? requiredStages.join(' -> ') : null);
+  addConfigChip(chips, 'Sidecar', sidecarMode ? `${sidecarMode}${toolNames.length > 0 ? ` · ${toolNames.length} tools` : ''}` : null);
+  addConfigChip(chips, 'Workspace', stringValue(workspace?.mode));
+
+  return chips.slice(0, 8);
 }
 
 function formatDuration(ms: number | null): string {
@@ -270,6 +357,10 @@ export default function RuntimePage() {
   const [localDaemonStatus, setLocalDaemonStatus] = useState<LocalDaemonStatusSnapshot | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [connected, setConnected] = useState(false);
+  const [eventStreamEnabled] = useState(() => (
+    typeof window !== 'undefined'
+    && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
+  ));
 
   const fetchSnapshot = useCallback(async () => {
     const url = project ? `/api/runtime?project=${project}` : '/api/runtime';
@@ -306,6 +397,11 @@ export default function RuntimePage() {
   }, [fetchSnapshot, fetchLocalBridge, fetchLocalDaemonStatus]);
 
   useEffect(() => {
+    if (!eventStreamEnabled) {
+      setConnected(false);
+      return;
+    }
+
     const url = project ? `/api/runtime/events?project=${project}` : '/api/runtime/events';
     const es = new EventSource(url);
 
@@ -333,7 +429,7 @@ export default function RuntimePage() {
     };
 
     return () => es.close();
-  }, [project]);
+  }, [eventStreamEnabled, project]);
 
   const activeRuns = useMemo(
     () => snapshot?.runs.filter((run) => run.status !== 'completed' && run.status !== 'failed' && run.status !== 'cancelled') ?? [],
@@ -402,6 +498,7 @@ export default function RuntimePage() {
     if (!snapshot?.autonomy?.length) return null;
     return snapshot.autonomy.find((item) => item.projectId === project) ?? null;
   }, [localDaemonStatus, project, snapshot]);
+  const hygiene = snapshot?.hygiene ?? null;
   const daemonAgeMs = snapshot?.daemon?.observedAt ? Math.max(0, Date.now() - snapshot.daemon.observedAt) : null;
   const daemonLooksStale = daemonAgeMs != null && daemonAgeMs > 90_000;
   const localBridgeLooksFresh = (localBridge?.daemon.observedAt ?? 0) > 0
@@ -606,6 +703,44 @@ export default function RuntimePage() {
               Daemon state: {daemonStateLabel}
             </div>
           </div>
+          {hygiene && (
+            <div className={`mt-3 rounded-lg border p-3 text-xs ${
+              hygiene.warnings.length > 0
+                ? 'border-amber-500/30 bg-amber-500/5'
+                : 'border-edge bg-surface-alt/20'
+            }`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">Branch hygiene</div>
+                  <div className={hygiene.warnings.length > 0 ? 'mt-1 font-semibold text-amber-300' : 'mt-1 font-semibold text-emerald-400'}>
+                    {hygiene.warnings.length > 0 ? 'attention' : 'clean'}
+                  </div>
+                </div>
+                <span className="text-zinc-500">{hygiene.projectId}</span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2 text-zinc-300">
+                <div className="rounded-lg bg-surface-alt/30 p-2">Local branches: {hygiene.localBranches}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">Remote branches: {hygiene.remoteBranches}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">Worktrees: {hygiene.worktreeRecords}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">Detached: {hygiene.detachedWorktrees}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">State dirs: {hygiene.stateWorktreeDirs}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">Cleanup stashes: {hygiene.cleanupStashes}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">Archive refs: {hygiene.archiveRefs}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">State: {hygiene.warnings.length > 0 ? 'watch' : 'clear'}</div>
+              </div>
+              <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-2 text-zinc-500">
+                <div className="break-all">Repo: {hygiene.repoPath}</div>
+                <div className="break-all">State: {hygiene.stateDir}</div>
+              </div>
+              {hygiene.warnings.length > 0 && (
+                <div className="mt-3 space-y-1 text-amber-300">
+                  {hygiene.warnings.map((warning) => (
+                    <div key={warning}>{warning}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {preferLocalBridge && (
             <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
               {localSyncBlocked
@@ -731,7 +866,7 @@ export default function RuntimePage() {
                 <p className="text-xs text-zinc-500 mt-1">The active runs and their latest visible steps.</p>
               </div>
               <span className={`text-xs font-medium ${(preferLocalBridge || connected) ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                {preferLocalBridge ? 'local live' : connected ? 'stream connected' : 'reconnecting'}
+                {preferLocalBridge ? 'local live' : eventStreamEnabled ? (connected ? 'stream connected' : 'reconnecting') : 'polling'}
               </span>
             </div>
 
@@ -744,63 +879,91 @@ export default function RuntimePage() {
                 </div>
               )}
 
-              {effectiveRuns.map((run) => (
-                <article key={run.id} className="rounded-xl border border-edge bg-surface-alt/20 p-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <div className="text-sm font-semibold text-zinc-100">{run.agent}</div>
-                      <div className="text-xs text-zinc-500 mt-1">
-                        {run.workflowKind} · updated {formatTime(run.updatedAt)}
-                      </div>
-                    </div>
-                    <div className={`text-xs font-semibold uppercase tracking-wider ${statusTone(run.status)}`}>
-                      {run.status}
-                    </div>
-                  </div>
-                  <div className="mt-3">
-                    <div className="flex items-center justify-between gap-3 text-[11px] text-zinc-500">
-                      <span>
-                        {run.progressPct != null ? `${run.progressPct}% estimated` : 'estimating progress'}
-                        {run.progressBasis !== 'none' ? ` · ${run.progressBasis}` : ''}
-                      </span>
-                      <span>
-                        elapsed {formatDuration(run.elapsedMs)}
-                        {run.estimatedDurationMs != null ? ` · ETA ${formatEta(run)}` : ''}
-                      </span>
-                    </div>
-                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-900/80">
-                      <div
-                        className="h-full rounded-full bg-emerald-500 transition-all duration-500"
-                        style={{ width: `${run.progressPct ?? 8}%` }}
-                      />
-                    </div>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {run.steps.slice(-4).map((step) => (
-                      <div key={step.id} className="rounded-lg border border-edge/60 px-3 py-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-sm text-zinc-200">{step.name}</span>
-                          <span className={`text-[11px] uppercase tracking-wider ${statusTone(step.status)}`}>{step.status}</span>
+              {effectiveRuns.map((run) => {
+                const displayStatus = runDisplayStatus(run);
+                const displayReason = runDisplayReason(run);
+                const configChips = runConfigChips(run);
+
+                return (
+                  <article key={run.id} className="rounded-xl border border-edge bg-surface-alt/20 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="text-sm font-semibold text-zinc-100">{run.agent}</div>
+                        <div className="text-xs text-zinc-500 mt-1">
+                          {run.workflowKind} · updated {formatTime(run.updatedAt)}
                         </div>
-                        {step.detail && (
-                          <p className="text-xs text-zinc-500 mt-1">{step.detail}</p>
+                      </div>
+                      <div className="text-right">
+                        <div className={`text-xs font-semibold uppercase tracking-wider ${statusTone(displayStatus)}`}>
+                          {displayLabel(displayStatus)}
+                        </div>
+                        {displayStatus !== run.status && (
+                          <div className="mt-1 text-[11px] text-zinc-500">
+                            stored: {displayLabel(run.status)}
+                          </div>
                         )}
                       </div>
-                    ))}
-                  </div>
-                  {(run.retryClass !== 'none' || run.providerFailureKind !== 'none') && (
-                    <div className="mt-3 text-xs text-amber-400">
-                      {run.retryClass} · {run.providerFailureKind}
-                      {run.retryAt ? ` · resumes ${formatTime(run.retryAt)}` : ''}
                     </div>
-                  )}
-                  {Date.now() - run.updatedAt > 120_000 && run.status === 'running' && (
-                    <div className="mt-3 text-xs text-amber-400">
-                      No heartbeat for {formatDuration(Date.now() - run.updatedAt)}. The executor may be stalled or waiting on a provider/tool response.
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between gap-3 text-[11px] text-zinc-500">
+                        <span>
+                          {run.progressPct != null ? `${run.progressPct}% estimated` : 'estimating progress'}
+                          {run.progressBasis !== 'none' ? ` · ${run.progressBasis}` : ''}
+                        </span>
+                        <span>
+                          elapsed {formatDuration(run.elapsedMs)}
+                          {run.estimatedDurationMs != null ? ` · ETA ${formatEta(run)}` : ''}
+                        </span>
+                      </div>
+                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-900/80">
+                        <div
+                          className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+                          style={{ width: `${run.progressPct ?? 8}%` }}
+                        />
+                      </div>
                     </div>
-                  )}
-                </article>
-              ))}
+                    {displayReason && (
+                      <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                        <span className="text-amber-300">Reason:</span> {displayReason}
+                      </div>
+                    )}
+                    {configChips.length > 0 && (
+                      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
+                        {configChips.map((chip) => (
+                          <div key={`${run.id}-${chip.label}`} className="min-w-0 rounded-lg border border-edge/60 bg-zinc-950/20 px-3 py-2">
+                            <div className="text-[10px] uppercase tracking-wider text-zinc-500">{chip.label}</div>
+                            <div className="mt-1 truncate text-xs text-zinc-200" title={chip.value}>{chip.value}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-3 space-y-2">
+                      {run.steps.slice(-4).map((step) => (
+                        <div key={step.id} className="rounded-lg border border-edge/60 px-3 py-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-sm text-zinc-200">{step.name}</span>
+                            <span className={`text-[11px] uppercase tracking-wider ${statusTone(step.status)}`}>{step.status}</span>
+                          </div>
+                          {step.detail && (
+                            <p className="text-xs text-zinc-500 mt-1">{step.detail}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {(hasDecisionSignal(run.retryClass) || hasDecisionSignal(run.providerFailureKind)) && (
+                      <div className="mt-3 text-xs text-amber-400">
+                        {run.retryClass} · {run.providerFailureKind}
+                        {run.retryAt ? ` · resumes ${formatTime(run.retryAt)}` : ''}
+                      </div>
+                    )}
+                    {Date.now() - run.updatedAt > 120_000 && run.status === 'running' && (
+                      <div className="mt-3 text-xs text-amber-400">
+                        No heartbeat for {formatDuration(Date.now() - run.updatedAt)}. The executor may be stalled or waiting on a provider/tool response.
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
             </div>
           </section>
 

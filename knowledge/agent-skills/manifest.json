@@ -1,0 +1,300 @@
+{
+  "version": 1,
+  "updatedAt": "2026-05-01",
+  "sources": {
+    "mattpocock/skills": {
+      "repo": "https://github.com/mattpocock/skills",
+      "commit": "b843cb5ea74b1fe5e58a0fc23cddef9e66076fb8",
+      "license": "MIT",
+      "localRoot": "knowledge/agent-skills/mattpocock"
+    }
+  },
+  "autonomyContract": [
+    "Use selected skills as an internal operating method for your assigned Organism function.",
+    "Do not let skills create tasks, schedule work, or call other agents. Paperclip remains the only orchestrator.",
+    "Prefer answering questions by inspecting the provided context, codebase, registry, or task evidence before asking Rafael.",
+    "Ask Rafael only for decisions that block safe progress, change scope, require credentials, or require product/legal/medical judgement.",
+    "When a skill asks for an interview, run a self-grill first: list assumptions, answer what evidence can answer, then ask only the remaining high-leverage questions.",
+    "Keep output aligned with the agent's function and the risk-based review pipeline."
+  ],
+  "skills": [
+    {
+      "id": "mattpocock.diagnose",
+      "name": "diagnose",
+      "bucket": "engineering",
+      "path": "knowledge/agent-skills/mattpocock/active/engineering/diagnose/SKILL.md",
+      "description": "Disciplined diagnosis loop for hard bugs and regressions: reproduce, minimize, hypothesize, instrument, fix, regression-test.",
+      "autonomousUse": "When something is broken, establish the smallest reproduction from available evidence, make hypotheses explicit, instrument before changing behavior, and include the regression test or verification path.",
+      "triggerTerms": ["bug", "broken", "debug", "diagnose", "failure", "flaky", "regression", "performance", "timeout", "error"]
+    },
+    {
+      "id": "mattpocock.grill-with-docs",
+      "name": "grill-with-docs",
+      "bucket": "engineering",
+      "path": "knowledge/agent-skills/mattpocock/active/engineering/grill-with-docs/SKILL.md",
+      "description": "Challenge a plan against the codebase's domain language and ADRs, sharpening terms and decisions before implementation.",
+      "autonomousUse": "Before changing architecture or product behavior, self-grill the plan against existing glossary, ADRs, and code evidence. Update docs only when the task explicitly asks for documentation or the agent owns that output.",
+      "triggerTerms": ["plan", "design", "architecture", "domain", "adr", "context", "language", "decision", "ambiguous"]
+    },
+    {
+      "id": "mattpocock.triage",
+      "name": "triage",
+      "bucket": "engineering",
+      "path": "knowledge/agent-skills/mattpocock/active/engineering/triage/SKILL.md",
+      "description": "Triage issues through a state machine and prepare clear agent-ready briefs.",
+      "autonomousUse": "Convert unclear work into a crisp state, owner, acceptance criteria, blockers, and next action. Do not publish external issues unless the task explicitly asks for it.",
+      "triggerTerms": ["triage", "issue", "ticket", "backlog", "blocker", "needs-info", "afk", "brief"]
+    },
+    {
+      "id": "mattpocock.improve-codebase-architecture",
+      "name": "improve-codebase-architecture",
+      "bucket": "engineering",
+      "path": "knowledge/agent-skills/mattpocock/active/engineering/improve-codebase-architecture/SKILL.md",
+      "description": "Find opportunities to deepen modules, clarify interfaces, and reduce codebase entropy.",
+      "autonomousUse": "When reviewing or changing code, favor deep modules with small interfaces, local language consistency, and low-coupling improvements. Keep refactors scoped to the task.",
+      "triggerTerms": ["architecture", "refactor", "module", "interface", "coupling", "complexity", "cleanup", "technical debt"]
+    },
+    {
+      "id": "mattpocock.setup-matt-pocock-skills",
+      "name": "setup-matt-pocock-skills",
+      "bucket": "engineering",
+      "path": "knowledge/agent-skills/mattpocock/active/engineering/setup-matt-pocock-skills/SKILL.md",
+      "description": "Repo setup conventions for issue tracker, triage labels, domain docs, and ADR layout.",
+      "autonomousUse": "Treat this as already configured through Organism's manifest. Use local markdown as the issue-tracker fallback and Organism knowledge docs as the domain-doc home unless a task says otherwise.",
+      "triggerTerms": ["setup", "configure", "skills", "issue tracker", "labels", "context", "adr"]
+    },
+    {
+      "id": "mattpocock.tdd",
+      "name": "tdd",
+      "bucket": "engineering",
+      "path": "knowledge/agent-skills/mattpocock/active/engineering/tdd/SKILL.md",
+      "description": "Test-driven development with a red-green-refactor loop and vertical tracer bullets.",
+      "autonomousUse": "For code work, plan behavior through public interfaces, add one failing behavior test, make it pass minimally, repeat, then refactor only while green.",
+      "triggerTerms": ["test", "tests", "tdd", "red-green-refactor", "feature", "fix", "implementation", "integration"]
+    },
+    {
+      "id": "mattpocock.to-issues",
+      "name": "to-issues",
+      "bucket": "engineering",
+      "path": "knowledge/agent-skills/mattpocock/active/engineering/to-issues/SKILL.md",
+      "description": "Break a plan or PRD into independently grabbable vertical-slice issues.",
+      "autonomousUse": "When decomposing work, produce small vertical slices with acceptance criteria, dependencies, and a clear owner. In Organism, output proposed tasks unless explicitly asked to publish issues.",
+      "triggerTerms": ["issues", "tickets", "breakdown", "decompose", "implementation plan", "vertical slice", "acceptance criteria"]
+    },
+    {
+      "id": "mattpocock.to-prd",
+      "name": "to-prd",
+      "bucket": "engineering",
+      "path": "knowledge/agent-skills/mattpocock/active/engineering/to-prd/SKILL.md",
+      "description": "Turn existing context into a product requirements document without a fresh interview.",
+      "autonomousUse": "Synthesize a PRD from available context, make assumptions explicit, and avoid asking new questions unless the PRD would be unsafe or misleading without them.",
+      "triggerTerms": ["prd", "requirements", "spec", "product requirements", "user stories", "scope"]
+    },
+    {
+      "id": "mattpocock.zoom-out",
+      "name": "zoom-out",
+      "bucket": "engineering",
+      "path": "knowledge/agent-skills/mattpocock/active/engineering/zoom-out/SKILL.md",
+      "description": "Give higher-level context on how an unfamiliar section fits into the whole system.",
+      "autonomousUse": "Before making a local recommendation, identify the broader system purpose, neighboring modules, constraints, and what must not be disturbed.",
+      "triggerTerms": ["explain", "zoom out", "context", "unfamiliar", "how does", "where does", "overview"]
+    },
+    {
+      "id": "mattpocock.caveman",
+      "name": "caveman",
+      "bucket": "productivity",
+      "path": "knowledge/agent-skills/mattpocock/active/productivity/caveman/SKILL.md",
+      "description": "Ultra-compressed communication that removes filler while preserving technical accuracy.",
+      "autonomousUse": "Keep founder-facing output concise, direct, and information-dense. Preserve nuance where risk or uncertainty matters.",
+      "triggerTerms": ["concise", "brief", "terse", "summary", "quick", "caveman"]
+    },
+    {
+      "id": "mattpocock.grill-me",
+      "name": "grill-me",
+      "bucket": "productivity",
+      "path": "knowledge/agent-skills/mattpocock/active/productivity/grill-me/SKILL.md",
+      "description": "Relentless plan interview until shared understanding is reached.",
+      "autonomousUse": "Use as self-grilling by default: identify unresolved branches, answer them from evidence where possible, and ask Rafael only the highest-impact remaining question.",
+      "triggerTerms": ["grill", "stress-test", "challenge", "questions", "assumptions", "blind spots"]
+    },
+    {
+      "id": "mattpocock.write-a-skill",
+      "name": "write-a-skill",
+      "bucket": "productivity",
+      "path": "knowledge/agent-skills/mattpocock/active/productivity/write-a-skill/SKILL.md",
+      "description": "Create new agent skills with clear triggers, progressive disclosure, and bundled resources.",
+      "autonomousUse": "When defining agent knowledge, make the trigger description precise, keep instructions progressive, and bundle only resources the agent will actually need.",
+      "triggerTerms": ["write a skill", "new skill", "create skill", "agent skill", "skill design"]
+    },
+    {
+      "id": "mattpocock.git-guardrails-claude-code",
+      "name": "git-guardrails-claude-code",
+      "bucket": "misc",
+      "path": "knowledge/agent-skills/mattpocock/active/misc/git-guardrails-claude-code/SKILL.md",
+      "description": "Set up hooks that block dangerous git commands.",
+      "autonomousUse": "Respect Organism git rules: no force push, hard reset, amend, or direct merge. Treat setup as an admin task, not a runtime agent behavior.",
+      "triggerTerms": ["git guardrails", "dangerous git", "force push", "reset --hard", "hooks"]
+    },
+    {
+      "id": "mattpocock.migrate-to-shoehorn",
+      "name": "migrate-to-shoehorn",
+      "bucket": "misc",
+      "path": "knowledge/agent-skills/mattpocock/active/misc/migrate-to-shoehorn/SKILL.md",
+      "description": "Migrate test fixtures away from broad type assertions to @total-typescript/shoehorn helpers.",
+      "autonomousUse": "Use only in TypeScript test migrations where shoehorn is already chosen or explicitly requested.",
+      "triggerTerms": ["shoehorn", "type assertions", "test fixtures", "fromPartial", "fromAny"]
+    },
+    {
+      "id": "mattpocock.scaffold-exercises",
+      "name": "scaffold-exercises",
+      "bucket": "misc",
+      "path": "knowledge/agent-skills/mattpocock/active/misc/scaffold-exercises/SKILL.md",
+      "description": "Create exercise directory structures for educational content.",
+      "autonomousUse": "Use for course or exercise scaffolding only, preserving naming and lint conventions from the target project.",
+      "triggerTerms": ["exercise", "scaffold", "course", "problem", "solution", "explainer"]
+    },
+    {
+      "id": "mattpocock.setup-pre-commit",
+      "name": "setup-pre-commit",
+      "bucket": "misc",
+      "path": "knowledge/agent-skills/mattpocock/active/misc/setup-pre-commit/SKILL.md",
+      "description": "Set up Husky pre-commit hooks with formatting, type checking, and tests.",
+      "autonomousUse": "Use only when the task asks for commit-time verification. Prefer existing repo package-manager conventions.",
+      "triggerTerms": ["pre-commit", "husky", "lint-staged", "format", "typecheck"]
+    }
+  ],
+  "defaultProfile": {
+    "skills": [
+      "mattpocock.grill-me",
+      "mattpocock.caveman",
+      "mattpocock.zoom-out"
+    ],
+    "autonomy": "Run as a self-directed specialist. Self-grill the assignment, inspect available evidence, make reversible assumptions explicit, and ask Rafael only for blocking decisions."
+  },
+  "agentProfiles": {
+    "ceo": {
+      "skills": ["mattpocock.grill-me", "mattpocock.to-prd", "mattpocock.to-issues", "mattpocock.caveman"],
+      "autonomy": "Own strategic framing, priority calls, and delegation-ready task shape. Convert ambiguity into crisp decisions and proposed Paperclip tasks."
+    },
+    "product-manager": {
+      "skills": ["mattpocock.grill-with-docs", "mattpocock.to-prd", "mattpocock.to-issues", "mattpocock.triage", "mattpocock.grill-me"],
+      "autonomy": "Own requirements, shaping, scope boundaries, and agent-ready vertical slices."
+    },
+    "engineering": {
+      "skills": ["mattpocock.grill-with-docs", "mattpocock.tdd", "mattpocock.diagnose", "mattpocock.improve-codebase-architecture", "mattpocock.zoom-out", "mattpocock.to-issues"],
+      "autonomy": "Own implementation quality through TDD, diagnosis, architecture stewardship, and scoped code plans."
+    },
+    "devops": {
+      "skills": ["mattpocock.diagnose", "mattpocock.triage", "mattpocock.to-issues", "mattpocock.setup-pre-commit", "mattpocock.zoom-out"],
+      "autonomy": "Own deployment, reliability, and operational failure diagnosis without expanding into product orchestration."
+    },
+    "cto": {
+      "skills": ["mattpocock.grill-with-docs", "mattpocock.improve-codebase-architecture", "mattpocock.zoom-out", "mattpocock.to-issues"],
+      "autonomy": "Own technology strategy, architecture tradeoffs, and implementation boundaries."
+    },
+    "design": {
+      "skills": ["mattpocock.grill-me", "mattpocock.grill-with-docs", "mattpocock.to-prd", "mattpocock.zoom-out"],
+      "autonomy": "Own UX problem framing, design requirements, and evidence-backed interaction recommendations."
+    },
+    "quality-agent": {
+      "skills": ["mattpocock.grill-me", "mattpocock.triage", "mattpocock.caveman", "mattpocock.zoom-out"],
+      "autonomy": "Own lightweight quality review and revision clarity. Challenge assumptions without creating new runtime gates."
+    },
+    "grill-me": {
+      "skills": ["mattpocock.grill-me", "mattpocock.caveman"],
+      "autonomy": "Own Socratic interrogation. Ask one high-leverage question at a time when interaction is required."
+    },
+    "codex-review": {
+      "skills": ["mattpocock.diagnose", "mattpocock.improve-codebase-architecture", "mattpocock.tdd", "mattpocock.zoom-out"],
+      "autonomy": "Own code and output review by finding concrete behavioral, test, security, and architecture risks."
+    },
+    "quality-guardian": {
+      "skills": ["mattpocock.diagnose", "mattpocock.improve-codebase-architecture", "mattpocock.grill-me", "mattpocock.zoom-out"],
+      "autonomy": "Own HIGH-risk audit, evidence checking, and final gate clarity before Rafael approval."
+    },
+    "security-audit": {
+      "skills": ["mattpocock.diagnose", "mattpocock.triage", "mattpocock.zoom-out", "mattpocock.caveman"],
+      "autonomy": "Own security evidence review, concrete exploitability assessment, and prioritized remediation."
+    },
+    "legal": {
+      "skills": ["mattpocock.grill-me", "mattpocock.triage", "mattpocock.caveman", "mattpocock.zoom-out"],
+      "autonomy": "Own legal/compliance ambiguity surfacing and risk triage. Ask Rafael for non-delegable judgement."
+    },
+    "medical-content-reviewer": {
+      "skills": ["mattpocock.grill-me", "mattpocock.triage", "mattpocock.caveman", "mattpocock.zoom-out"],
+      "autonomy": "Own medical education content risk review, evidence gaps, and escalation-worthy uncertainty."
+    },
+    "cfo": {
+      "skills": ["mattpocock.grill-me", "mattpocock.to-prd", "mattpocock.to-issues", "mattpocock.caveman"],
+      "autonomy": "Own financial framing, budget tradeoffs, unit economics, and spend-control recommendations."
+    },
+    "sales": {
+      "skills": ["mattpocock.grill-me", "mattpocock.triage", "mattpocock.caveman", "mattpocock.to-issues"],
+      "autonomy": "Own sales pipeline clarity, qualification, outreach priorities, and next-action briefs."
+    },
+    "marketing-strategist": {
+      "skills": ["mattpocock.grill-me", "mattpocock.to-prd", "mattpocock.to-issues", "mattpocock.caveman"],
+      "autonomy": "Own positioning, campaign strategy, and channel tradeoffs with concise action plans."
+    },
+    "marketing-executor": {
+      "skills": ["mattpocock.grill-me", "mattpocock.triage", "mattpocock.caveman"],
+      "autonomy": "Own campaign execution output, practical next actions, and concise copy/content deliverables."
+    },
+    "seo": {
+      "skills": ["mattpocock.grill-me", "mattpocock.triage", "mattpocock.caveman", "mattpocock.to-issues"],
+      "autonomy": "Own search intent, technical SEO triage, and prioritized content/implementation briefs."
+    },
+    "pr-comms": {
+      "skills": ["mattpocock.grill-me", "mattpocock.caveman", "mattpocock.to-prd"],
+      "autonomy": "Own narrative clarity, media angle selection, and risk-aware public communication."
+    },
+    "community-manager": {
+      "skills": ["mattpocock.grill-me", "mattpocock.triage", "mattpocock.caveman"],
+      "autonomy": "Own community trust, engagement loops, and high-signal follow-up actions."
+    },
+    "customer-success": {
+      "skills": ["mattpocock.grill-me", "mattpocock.triage", "mattpocock.to-issues", "mattpocock.caveman"],
+      "autonomy": "Own user success risks, onboarding gaps, churn signals, and support-to-product feedback loops."
+    },
+    "data-analyst": {
+      "skills": ["mattpocock.diagnose", "mattpocock.grill-me", "mattpocock.caveman", "mattpocock.zoom-out"],
+      "autonomy": "Own metrics diagnosis, data questions, and concise evidence-backed insight."
+    },
+    "hr": {
+      "skills": ["mattpocock.grill-me", "mattpocock.triage", "mattpocock.to-issues", "mattpocock.caveman"],
+      "autonomy": "Own agent lifecycle review, shadow promotion clarity, team structure, and hiring recommendations."
+    },
+    "synthesis": {
+      "skills": ["mattpocock.caveman", "mattpocock.zoom-out", "mattpocock.triage"],
+      "autonomy": "Own cross-agent synthesis, deduplication, prioritization, and next-step clarity."
+    },
+    "palate-wiki": {
+      "skills": ["mattpocock.write-a-skill", "mattpocock.caveman", "mattpocock.zoom-out"],
+      "autonomy": "Own knowledge distillation, glossary clarity, and reusable agent-facing documentation."
+    },
+    "customer-support": {
+      "skills": ["mattpocock.grill-me", "mattpocock.triage", "mattpocock.caveman"],
+      "autonomy": "Own support triage and concise user-safe responses."
+    },
+    "competitive-intel": {
+      "skills": ["mattpocock.grill-me", "mattpocock.zoom-out", "mattpocock.caveman"],
+      "autonomy": "Own competitor framing, market pattern synthesis, and concise opportunity/risk calls."
+    },
+    "obsidian-scribe": {
+      "skills": ["mattpocock.write-a-skill", "mattpocock.caveman", "mattpocock.zoom-out"],
+      "autonomy": "Own durable knowledge capture, linkable terms, and reusable summaries."
+    },
+    "research-ops": {
+      "skills": ["mattpocock.diagnose", "mattpocock.triage", "mattpocock.zoom-out", "mattpocock.caveman"],
+      "autonomy": "Own research execution integrity, evidence chains, and transparent uncertainty."
+    },
+    "donation-guardian": {
+      "skills": ["mattpocock.grill-me", "mattpocock.triage", "mattpocock.caveman", "mattpocock.zoom-out"],
+      "autonomy": "Own donation-flow governance, privacy/compliance escalation, and concrete remediation."
+    },
+    "infrastructure-auditor": {
+      "skills": ["mattpocock.diagnose", "mattpocock.triage", "mattpocock.zoom-out", "mattpocock.caveman"],
+      "autonomy": "Own infrastructure audit evidence, deployment hardening, and failure-mode clarity."
+    }
+  }
+}

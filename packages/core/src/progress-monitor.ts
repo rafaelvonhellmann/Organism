@@ -1,5 +1,6 @@
-import { createTask, getDb } from './task-queue.js';
+import { getDb } from './task-queue.js';
 import { writeAudit } from './audit.js';
+import { createGovernedFollowupTask } from './governed-tasks.js';
 
 interface GoalHealthRow {
   goal_id: string;
@@ -51,7 +52,7 @@ function hasPendingGoalTask(goalId: string): boolean {
  * Check active goals and create typed recovery tasks only when a real goal is stalled.
  * The monitor no longer generates generic weekly review work.
  */
-export function checkProgressAndCreateTasks(): number {
+export async function checkProgressAndCreateTasks(): Promise<number> {
   const now = Date.now();
   const staleThreshold = now - 30 * 60 * 1000;
   const recoverable = loadRecoverableGoals().filter((goal) => {
@@ -66,8 +67,15 @@ export function checkProgressAndCreateTasks(): number {
   for (const goal of recoverable) {
     const agent = goal.run_agent ?? 'ceo';
     try {
-      const task = createTask({
-        agent,
+      const task = await createGovernedFollowupTask({
+        source: {
+          id: goal.goal_id,
+          agent: 'progress-monitor',
+          projectId: goal.project_id,
+          goalId: goal.goal_id,
+        },
+        preferredAgent: agent,
+        workflowKind: 'recover',
         lane: 'MEDIUM',
         description: `Recover goal: ${goal.title}`,
         input: {
@@ -82,9 +90,12 @@ export function checkProgressAndCreateTasks(): number {
         },
         projectId: goal.project_id,
         goalId: goal.goal_id,
-        workflowKind: 'recover',
+        parentTaskId: goal.goal_id,
+        allowReadOnlyDegrade: true,
         sourceKind: 'monitor',
+        auditPayload: { followupType: 'progress_recovery' },
       });
+      if (!task) continue;
 
       writeAudit({
         agent: 'progress-monitor',

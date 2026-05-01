@@ -25,6 +25,30 @@ interface CapabilityFilterOptions {
 
 let _registry: AgentCapability[] | null = null;
 
+function getEquivalentAgentNames(agentName: string): Set<string> {
+  const names = new Set<string>([agentName]);
+  const canonical = AGENT_OWNER_ALIASES[agentName] ?? agentName;
+  names.add(canonical);
+
+  for (const [alias, owner] of Object.entries(AGENT_OWNER_ALIASES)) {
+    if (owner === agentName || owner === canonical) {
+      names.add(alias);
+      names.add(owner);
+    }
+  }
+
+  return names;
+}
+
+function agentNamesOverlap(left: string, right: string): boolean {
+  const leftNames = getEquivalentAgentNames(left);
+  const rightNames = getEquivalentAgentNames(right);
+  for (const name of leftNames) {
+    if (rightNames.has(name)) return true;
+  }
+  return false;
+}
+
 function loadProjectRoster(projectId: string): ProjectAgentRoster | null {
   const configPath = path.join(PROJECTS_DIR, projectId, 'config.json');
   if (!fs.existsSync(configPath)) return null;
@@ -137,9 +161,8 @@ export function getShadowRunCount(agentName: string): number {
 }
 
 export function canAgentExecute(agentName: string, projectId?: string, options?: CapabilityFilterOptions): boolean {
-  const normalizedAgentName = AGENT_OWNER_ALIASES[agentName] ?? agentName;
   return getCapabilitiesForProject(projectId, options)
-    .some((capability) => capability.owner === agentName || capability.owner === normalizedAgentName);
+    .some((capability) => agentNamesOverlap(capability.owner, agentName));
 }
 
 export function getProjectCoreAgents(projectId: string): string[] {
@@ -169,15 +192,15 @@ export function checkRegistryCoherence(registeredRunnerAgents: string[]): Regist
   const runnerSet = new Set(registeredRunnerAgents);
   const missingImplementations: string[] = [];
   for (const owner of registryOwners) {
-    const aliased = AGENT_OWNER_ALIASES[owner] ?? owner;
-    if (!runnerSet.has(owner) && !runnerSet.has(aliased)) {
+    const matched = Array.from(runnerSet).some((runnerAgent) => agentNamesOverlap(owner, runnerAgent));
+    if (!matched) {
       missingImplementations.push(owner);
     }
   }
 
   const orphanedImplementations: string[] = [];
   for (const runnerAgent of runnerSet) {
-    const matched = caps.some((c) => c.owner === runnerAgent || AGENT_OWNER_ALIASES[c.owner] === runnerAgent);
+    const matched = caps.some((c) => agentNamesOverlap(c.owner, runnerAgent));
     if (!matched) orphanedImplementations.push(runnerAgent);
   }
 
@@ -190,15 +213,36 @@ export function checkRegistryCoherence(registeredRunnerAgents: string[]): Regist
   };
 }
 
+export function assertRegistryCoherence(registeredRunnerAgents: string[]): RegistryCoherenceReport {
+  const report = checkRegistryCoherence(registeredRunnerAgents);
+  if (report.missingImplementations.length === 0 && report.orphanedImplementations.length === 0) {
+    return report;
+  }
+
+  const problems: string[] = [];
+  if (report.missingImplementations.length > 0) {
+    problems.push(
+      `missing implementations: ${report.missingImplementations.join(', ')}`,
+    );
+  }
+  if (report.orphanedImplementations.length > 0) {
+    problems.push(
+      `orphaned implementations: ${report.orphanedImplementations.join(', ')}`,
+    );
+  }
+
+  throw new Error(`Registry drift detected (${problems.join(' | ')})`);
+}
+
 // Update agent status in the registry file (used by shadow-promote.ts)
 export function updateAgentStatus(agentName: string, status: AgentCapability['status']): void {
   const file = JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8')) as RegistryFile;
-  const normalizedAgentName = AGENT_OWNER_ALIASES[agentName] ?? agentName;
-  const cap = file.capabilities.find((c) => c.owner === agentName || c.owner === normalizedAgentName);
+  const canonicalAgentName = AGENT_OWNER_ALIASES[agentName] ?? agentName;
+  const cap = file.capabilities.find((c) => agentNamesOverlap(c.owner, agentName));
   if (!cap) throw new Error(`Agent '${agentName}' not found in registry`);
   if (status === 'active') {
     const manualOverride = (cap as AgentCapability & { manualActivation?: unknown }).manualActivation;
-    if (!manualOverride && getShadowRunCount(normalizedAgentName) < 10) {
+    if (!manualOverride && getShadowRunCount(canonicalAgentName) < 10) {
       throw new Error(`Agent '${agentName}' needs at least 10 shadow runs before promotion to active`);
     }
   }

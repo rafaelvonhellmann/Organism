@@ -16,6 +16,7 @@ Tools:
 
 import json
 import os
+import sys
 import hashlib
 from typing import Any
 import anthropic
@@ -32,6 +33,7 @@ MODEL_MAP = {
     "sonnet": "claude-sonnet-4-6",
     "opus": "claude-opus-4-6",
     "gpt4o": "gpt-4o",
+    "gpt5.4": "gpt-5.4",
 }
 
 anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
@@ -56,10 +58,11 @@ async def list_tools() -> list[mcp_types.Tool]:
                     "prompt": {"type": "string", "description": "The prompt to send"},
                     "model_preference": {
                         "type": "string",
-                        "enum": ["haiku", "sonnet", "opus", "gpt4o"],
+                        "enum": ["haiku", "sonnet", "opus", "gpt4o", "gpt5.4"],
                         "description": "Which model to use. Default: sonnet.",
                     },
                     "system": {"type": "string", "description": "Optional system prompt"},
+                    "max_tokens": {"type": "integer", "description": "Optional response token cap"},
                     "task_id": {"type": "string", "description": "Organism task ID for audit"},
                 },
                 "required": ["prompt"],
@@ -125,49 +128,56 @@ async def list_tools() -> list[mcp_types.Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[mcp_types.TextContent]:
+    result = await dispatch_tool(name, arguments)
+    return [mcp_types.TextContent(type="text", text=json.dumps(result))]
+
+
+async def dispatch_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     # Contract enforcement: reject any attempt to orchestrate
     FORBIDDEN_PATTERNS = ["create_task", "schedule", "assign_agent", "write_audit", "update_budget"]
     for pattern in FORBIDDEN_PATTERNS:
         if pattern in json.dumps(arguments):
-            return [mcp_types.TextContent(
-                type="text",
-                text=json.dumps({
-                    "error": "MCP_CONTRACT_VIOLATION",
-                    "code": "E005",
-                    "message": f"PraisonAI sidecar cannot perform orchestration actions. Pattern: {pattern}",
-                })
-            )]
+            return {
+                "error": "MCP_CONTRACT_VIOLATION",
+                "code": "E005",
+                "message": f"PraisonAI sidecar cannot perform orchestration actions. Pattern: {pattern}",
+            }
 
     if name == "route_model":
-        return await _route_model(arguments)
+        return await _route_model_json(arguments)
     elif name == "rag_retrieve":
-        return _rag_retrieve(arguments)
+        return _rag_retrieve_json(arguments)
     elif name == "check_policy":
-        return _check_policy(arguments)
+        return _check_policy_json(arguments)
     elif name == "detect_doom_loop":
-        return _detect_doom_loop(arguments)
+        return _detect_doom_loop_json(arguments)
     elif name == "persist_memory":
-        return _persist_memory(arguments)
+        return _persist_memory_json(arguments)
     else:
-        return [mcp_types.TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
+        return {"error": f"Unknown tool: {name}"}
 
 
-async def _route_model(args: dict[str, Any]) -> list[mcp_types.TextContent]:
+async def _route_model_json(args: dict[str, Any]) -> dict[str, Any]:
     model_key = args.get("model_preference", "sonnet")
     model_id = MODEL_MAP.get(model_key, MODEL_MAP["sonnet"])
     prompt = args["prompt"]
     system = args.get("system", "")
+    max_tokens = int(args.get("max_tokens", 4096) or 4096)
 
     try:
-        if model_key == "gpt4o":
+        if model_key in ("gpt4o", "gpt5.4"):
             messages = [{"role": "user", "content": prompt}]
             if system:
                 messages.insert(0, {"role": "system", "content": system})
-            resp = openai_client.chat.completions.create(
-                model=model_id,
-                messages=messages,
-                max_tokens=4096,
-            )
+            request_kwargs = {
+                "model": model_id,
+                "messages": messages,
+            }
+            if model_key == "gpt5.4":
+                request_kwargs["max_completion_tokens"] = max_tokens
+            else:
+                request_kwargs["max_tokens"] = max_tokens
+            resp = openai_client.chat.completions.create(**request_kwargs)
             content = resp.choices[0].message.content or ""
             tokens_in = resp.usage.prompt_tokens if resp.usage else 0
             tokens_out = resp.usage.completion_tokens if resp.usage else 0
@@ -175,7 +185,7 @@ async def _route_model(args: dict[str, Any]) -> list[mcp_types.TextContent]:
             messages = [{"role": "user", "content": prompt}]
             resp = anthropic_client.messages.create(
                 model=model_id,
-                max_tokens=4096,
+                max_tokens=max_tokens,
                 system=system or "You are a helpful assistant.",
                 messages=messages,
             )
@@ -183,21 +193,21 @@ async def _route_model(args: dict[str, Any]) -> list[mcp_types.TextContent]:
             tokens_in = resp.usage.input_tokens
             tokens_out = resp.usage.output_tokens
 
-        return [mcp_types.TextContent(type="text", text=json.dumps({
+        return {
             "content": content,
             "model": model_id,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
-        }))]
+        }
 
     except Exception as e:
-        return [mcp_types.TextContent(type="text", text=json.dumps({
+        return {
             "error": str(e),
             "model": model_id,
-        }))]
+        }
 
 
-def _rag_retrieve(args: dict[str, Any]) -> list[mcp_types.TextContent]:
+def _rag_retrieve_json(args: dict[str, Any]) -> dict[str, Any]:
     query = args["query"]
     k = args.get("k", 5)
 
@@ -214,13 +224,13 @@ def _rag_retrieve(args: dict[str, Any]) -> list[mcp_types.TextContent]:
     scored.sort(key=lambda x: x[0], reverse=True)
     results = [entry for _, entry in scored[:k]]
 
-    return [mcp_types.TextContent(type="text", text=json.dumps({
+    return {
         "results": results,
         "total_in_store": len(_memory_store),
-    }))]
+    }
 
 
-def _check_policy(args: dict[str, Any]) -> list[mcp_types.TextContent]:
+def _check_policy_json(args: dict[str, Any]) -> dict[str, Any]:
     action = args["action"]
 
     # Policy rules — expand as Organism grows
@@ -234,20 +244,20 @@ def _check_policy(args: dict[str, Any]) -> list[mcp_types.TextContent]:
     action_lower = action.lower()
     for pattern, reason in BLOCKED_ACTIONS:
         if pattern in action_lower:
-            return [mcp_types.TextContent(type="text", text=json.dumps({
+            return {
                 "result": "FAIL",
                 "reason": reason,
                 "action": action,
-            }))]
+            }
 
-    return [mcp_types.TextContent(type="text", text=json.dumps({
+    return {
         "result": "PASS",
         "reason": "No policy violations detected",
         "action": action,
-    }))]
+    }
 
 
-def _detect_doom_loop(args: dict[str, Any]) -> list[mcp_types.TextContent]:
+def _detect_doom_loop_json(args: dict[str, Any]) -> dict[str, Any]:
     sequence = args["call_sequence"]
     agent_id = args["agent_id"]
 
@@ -259,33 +269,33 @@ def _detect_doom_loop(args: dict[str, Any]) -> list[mcp_types.TextContent]:
     if len(sequence) >= 3:
         for i in range(len(sequence) - 2):
             if sequence[i] == sequence[i+1] == sequence[i+2]:
-                return [mcp_types.TextContent(type="text", text=json.dumps({
+                return {
                     "signal": True,
                     "code": "E004",
                     "evidence": f"Action '{sequence[i]}' repeated 3 times consecutively",
                     "recommendation": "Break the loop: add a stop condition or escalate to CEO",
-                }))]
+                }
 
     # 2. Sequence fingerprint seen before (cycle detection)
     if len(sequence) >= 4:
         fingerprint = hashlib.md5(json.dumps(sequence[-4:]).encode()).hexdigest()
         history = _call_sequences.get(f"{agent_id}_fingerprints", [])
         if fingerprint in history:
-            return [mcp_types.TextContent(type="text", text=json.dumps({
+            return {
                 "signal": True,
                 "code": "E004",
                 "evidence": f"Sequence fingerprint {fingerprint[:8]} seen before (cycle)",
                 "recommendation": "Agent is cycling — stop and report to orchestrator",
-            }))]
+            }
         _call_sequences[f"{agent_id}_fingerprints"] = (history + [fingerprint])[-20:]
 
-    return [mcp_types.TextContent(type="text", text=json.dumps({
+    return {
         "signal": False,
         "evidence": "No doom loop detected",
-    }))]
+    }
 
 
-def _persist_memory(args: dict[str, Any]) -> list[mcp_types.TextContent]:
+def _persist_memory_json(args: dict[str, Any]) -> dict[str, Any]:
     fact = args["fact"]
     graph_context = args.get("graph_context", {})
 
@@ -300,13 +310,19 @@ def _persist_memory(args: dict[str, Any]) -> list[mcp_types.TextContent]:
     if entry["id"] not in existing_ids:
         _memory_store.append(entry)
 
-    return [mcp_types.TextContent(type="text", text=json.dumps({
+    return {
         "status": "persisted",
         "id": entry["id"],
         "total_in_store": len(_memory_store),
-    }))]
+    }
 
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(stdio_server(app))
+    if len(sys.argv) >= 3 and sys.argv[1] == "--cli":
+        tool_name = sys.argv[2]
+        raw_args = sys.stdin.read().strip()
+        tool_args = json.loads(raw_args) if raw_args else {}
+        print(json.dumps(asyncio.run(dispatch_tool(tool_name, tool_args))))
+    else:
+        asyncio.run(stdio_server(app))

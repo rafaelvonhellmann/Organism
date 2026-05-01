@@ -5,7 +5,7 @@ import { configureTestState } from './test-state.js';
 configureTestState(import.meta.url);
 
 const { getDb } = await import('./task-queue.js');
-const { ensureGoal, createRunSession, createRunStep, updateRunStatus, updateRunStep, getGoal, getRunSession, mapProviderFailure } = await import('./run-state.js');
+const { ensureGoal, createRunSession, createRunConfigSnapshot, createRunStep, deriveRunDisplayStatus, updateRunStatus, updateRunStep, getGoal, getRunSession, mapProviderFailure } = await import('./run-state.js');
 const { listRuntimeEvents, clearRuntimeEventsForTests } = await import('./runtime-events.js');
 
 function resetRuntimeState() {
@@ -63,6 +63,16 @@ describe('run-state', () => {
     });
 
     assert.equal(run.status, 'running');
+    assert.equal(run.displayStatus, 'running');
+    assert.equal(run.configSnapshot?.projectId, 'organism');
+    assert.equal(run.configSnapshot?.agent, 'engineering');
+    assert.deepEqual(run.configSnapshot?.sidecar?.toolNames, [
+      'route_model',
+      'rag_retrieve',
+      'check_policy',
+      'detect_doom_loop',
+      'persist_memory',
+    ]);
 
     updateRunStatus({
       runId: run.id,
@@ -75,6 +85,9 @@ describe('run-state', () => {
 
     const updatedGoal = getGoal(goal.id);
     assert.equal(updatedGoal?.status, 'retry_scheduled');
+    const updatedRun = getRunSession(run.id);
+    assert.equal(updatedRun?.displayStatus, 'retry_scheduled');
+    assert.match(updatedRun?.displayReason ?? '', /provider_overload/);
 
     const events = listRuntimeEvents({ goalId: goal.id });
     assert.ok(events.some((event) => event.eventType === 'run.started'));
@@ -121,6 +134,7 @@ describe('run-state', () => {
 
     const recovered = getRunSession(run.id);
     assert.equal(recovered?.status, 'completed');
+    assert.equal(recovered?.displayStatus, 'succeeded');
     assert.equal(recovered?.retryClass, 'none');
     assert.equal(recovered?.providerFailureKind, 'none');
     assert.equal(recovered?.retryAt, null);
@@ -185,5 +199,61 @@ describe('run-state', () => {
     });
 
     assert.equal(updated, null);
+  });
+
+  it('derives blocked and error display states without changing stored status semantics', () => {
+    assert.deepEqual(
+      deriveRunDisplayStatus({
+        status: 'retry_scheduled',
+        retryClass: 'policy_block',
+        providerFailureKind: 'policy_block',
+      }),
+      {
+        displayStatus: 'blocked',
+        displayReason: 'Retry class: policy_block',
+      },
+    );
+
+    assert.equal(
+      deriveRunDisplayStatus({
+        status: 'failed',
+        retryClass: 'tool_failure',
+        providerFailureKind: 'tool_failure',
+      }).displayStatus,
+      'error',
+    );
+  });
+
+  it('accepts an explicit immutable config snapshot for replayable runs', () => {
+    const goal = ensureGoal({
+      projectId: 'organism',
+      title: 'Snapshot explicit config',
+      description: 'Persist explicit config snapshot',
+      sourceKind: 'user',
+      workflowKind: 'plan',
+    });
+    const snapshot = createRunConfigSnapshot({
+      goalId: goal.id,
+      projectId: 'organism',
+      agent: 'product-manager',
+      workflowKind: 'plan',
+      sourceKind: 'user',
+      riskLane: 'MEDIUM',
+      modelProfile: 'sonnet',
+      codeExecutor: 'codex',
+      notes: { recipe: 'warp-adaptation' },
+    });
+
+    const run = createRunSession({
+      goalId: goal.id,
+      projectId: 'organism',
+      agent: 'product-manager',
+      workflowKind: 'plan',
+      configSnapshot: snapshot,
+    });
+
+    assert.equal(run.configSnapshot?.review?.requiredStages?.join(','), 'quality-agent,codex-review');
+    assert.equal(run.configSnapshot?.notes?.recipe, 'warp-adaptation');
+    assert.equal(run.configSnapshot?.codeExecutor, 'codex');
   });
 });

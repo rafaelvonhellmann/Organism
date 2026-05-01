@@ -4,12 +4,13 @@ import * as path from 'path';
 import { execFileSync, execSync } from 'child_process';
 import { getProjectAutonomyHealth } from './autonomy-governor.js';
 import { appendCommandLog, updateRunProgress } from './run-memory.js';
-import { loadProjectPolicy, getV2DeployTargets, isActionAllowed, isActionBlocked, normalizePolicyCommand, requiresApproval } from './project-policy.js';
+import { loadProjectPolicy, getV2DeployTargets, isActionBlocked, normalizePolicyCommand, requiresApproval } from './project-policy.js';
 import { createGitHubPullRequest, getPrAuthStatus } from './runtime-auth.js';
 import { createApprovalRecord, createArtifact, createInterrupt, getLatestRunForGoal } from './run-state.js';
 import { recordRuntimeEvent } from './runtime-events.js';
 import { Task, CommandProposal, ApprovalRequest, ProjectAction, ProjectPolicy } from '../../shared/src/types.js';
 import { STATE_DIR } from '../../shared/src/state-dir.js';
+import { evaluateRuntimeAction } from './action-gate.js';
 
 interface GitStatusEntry {
   code: string;
@@ -52,6 +53,11 @@ export interface WorkspaceCleanupResult {
   removed: boolean;
   path: string;
   reason: string;
+  archivedRef?: string;
+  stashRef?: string;
+  dirtyFiles?: string[];
+  localBranchDeleted?: boolean;
+  localBranchDeleteReason?: string;
 }
 
 function slugify(input: string): string {
@@ -186,6 +192,57 @@ function previewDirtyFiles(entries: GitStatusEntry[]): string {
 
 function quoteForCmd(value: string): string {
   return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function cleanupTimestamp(): string {
+  return new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+}
+
+function archiveWorkspaceHead(workspace: EngineeringWorkspace, label: string): string | undefined {
+  if (!workspace.policy.branchLifecycle.archiveBeforeCleanup) return undefined;
+  const head = tryRunGit(['rev-parse', 'HEAD'], workspace.projectPath);
+  if (!head) return undefined;
+  const ref = `refs/archive/workspace-cleanup/${cleanupTimestamp()}/${label}/${workspace.branchName}`;
+  runGit(['update-ref', ref, head], workspace.repoRootPath);
+  return ref;
+}
+
+function stashWorkspaceChanges(workspace: EngineeringWorkspace, reason: string): string | undefined {
+  const dirtyEntries = listStatus(workspace.projectPath);
+  if (dirtyEntries.length === 0) return undefined;
+
+  const message = `[workspace-cleanup ${cleanupTimestamp()}] ${workspace.branchName}: ${reason}`;
+  runGit(['stash', 'push', '-u', '-m', message], workspace.projectPath);
+  return tryRunGit(['stash', 'list', '--format=%gd|%H|%gs', '-n', '1'], workspace.projectPath) || undefined;
+}
+
+function remoteBranchExists(workspace: EngineeringWorkspace): boolean {
+  return Boolean(tryRunGit(['rev-parse', '--verify', `refs/remotes/origin/${workspace.branchName}`], workspace.repoRootPath));
+}
+
+function deleteLocalBranchAfterCleanup(workspace: EngineeringWorkspace, allowUnpushedArchive: boolean): {
+  deleted: boolean;
+  reason: string;
+} {
+  if (!workspace.policy.branchLifecycle.deleteLocalBranchAfterPush) {
+    return { deleted: false, reason: 'Project policy keeps local task branches after cleanup.' };
+  }
+  if (workspace.branchName === workspace.defaultBranch || workspace.branchName === 'master' || workspace.branchName === 'main') {
+    return { deleted: false, reason: `Refused to delete protected branch ${workspace.branchName}.` };
+  }
+  if (tryRunGit(['rev-parse', '--abbrev-ref', 'HEAD'], workspace.repoRootPath) === workspace.branchName) {
+    return { deleted: false, reason: `Refused to delete current branch ${workspace.branchName}.` };
+  }
+  if (!remoteBranchExists(workspace) && !allowUnpushedArchive) {
+    return { deleted: false, reason: `Kept local branch ${workspace.branchName} because it has no remote branch yet.` };
+  }
+
+  try {
+    runGit(['branch', '-D', workspace.branchName], workspace.repoRootPath);
+    return { deleted: true, reason: `Deleted local task branch ${workspace.branchName}.` };
+  } catch (err) {
+    return { deleted: false, reason: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 function currentRun(task: Task) {
@@ -398,21 +455,72 @@ export function cleanupEngineeringWorkspace(workspace: EngineeringWorkspace): Wo
 
   const dirtyEntries = listStatus(workspace.projectPath);
   if (dirtyEntries.length > 0) {
-    return {
-      attempted: true,
-      removed: false,
-      path: workspace.projectPath,
-      reason: `Preserved isolated worktree because it still has ${dirtyEntries.length} uncommitted change(s).`,
-    };
+    if (workspace.policy.branchLifecycle.dirtyWorktreeStrategy === 'preserve') {
+      const archivedRef = archiveWorkspaceHead(workspace, 'preserved-dirty');
+      return {
+        attempted: true,
+        removed: false,
+        path: workspace.projectPath,
+        reason: `Preserved isolated worktree because it still has ${dirtyEntries.length} uncommitted change(s).`,
+        archivedRef,
+        dirtyFiles: dirtyEntries.map((entry) => entry.path),
+      };
+    }
+
+    const archivedRef = archiveWorkspaceHead(workspace, 'dirty-stash');
+    const stashRef = stashWorkspaceChanges(workspace, `stashing ${dirtyEntries.length} dirty entr${dirtyEntries.length === 1 ? 'y' : 'ies'} before cleanup`);
+    const remainingDirtyEntries = listStatus(workspace.projectPath);
+    if (remainingDirtyEntries.length > 0) {
+      return {
+        attempted: true,
+        removed: false,
+        path: workspace.projectPath,
+        reason: `Preserved isolated worktree because stash cleanup left ${remainingDirtyEntries.length} uncommitted change(s).`,
+        archivedRef,
+        stashRef,
+        dirtyFiles: remainingDirtyEntries.map((entry) => entry.path),
+      };
+    }
+
+    try {
+      runGit(['worktree', 'remove', '--force', workspace.projectPath], workspace.repoRootPath);
+      const branchDelete = deleteLocalBranchAfterCleanup(workspace, true);
+      return {
+        attempted: true,
+        removed: true,
+        path: workspace.projectPath,
+        reason: `Stashed ${dirtyEntries.length} dirty entr${dirtyEntries.length === 1 ? 'y' : 'ies'} and removed isolated worktree.`,
+        archivedRef,
+        stashRef,
+        dirtyFiles: dirtyEntries.map((entry) => entry.path),
+        localBranchDeleted: branchDelete.deleted,
+        localBranchDeleteReason: branchDelete.reason,
+      };
+    } catch (err) {
+      return {
+        attempted: true,
+        removed: false,
+        path: workspace.projectPath,
+        reason: err instanceof Error ? err.message : String(err),
+        archivedRef,
+        stashRef,
+        dirtyFiles: dirtyEntries.map((entry) => entry.path),
+      };
+    }
   }
 
+  const archivedRef = archiveWorkspaceHead(workspace, 'clean-remove');
   try {
     runGit(['worktree', 'remove', '--force', workspace.projectPath], workspace.repoRootPath);
+    const branchDelete = deleteLocalBranchAfterCleanup(workspace, false);
     return {
       attempted: true,
       removed: true,
       path: workspace.projectPath,
       reason: 'Removed clean isolated worktree after controller handoff.',
+      archivedRef,
+      localBranchDeleted: branchDelete.deleted,
+      localBranchDeleteReason: branchDelete.reason,
     };
   } catch (err) {
     return {
@@ -420,6 +528,7 @@ export function cleanupEngineeringWorkspace(workspace: EngineeringWorkspace): Wo
       removed: false,
       path: workspace.projectPath,
       reason: err instanceof Error ? err.message : String(err),
+      archivedRef,
     };
   }
 }
@@ -473,12 +582,25 @@ async function runOpenPrAction(task: Task, workspace: EngineeringWorkspace, comm
 }
 
 export async function runPolicyCommand(task: Task, workspace: EngineeringWorkspace, action: ProjectAction, command: string): Promise<ControllerCommandResult> {
-  if (!isActionAllowed(workspace.policy, action)) {
+  const gate = await evaluateRuntimeAction({
+    projectId: workspace.projectId,
+    action,
+    actor: 'controller',
+    taskId: task.id,
+    description: task.description,
+    command,
+    workflowKind: task.workflowKind,
+    policy: workspace.policy,
+    context: { cwd: workspace.projectPath, branchName: workspace.branchName },
+  });
+  if (!gate.allowed || gate.requiresApproval) {
     return {
       action,
       command,
       ok: false,
-      output: `Action "${action}" is not allowed by policy for ${workspace.projectId}`,
+      output: gate.allowed
+        ? gate.reason
+        : `Action "${action}" is not allowed by policy for ${workspace.projectId}: ${gate.reason}`,
     };
   }
 
@@ -529,12 +651,30 @@ function needsWorkspaceInstall(workspace: EngineeringWorkspace): boolean {
   return !fs.existsSync(path.join(workspace.projectPath, 'node_modules'));
 }
 
-function ensureWorkspaceDependencies(task: Task, workspace: EngineeringWorkspace): { ok: boolean; output: string | null } {
+async function ensureWorkspaceDependencies(task: Task, workspace: EngineeringWorkspace): Promise<{ ok: boolean; output: string | null }> {
   if (!needsWorkspaceInstall(workspace)) {
     return { ok: true, output: null };
   }
 
   const installCommand = normalizePolicyCommand(workspace.policy.commands.install) ?? workspace.policy.commands.install!;
+  const gate = await evaluateRuntimeAction({
+    projectId: workspace.projectId,
+    action: 'build',
+    actor: 'controller',
+    taskId: task.id,
+    description: task.description,
+    command: installCommand,
+    workflowKind: task.workflowKind,
+    policy: workspace.policy,
+    context: { phase: 'install', cwd: workspace.projectPath },
+  });
+  if (!gate.allowed || gate.requiresApproval) {
+    return {
+      ok: false,
+      output: gate.allowed ? gate.reason : `Dependency install blocked: ${gate.reason}`,
+    };
+  }
+
   recordToolEvent(task, 'tool.started', {
     action: 'install',
     command: installCommand,
@@ -572,18 +712,30 @@ function ensureWorkspaceDependencies(task: Task, workspace: EngineeringWorkspace
   }
 }
 
-function commitIfSafe(task: Task, workspace: EngineeringWorkspace, changedFiles: string[]): { proposals: CommandProposal[]; committed: boolean } {
+async function commitIfSafe(task: Task, workspace: EngineeringWorkspace, changedFiles: string[]): Promise<{ proposals: CommandProposal[]; committed: boolean }> {
   const proposals: CommandProposal[] = [];
   if (!changedFiles.length) return { proposals, committed: false };
 
   const commitMessage = `[agent] ${task.description.replace(/\s+/g, ' ').slice(0, 68)}`;
-  if (!isActionAllowed(workspace.policy, 'commit')) {
+  const commitCommand = `git commit -m ${quoteForCmd(commitMessage)}`;
+  const gate = await evaluateRuntimeAction({
+    projectId: workspace.projectId,
+    action: 'commit',
+    actor: 'controller',
+    taskId: task.id,
+    description: task.description,
+    command: commitCommand,
+    workflowKind: task.workflowKind,
+    policy: workspace.policy,
+    context: { changedFiles, cwd: workspace.projectPath },
+  });
+  if (!gate.allowed || gate.requiresApproval) {
     proposals.push({
       id: crypto.randomUUID(),
       action: 'commit',
-      command: `git commit -m ${quoteForCmd(commitMessage)}`,
+      command: commitCommand,
       cwd: workspace.projectPath,
-      reason: 'Commit is disabled by project policy.',
+      reason: gate.allowed ? gate.reason : `Commit is blocked by runtime policy: ${gate.reason}`,
       requiresApproval: true,
     });
     return { proposals, committed: false };
@@ -593,7 +745,7 @@ function commitIfSafe(task: Task, workspace: EngineeringWorkspace, changedFiles:
     proposals.push({
       id: crypto.randomUUID(),
       action: 'commit',
-      command: `git commit -m ${quoteForCmd(commitMessage)}`,
+      command: commitCommand,
       cwd: workspace.projectPath,
       reason: 'Workspace was already dirty before the run, so commit was deferred to avoid mixing Rafael changes with agent changes.',
       requiresApproval: true,
@@ -617,7 +769,7 @@ function commitIfSafe(task: Task, workspace: EngineeringWorkspace, changedFiles:
     proposals.push({
       id: crypto.randomUUID(),
       action: 'commit',
-      command: `git commit -m ${quoteForCmd(commitMessage)}`,
+      command: commitCommand,
       cwd: workspace.projectPath,
       reason: output,
       requiresApproval: true,
@@ -727,7 +879,7 @@ export async function finalizeEngineeringExecution(task: Task, workspace: Engine
   const changedFiles = collectChangedFiles(workspace);
   const verification: ControllerCommandResult[] = [];
   const controllerActions: ControllerCommandResult[] = [];
-  const installResult = ensureWorkspaceDependencies(task, workspace);
+  const installResult = await ensureWorkspaceDependencies(task, workspace);
 
   if (!installResult.ok) {
     verification.push({
@@ -748,7 +900,7 @@ export async function finalizeEngineeringExecution(task: Task, workspace: Engine
     verification.push(await runPolicyCommand(task, workspace, 'build', workspace.policy.commands.build));
   }
 
-  const commitResult = commitIfSafe(task, workspace, changedFiles);
+  const commitResult = await commitIfSafe(task, workspace, changedFiles);
   const commandProposals = [...commitResult.proposals];
   const approvalRequests: ApprovalRequest[] = [];
   const verificationPassed = verification.every((step) => step.ok);

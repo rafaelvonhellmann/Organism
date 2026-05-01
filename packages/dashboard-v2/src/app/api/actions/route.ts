@@ -4,15 +4,25 @@ import { requireAuth, unauthorizedResponse } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
+function parseLimit(value: string | null): number {
+  const parsed = value ? Number.parseInt(value, 10) : 50;
+  if (!Number.isFinite(parsed)) return 50;
+  return Math.min(100, Math.max(1, parsed));
+}
+
 // GET: list recent actions and their status
 export async function GET(req: NextRequest) {
   if (!requireAuth(req)) return unauthorizedResponse();
   const client = getClient();
   if (!client) return Response.json({ actions: [] });
   const project = req.nextUrl.searchParams.get('project')?.trim();
+  const limit = parseLimit(req.nextUrl.searchParams.get('limit'));
 
   const result = await client.execute(
-    'SELECT * FROM dashboard_actions ORDER BY created_at DESC LIMIT 100'
+    {
+      sql: 'SELECT * FROM dashboard_actions ORDER BY created_at DESC LIMIT ?',
+      args: [limit],
+    },
   );
   const actions = project
     ? result.rows.filter((row) => {
@@ -24,7 +34,7 @@ export async function GET(req: NextRequest) {
         }
       })
     : result.rows;
-  return Response.json({ actions });
+  return Response.json({ actions, limit }, { headers: { 'Cache-Control': 'no-store' } });
 }
 
 // POST: create a new action request

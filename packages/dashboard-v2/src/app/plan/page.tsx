@@ -351,7 +351,7 @@ const RECENT_ACTIVITY_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 export default function PlanPage() {
   const [project, setProject] = useState(() => getInitialSelectedProject());
   const [activePeriod, setActivePeriod] = useState<PeriodKey>('thisWeek');
-  const taskUrl = project ? `/api/tasks?limit=200&project=${project}` : '/api/tasks?limit=200';
+  const taskUrl = project ? `/api/tasks?limit=200&include=summary&project=${project}` : '/api/tasks?limit=200&include=summary';
   const reviewQueueUrl = project ? `/api/review-queue?project=${project}` : '/api/review-queue';
   const { data: tasksData, lastUpdated } = usePolling<{ tasks: TaskRow[] }>(taskUrl);
   const { data: reviewQueueData } = usePolling<{ pending: number }>(reviewQueueUrl);

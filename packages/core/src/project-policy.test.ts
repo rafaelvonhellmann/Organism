@@ -10,7 +10,12 @@ describe('project-policy', () => {
     assert.equal(isActionBlocked(policy, 'purchase'), true);
     assert.equal(isActionBlocked(policy, 'create_account'), true);
     assert.equal(policy.workspaceMode, 'isolated_worktree');
+    assert.equal(policy.branchLifecycle.dirtyWorktreeStrategy, 'stash_and_remove');
+    assert.equal(policy.branchLifecycle.archiveBeforeCleanup, true);
+    assert.equal(policy.branchLifecycle.deleteLocalBranchAfterPush, true);
+    assert.equal(policy.branchLifecycle.maxPreservedWorktrees, 3);
     assert.equal(policy.launchGuards.minimumHealthyRunsForDeploy, 3);
+    assert.equal(policy.launchGuards.autoDeployAfterHealthyStreak, false);
   });
 
   it('derives fork comparison targets for v2 deployments', () => {
@@ -35,6 +40,7 @@ describe('project-policy', () => {
     assert.equal(policy.selfAudit.enabled, true);
     assert.equal(policy.selfAudit.cadence, 'daily');
     assert.equal(policy.selfAudit.hour, 8);
+    assert.equal(policy.selfAudit.idleCooldownMinutes, 24 * 60);
     assert.deepEqual(policy.selfAudit.workflows, ['review', 'validate', 'recover', 'implement']);
     assert.equal(policy.selfAudit.maxFollowups, 4);
   });

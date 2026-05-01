@@ -9,7 +9,7 @@
 import { dispatchPendingTasks } from './agent-runner.js';
 import { runWatchdog } from './orchestrator.js';
 import { loadRegistry } from './registry.js';
-import { getDb, getPendingTasks } from './task-queue.js';
+import { getDb, getPendingTasks, hasPendingTaskReviews } from './task-queue.js';
 import { enforceDormancy } from './perspectives.js';
 import { syncToTurso } from './turso-sync.js';
 import { processDashboardActions } from './action-processor.js';
@@ -196,6 +196,8 @@ export function autoCompleteEligibleAwaitingReviewTasks(now = Date.now()): numbe
   let completed = 0;
 
   for (const row of rows) {
+    if (hasPendingTaskReviews(row.id)) continue;
+
     const projectId = row.project_id || 'organism';
     const workflowKind = row.workflow_kind ?? 'implement';
     const policy = loadProjectPolicy(projectId);
@@ -485,7 +487,7 @@ async function schedulerTick(): Promise<void> {
   // ── Progress monitoring — check if weekly objectives are being met ────
   try {
     const { checkProgressAndCreateTasks } = await import('./progress-monitor.js');
-    const created = checkProgressAndCreateTasks();
+    const created = await checkProgressAndCreateTasks();
     if (created > 0) {
       console.log(`[Scheduler] Progress monitor created ${created} recovery tasks`);
     }
@@ -566,7 +568,7 @@ async function schedulerTick(): Promise<void> {
   // Cascading tasks — when agents complete, trigger downstream agents
   try {
     const { processCascades } = await import('./cascade.js');
-    processCascades();
+    await processCascades();
   } catch { /* non-critical */ }
 
   try {
@@ -586,10 +588,15 @@ async function schedulerTick(): Promise<void> {
     `).all(Date.now() - 60 * 60 * 1000) as Array<{ id: string }>;
 
     if (stuckLow.length > 0) {
+      let autoCompleted = 0;
       for (const task of stuckLow) {
+        if (hasPendingTaskReviews(task.id)) continue;
         getDb().prepare("UPDATE tasks SET status = 'completed' WHERE id = ?").run(task.id);
+        autoCompleted += 1;
       }
-      console.log(`[Scheduler] Auto-completed ${stuckLow.length} stuck LOW tasks`);
+      if (autoCompleted > 0) {
+        console.log(`[Scheduler] Auto-completed ${autoCompleted} stuck LOW tasks`);
+      }
     }
   } catch { /* non-critical */ }
 

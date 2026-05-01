@@ -135,6 +135,13 @@ describe('model backend resolution', () => {
     );
   });
 
+  it('falls back from claude-cli when model is unsupported (OpenAI model routed to claude CLI)', () => {
+    assert.equal(
+      shouldFallbackFromClaudeCliToApi(new Error('UNSUPPORTED_MODEL: claude CLI cannot run OpenAI model "gpt5.4" — routing to OpenAI backend')),
+      true,
+    );
+  });
+
   it('falls back from anthropic to openai for exhausted credits', () => {
     assert.equal(
       shouldFallbackFromAnthropicToOpenAi(new Error('Your credit balance is too low to access the Anthropic API')),

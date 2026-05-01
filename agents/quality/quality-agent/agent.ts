@@ -1,9 +1,8 @@
 import { BaseAgent } from '../../_base/agent.js';
 import { callModelUltra } from '../../_base/mcp-client.js';
 import { Task } from '../../../packages/shared/src/types.js';
-import { getTask, createTask, completeTask, countRevisions, getRevisionChainCost } from '../../../packages/core/src/task-queue.js';
+import { getTask, createTask, countRevisions, getRevisionChainCost } from '../../../packages/core/src/task-queue.js';
 import { writeAudit } from '../../../packages/core/src/audit.js';
-import { triggerG4Gate } from '../../../packages/core/src/gates.js';
 import { MAX_REVISIONS, REVISION_COST_CAP } from '../../../packages/core/src/budget.js';
 import { buildRepoReviewBrief } from '../../../packages/core/src/repo-review-brief.js';
 import { parseFollowupPolicy } from '../../../packages/core/src/followup-policy.js';
@@ -311,46 +310,6 @@ Apply the autoresearch method: generate 3 alternative approaches, score the actu
 
     const approved = result.text.includes('**Decision:** APPROVED') ||
                      result.text.includes('Decision: APPROVED');
-
-    // For HIGH-lane parent tasks: trigger G4 board gate instead of auto-ship
-    if (originalTaskId) {
-      const parentTask = getTask(originalTaskId);
-      if (parentTask?.lane === 'HIGH' && approved) {
-        triggerG4Gate(
-          originalTaskId,
-          `Quality review APPROVED.\n\nOriginal task: ${originalDesc}\n\nReview summary:\n${result.text.slice(0, 600)}`
-        );
-      }
-
-      // AUTO-APPROVAL: LOW-lane tasks that pass quality review skip Rafael's review queue.
-      // They are auto-completed with an audit trail so we can track them.
-      // MEDIUM and HIGH always require human review.
-      if (parentTask?.lane === 'LOW' && approved) {
-        try {
-          // Only auto-complete if the parent task is still in a completable state
-          // (awaiting_review or completed but not yet decided on)
-          if (parentTask.status === 'awaiting_review' || parentTask.status === 'completed') {
-            completeTask(parentTask.id, parentTask.output, parentTask.tokensUsed ?? 0, parentTask.costUsd ?? 0);
-            console.log(`[quality-agent] AUTO-APPROVED LOW-lane task ${parentTask.id} (${parentTask.agent}: "${parentTask.description.slice(0, 60)}")`);
-          }
-
-          writeAudit({
-            agent: 'quality-agent',
-            taskId: parentTask.id,
-            action: 'auto_approved',
-            payload: {
-              originalAgent: parentTask.agent,
-              lane: parentTask.lane,
-              qualityScore: result.text.match(/Score:\s*(\d+)/)?.[1] ?? 'unknown',
-              reviewSummary: result.text.slice(0, 300),
-            },
-            outcome: 'success',
-          });
-        } catch (err) {
-          console.warn(`[quality-agent] Failed to auto-approve LOW-lane task ${parentTask.id}: ${err}`);
-        }
-      }
-    }
 
     // Quality feedback loop: any NEEDS_REVISION decision should create a bounded
     // follow-up for the original agent instead of leaving the project idle.

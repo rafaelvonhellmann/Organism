@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { resolveOpenAiModelSpec } from '../../../agents/_base/mcp-client.js';
+import { assertRuntimeActionAllowed } from './action-gate.js';
 
 export type CodeExecutorKind = 'claude' | 'codex';
 export type CodeExecutorPreference = CodeExecutorKind | 'auto';
@@ -21,6 +22,7 @@ export interface CodeExecutionParams {
   preference?: CodeExecutorPreference;
   description?: string;
   workflowKind?: string;
+  projectId?: string;
   timeoutMs?: number;
   onHeartbeat?: (heartbeat: { executor: CodeExecutorKind; elapsedMs: number }) => void;
 }
@@ -503,6 +505,24 @@ export function shouldFallbackFromCodexExecutor(error: unknown): boolean {
 }
 
 export async function runCodeExecutor(params: CodeExecutionParams): Promise<CodeExecutionResult> {
+  await assertRuntimeActionAllowed({
+    projectId: params.projectId ?? 'organism',
+    action: 'edit_code',
+    actor: 'code-executor',
+    description: params.description ?? params.prompt.slice(0, 500),
+    workflowKind: params.workflowKind === 'review'
+      || params.workflowKind === 'plan'
+      || params.workflowKind === 'implement'
+      || params.workflowKind === 'validate'
+      || params.workflowKind === 'ship'
+      || params.workflowKind === 'monitor'
+      || params.workflowKind === 'recover'
+      || params.workflowKind === 'shaping'
+      ? params.workflowKind
+      : 'implement',
+    context: { cwd: params.cwd },
+  });
+
   const executor = resolveCodeExecutor(params.preference);
   if (executor.preferred !== 'auto') {
     return executor.selected === 'codex' ? runCodexExec(params) : runClaudeExec(params);

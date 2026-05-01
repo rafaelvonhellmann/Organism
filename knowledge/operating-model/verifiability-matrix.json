@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "updatedAt": "2026-05-01",
+  "source": "Karpathy-inspired jaggedness model: capability depends on domain verifiability and whether the task is on the frontier-lab reinforcement-learning rails.",
+  "classes": {
+    "HIGH": {
+      "description": "Outputs can be checked cheaply with deterministic tools, tests, logs, schemas, or reproducible commands.",
+      "runtimePosture": "Act autonomously within task scope, run deterministic checks, include verification output, and auto-ship only when the risk lane permits."
+    },
+    "MEDIUM": {
+      "description": "Outputs can be partially checked with evidence, acceptance criteria, known heuristics, or user feedback.",
+      "runtimePosture": "Act autonomously but surface assumptions, evidence, tradeoffs, and acceptance criteria."
+    },
+    "LOW": {
+      "description": "Outputs rely on judgement over ambiguous or external reality: legal, medical, strategy, market timing, brand risk.",
+      "runtimePosture": "Require citations, playbook mapping, uncertainty, and review gates. Prefer proposals over direct mutation."
+    },
+    "NON_DELEGABLE": {
+      "description": "Final decisions that require Rafael, a qualified professional, or explicit business approval.",
+      "runtimePosture": "Do not decide or apply. Prepare the decision packet and request approval."
+    }
+  },
+  "defaultProfile": {
+    "verifiability": "MEDIUM",
+    "onRailsSignals": [
+      "task references code, tests, logs, schemas, known framework docs, or supplied source evidence"
+    ],
+    "offRoadSignals": [
+      "task asks for legal reliance, medical correctness, market prediction, major spend, credentials, brand stance, or external-world claims without sources"
+    ],
+    "mustVerify": [
+      "state assumptions",
+      "cite available evidence",
+      "name missing evidence",
+      "separate proposed actions from applied actions"
+    ],
+    "approvalRequiredFor": [
+      "irreversible actions",
+      "external communications",
+      "money movement",
+      "legal or clinical reliance",
+      "scope expansion"
+    ]
+  },
+  "agentProfiles": {
+    "ceo": {
+      "verifiability": "LOW",
+      "mustVerify": ["link decisions to goals", "state tradeoffs", "define 30/90/180-day success metrics"],
+      "approvalRequiredFor": ["company strategy pivots", "major spend", "brand-defining decisions"]
+    },
+    "product-manager": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["state user problem", "define acceptance criteria", "slice into independently grabbable work", "name open product decisions"],
+      "approvalRequiredFor": ["scope expansion", "bet approval", "user-facing promise changes"]
+    },
+    "engineering": {
+      "verifiability": "HIGH",
+      "mustVerify": ["run typecheck/tests/build when relevant", "cite changed files", "separate implementation from verification", "avoid speculative refactors"],
+      "approvalRequiredFor": ["destructive migrations", "production deploys", "cross-project changes", "secret or credential changes"]
+    },
+    "devops": {
+      "verifiability": "HIGH",
+      "mustVerify": ["cite logs", "check config diff", "define rollback", "verify health endpoint or deployment status"],
+      "approvalRequiredFor": ["production infra mutation", "domain/DNS changes", "billing changes", "secret rotation"]
+    },
+    "cto": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["cite architecture evidence", "name reversibility", "separate now/next/later", "identify deterministic checks"],
+      "approvalRequiredFor": ["platform migration", "new paid vendor", "irreversible architecture direction"]
+    },
+    "design": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["tie recommendation to user workflow", "check accessibility and responsiveness", "cite screenshots or component paths when available"],
+      "approvalRequiredFor": ["brand-level visual direction", "major navigation changes"]
+    },
+    "quality-agent": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["score against alternatives", "name specific revision criteria", "avoid vague quality objections"],
+      "approvalRequiredFor": ["blocking HIGH-risk output without evidence"]
+    },
+    "domain-model": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["check domain language", "cite ADR/context conflicts", "separate shaping from execution"],
+      "approvalRequiredFor": ["new canonical domain terms", "ADR decisions"]
+    },
+    "codex-review": {
+      "verifiability": "HIGH",
+      "mustVerify": ["cite concrete locations", "state behavioral risk", "recommend test or patch target"],
+      "approvalRequiredFor": ["blocking on speculative issues only"]
+    },
+    "quality-guardian": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["cross-check evidence", "separate critical/high/medium", "require browser/API/data verification when applicable"],
+      "approvalRequiredFor": ["G4 approval", "HIGH-risk final decision"]
+    },
+    "legal": {
+      "verifiability": "LOW",
+      "mustVerify": ["map to legal playbook topic", "cite source language", "cite applicable Australian law", "emit structured redline proposals"],
+      "approvalRequiredFor": ["all legal edits", "legal reliance", "solicitor-required judgement"]
+    },
+    "security-audit": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["cite exploit path or code/config evidence", "classify severity by impact and likelihood", "recommend concrete remediation"],
+      "approvalRequiredFor": ["production security changes", "public disclosure", "credential rotation"]
+    },
+    "medical-content-reviewer": {
+      "verifiability": "LOW",
+      "mustVerify": ["cite syllabus/source material", "separate educational quality from clinical advice", "flag uncertainty"],
+      "approvalRequiredFor": ["medical correctness reliance", "clinical safety claims", "public medical education content release"]
+    },
+    "cfo": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["show assumptions", "cite spend/revenue source", "model sensitivity", "separate forecast from actual"],
+      "approvalRequiredFor": ["major spend", "pricing commitments", "financial/legal/tax reliance"]
+    },
+    "sales": {
+      "verifiability": "LOW",
+      "mustVerify": ["cite customer evidence", "avoid unsupported claims", "define next action"],
+      "approvalRequiredFor": ["external outreach", "pricing promises", "contract commitments"]
+    },
+    "marketing-strategist": {
+      "verifiability": "LOW",
+      "mustVerify": ["cite audience evidence", "state hypothesis", "define kill criteria"],
+      "approvalRequiredFor": ["brand claims", "paid campaign spend", "medical/legal/commercial claims"]
+    },
+    "marketing-executor": {
+      "verifiability": "LOW",
+      "mustVerify": ["cite approved positioning", "avoid unsupported claims", "include compliance checks"],
+      "approvalRequiredFor": ["external publication", "email sends", "regulated claims"]
+    },
+    "seo": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["cite keyword/source evidence", "separate technical SEO from content hypothesis", "define measurable outcome"],
+      "approvalRequiredFor": ["public claims", "sitewide metadata strategy"]
+    },
+    "customer-success": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["cite support/user evidence", "separate one-off complaint from trend", "define follow-up"],
+      "approvalRequiredFor": ["external user messages", "refund/compensation decisions"]
+    },
+    "customer-support": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["cite ticket or product-doc evidence", "separate troubleshooting from policy commitments", "name escalation path"],
+      "approvalRequiredFor": ["external user replies", "refund decisions", "medical/legal/product promises"]
+    },
+    "community-manager": {
+      "verifiability": "LOW",
+      "mustVerify": ["cite community evidence", "align with approved positioning", "separate moderation recommendation from action"],
+      "approvalRequiredFor": ["public posts", "member bans", "community policy changes"]
+    },
+    "competitive-intel": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["cite dated source evidence", "separate observed fact from inference", "state confidence and freshness"],
+      "approvalRequiredFor": ["public competitor claims", "sales battlecard publication"]
+    },
+    "data-analyst": {
+      "verifiability": "HIGH",
+      "mustVerify": ["cite query/source", "show assumptions", "distinguish correlation from causation"],
+      "approvalRequiredFor": ["business-critical metric definition changes"]
+    },
+    "donation-guardian": {
+      "verifiability": "LOW",
+      "mustVerify": ["cite donor intent and policy evidence", "protect PII/PHI boundaries", "separate recommendation from approval"],
+      "approvalRequiredFor": ["donor communications", "public impact claims", "restricted data release"]
+    },
+    "hr": {
+      "verifiability": "LOW",
+      "mustVerify": ["cite policy or source evidence", "avoid employment-law certainty", "separate draft guidance from employment decisions"],
+      "approvalRequiredFor": ["hiring/firing decisions", "compensation changes", "candidate or employee communications"]
+    },
+    "infrastructure-auditor": {
+      "verifiability": "HIGH",
+      "mustVerify": ["cite logs or infrastructure config", "reproduce checks when possible", "define severity and rollback"],
+      "approvalRequiredFor": ["production infrastructure mutation", "credential rotation", "billing-impacting changes"]
+    },
+    "obsidian-scribe": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["cite source note or task", "preserve provenance", "tag uncertainty before canonizing"],
+      "approvalRequiredFor": ["canonical knowledge rewrites", "deleting prior notes", "publishing internal notes"]
+    },
+    "palate-wiki": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["cite source artifacts", "preserve knowledge lineage", "separate summary from canonical instruction"],
+      "approvalRequiredFor": ["canonical domain updates", "source deletion", "public documentation changes"]
+    },
+    "pr-comms": {
+      "verifiability": "LOW",
+      "mustVerify": ["cite approved positioning", "check factual and regulated-claim risk", "separate draft from send"],
+      "approvalRequiredFor": ["public statements", "press outreach", "crisis communications"]
+    },
+    "research-ops": {
+      "verifiability": "LOW",
+      "mustVerify": ["cite research source material", "state consent and data constraints", "separate hypothesis from finding"],
+      "approvalRequiredFor": ["participant outreach", "dataset release", "public research claims"]
+    },
+    "synthesis": {
+      "verifiability": "MEDIUM",
+      "mustVerify": ["dedupe by evidence", "preserve dissent", "rank by risk and impact"],
+      "approvalRequiredFor": ["final prioritization on HIGH-risk work"]
+    }
+  }
+}

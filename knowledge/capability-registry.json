@@ -60,7 +60,10 @@
       "status": "active",
       "model": "gpt5.4",
       "frequencyTier": "daily",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/product/playbooks/prd-to-agent-slices.md"
+      ]
     },
     {
       "id": "product.prioritization",
@@ -73,7 +76,10 @@
       "status": "active",
       "model": "gpt5.4",
       "frequencyTier": "daily",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/product/playbooks/prd-to-agent-slices.md"
+      ]
     },
     {
       "id": "quality.review",
@@ -117,7 +123,7 @@
       ],
       "reviewerLane": "HIGH",
       "description": "Full 6-phase quality audit with Playwright browser verification. Fires on HIGH-risk tasks and Saturday deep audit.",
-      "status": "suspended",
+      "status": "active",
       "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": "all"
@@ -152,6 +158,7 @@
       "projectScope": "all",
       "knowledgeSources": [
         "knowledge/marketing/popularize-playbook.md",
+        "knowledge/growth/playbooks/experiment-design.md",
         "knowledge/business-model/roi-framework.md"
       ]
     },
@@ -170,7 +177,8 @@
       "frequencyTier": "2-3x-week",
       "projectScope": "all",
       "knowledgeSources": [
-        "knowledge/marketing/popularize-playbook.md"
+        "knowledge/marketing/popularize-playbook.md",
+        "knowledge/growth/playbooks/experiment-design.md"
       ]
     },
     {
@@ -185,7 +193,10 @@
       "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "daily",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/growth/playbooks/experiment-design.md"
+      ]
     },
     {
       "id": "marketing.seo",
@@ -212,7 +223,10 @@
       "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "2-3x-week",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/growth/playbooks/experiment-design.md"
+      ]
     },
     {
       "id": "design.ui",
@@ -288,7 +302,10 @@
       "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "weekly",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/security/playbooks/launch-security-review.md"
+      ]
     },
     {
       "id": "legal.compliance",
@@ -298,10 +315,13 @@
       ],
       "reviewerLane": "HIGH",
       "description": "Legal compliance, terms of service, privacy policy",
-      "status": "suspended",
+      "status": "active",
       "model": "gpt5.4",
       "frequencyTier": "on-demand",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/legal/playbooks/organism-legal-review-playbook.md"
+      ]
     },
     {
       "id": "intel.competitive",
@@ -326,7 +346,7 @@
       "collaborators": [],
       "reviewerLane": "LOW",
       "description": "Knowledge synthesis and Obsidian vault integration",
-      "status": "shadow",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "monthly",
       "projectScope": "all"
@@ -344,6 +364,9 @@
       "frequencyTier": "on-demand",
       "projectScope": [
         "synapse"
+      ],
+      "knowledgeSources": [
+        "knowledge/medical/playbooks/synapse-content-review.md"
       ]
     },
     {
@@ -439,7 +462,7 @@
       ],
       "reviewerLane": "HIGH",
       "description": "Research execution integrity: workload validation, citation chain audit, Python worker contract compliance, scoring transparency, mock-vs-real execution verification. Tokens for Good specialist.",
-      "status": "shadow",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": [
@@ -455,7 +478,7 @@
       ],
       "reviewerLane": "HIGH",
       "description": "Donation flow audit: PII compliance (AU Privacy Act 1988), authentication flows, operator credential security, contribution policy enforcement, sensitivity classification. Tokens for Good specialist.",
-      "status": "shadow",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": [
@@ -471,7 +494,7 @@
       ],
       "reviewerLane": "MEDIUM",
       "description": "Render/Vercel deployment audit, Docker configuration, health endpoints, production hardening flags. Tokens for Good specialist.",
-      "status": "shadow",
+      "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "on-demand",
       "projectScope": [

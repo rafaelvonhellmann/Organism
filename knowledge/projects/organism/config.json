@@ -43,7 +43,7 @@
       "competitive-intel"
     ]
   },
-  "repoPath": "C:/Users/rafae/OneDrive/Desktop/Organism",
+  "repoPath": "C:/dev/Organism",
   "defaultBranch": "master",
   "repository": "https://github.com/rafaelvonhellmann/Organism",
   "commands": {
@@ -82,6 +82,13 @@
   },
   "envRequirements": ["GH_TOKEN", "VERCEL_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MINIMAX_API_KEY"],
   "workspaceMode": "isolated_worktree",
+  "branchLifecycle": {
+    "dirtyWorktreeStrategy": "stash_and_remove",
+    "archiveBeforeCleanup": true,
+    "deleteLocalBranchAfterPush": true,
+    "maxPreservedWorktreeAgeHours": 24,
+    "maxPreservedWorktrees": 3
+  },
   "launchGuards": {
     "minimumHealthyRunsForDeploy": 3
   },
@@ -124,5 +131,5 @@
     "purchaseUsd": 0
   },
   "autonomyMode": "stabilization",
-  "tasklist": "C:/Users/rafae/OneDrive/Desktop/Organism/ROADMAP.md"
+  "tasklist": "C:/dev/Organism/ROADMAP.md"
 }

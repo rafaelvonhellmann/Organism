@@ -2,11 +2,14 @@ export type RiskLane = 'LOW' | 'MEDIUM' | 'HIGH';
 
 export type TaskStatus =
   | 'pending'
+  | 'claimed'
   | 'in_progress'
   | 'paused'
+  | 'blocked'
   | 'retry_scheduled'
   | 'completed'
   | 'failed'
+  | 'error'
   | 'dead_letter'
   | 'rolled_back'
   | 'awaiting_review';
@@ -43,8 +46,8 @@ export type ProviderFailureKind =
   | 'tool_failure'
   | 'auth_failure'
   | 'policy_block';
-export type GoalStatus = 'pending' | 'running' | 'paused' | 'retry_scheduled' | 'completed' | 'failed' | 'cancelled';
-export type RunSessionStatus = 'pending' | 'running' | 'paused' | 'retry_scheduled' | 'completed' | 'failed' | 'cancelled';
+export type GoalStatus = 'pending' | 'running' | 'paused' | 'blocked' | 'retry_scheduled' | 'completed' | 'failed' | 'error' | 'cancelled';
+export type RunSessionStatus = 'pending' | 'claimed' | 'running' | 'paused' | 'blocked' | 'retry_scheduled' | 'completed' | 'failed' | 'error' | 'cancelled';
 export type RunStepStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'skipped';
 export type InterruptStatus = 'pending' | 'resolved' | 'dismissed';
 export type ArtifactKind = 'plan' | 'patch' | 'command_log' | 'handoff' | 'checkpoint' | 'report' | 'deployment' | 'verification';
@@ -74,7 +77,33 @@ export type ProjectAction =
   | 'create_account'
   | 'destructive_migration'
   | 'cross_project';
+export type RunDisplayStatus =
+  | 'queued'
+  | 'pending'
+  | 'claimed'
+  | 'running'
+  | 'blocked'
+  | 'retry_scheduled'
+  | 'succeeded'
+  | 'failed'
+  | 'error'
+  | 'cancelled'
+  | 'dead_letter'
+  | 'awaiting_review'
+  | 'unknown';
+export type RuntimeActionGateReasonCode =
+  | 'allowed'
+  | 'approval_required'
+  | 'project_policy_block'
+  | 'sensitive_action_block'
+  | 'safety_envelope_block'
+  | 'sidecar_policy_block'
+  | 'contains_redirection'
+  | 'protected_path'
+  | 'missing_secret'
+  | 'inconclusive';
 export type WorkspaceMode = 'direct' | 'clean_required' | 'isolated_worktree';
+export type DirtyWorktreeStrategy = 'preserve' | 'stash_and_remove';
 export type MiniMaxCommand = 'search' | 'speech' | 'vision';
 export type AgentEnvelopeKind =
   | 'finding'
@@ -119,10 +148,18 @@ export interface ProjectConfig {
   };
   envRequirements?: string[];
   workspaceMode?: WorkspaceMode;
+  branchLifecycle?: {
+    dirtyWorktreeStrategy?: DirtyWorktreeStrategy;
+    archiveBeforeCleanup?: boolean;
+    deleteLocalBranchAfterPush?: boolean;
+    maxPreservedWorktreeAgeHours?: number;
+    maxPreservedWorktrees?: number;
+  };
   launchGuards?: {
     minimumHealthyRunsForDeploy?: number;
     initialWorkflowLimit?: number;
     initialAllowedWorkflows?: WorkflowKind[];
+    autoDeployAfterHealthyStreak?: boolean;
   };
   autonomySurfaces?: {
     readOnlyCanary?: boolean;
@@ -137,6 +174,7 @@ export interface ProjectConfig {
     cadence?: SelfAuditCadence;
     dayOfWeek?: number;
     hour?: number;
+    idleCooldownMinutes?: number;
     workflows?: WorkflowKind[];
     maxFollowups?: number;
     description?: string;
@@ -289,12 +327,54 @@ export interface RunSession {
   agent: string;
   workflowKind: WorkflowKind;
   status: RunSessionStatus;
+  displayStatus: RunDisplayStatus;
+  displayReason?: string | null;
   retryClass: RetryClass;
   retryAt?: number | null;
   providerFailureKind?: ProviderFailureKind;
+  configSnapshot?: RunConfigSnapshot | null;
   createdAt: number;
   updatedAt: number;
   completedAt?: number | null;
+}
+
+export interface RunConfigSnapshot {
+  schemaVersion: 1;
+  capturedAt: number;
+  projectId: string;
+  goalId: string;
+  agent: string;
+  workflowKind: WorkflowKind;
+  sourceKind?: GoalSourceKind | null;
+  riskLane?: RiskLane | null;
+  modelProfile?: AgentCapability['model'] | null;
+  modelBackend?: string | null;
+  codeExecutor?: string | null;
+  sidecar?: {
+    mode: 'embedded' | 'external' | 'disabled' | 'unknown';
+    toolNames: string[];
+  };
+  workspace?: {
+    mode?: WorkspaceMode | null;
+    repoPath?: string | null;
+    defaultBranch?: string | null;
+  };
+  policy?: {
+    autonomyMode?: AutonomyMode | null;
+    allowedActions?: ProjectAction[];
+    blockedActions?: ProjectAction[];
+    envRequirements?: string[];
+    hash?: string;
+  };
+  review?: {
+    lane?: RiskLane | null;
+    requiredStages?: string[];
+  };
+  workflowRecipe?: {
+    name?: string | null;
+    hash?: string | null;
+  } | null;
+  notes?: Record<string, unknown>;
 }
 
 export interface RunStep {
@@ -366,10 +446,18 @@ export interface ProjectPolicy {
   };
   envRequirements: string[];
   workspaceMode: WorkspaceMode;
+  branchLifecycle: {
+    dirtyWorktreeStrategy: DirtyWorktreeStrategy;
+    archiveBeforeCleanup: boolean;
+    deleteLocalBranchAfterPush: boolean;
+    maxPreservedWorktreeAgeHours: number;
+    maxPreservedWorktrees: number;
+  };
   launchGuards: {
     minimumHealthyRunsForDeploy: number;
     initialWorkflowLimit: number;
     initialAllowedWorkflows: WorkflowKind[];
+    autoDeployAfterHealthyStreak: boolean;
   };
   autonomySurfaces: {
     readOnlyCanary: boolean;
@@ -384,6 +472,7 @@ export interface ProjectPolicy {
     cadence: SelfAuditCadence;
     dayOfWeek: number | null;
     hour: number;
+    idleCooldownMinutes: number;
     workflows: WorkflowKind[];
     maxFollowups: number;
     description: string;

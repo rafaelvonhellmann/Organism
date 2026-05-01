@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getClient, getAgentMeta, ensureTables } from './db';
 import { getAgentCap, getBudgetStatus, SYSTEM_DAILY_CAP } from './constants';
-import { reconcileTaskOutput } from './task-output';
+import { reconcileTaskOutput, summarizeTaskOutput } from './task-output';
 import type { Client, Row, InArgs } from '@libsql/client';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
@@ -24,6 +24,35 @@ function esc(v: string): string { return v.replace(/'/g, "''"); }
 function tryParse(json: unknown): unknown {
   if (!json || typeof json !== 'string') return json ?? null;
   try { return JSON.parse(json); } catch { return json; }
+}
+
+const DEFAULT_TASK_LIST_LIMIT = 50;
+const MAX_TASK_LIST_LIMIT = 200;
+
+function clampListLimit(value: number | undefined): number {
+  if (!Number.isFinite(value ?? NaN)) return DEFAULT_TASK_LIST_LIMIT;
+  return Math.min(MAX_TASK_LIST_LIMIT, Math.max(1, Math.trunc(value!)));
+}
+
+function clampListOffset(value: number | undefined): number {
+  if (!Number.isFinite(value ?? NaN)) return 0;
+  return Math.max(0, Math.trunc(value!));
+}
+
+function compactText(value: string | null, maxLength = 420): string | null {
+  if (!value) return null;
+  const compact = value.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLength) return compact;
+  return `${compact.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function pickTaskInputFlags(input: unknown): Record<string, unknown> | null {
+  const parsed = tryParse(input);
+  if (!parsed || typeof parsed !== 'object') return null;
+  const record = parsed as Record<string, unknown>;
+  const flags: Record<string, unknown> = {};
+  if (record.canaryPreset === true) flags.canaryPreset = true;
+  return Object.keys(flags).length > 0 ? flags : null;
 }
 
 function workspacePath(...segments: string[]): string {
@@ -53,6 +82,7 @@ function formatTask(row: Row) {
     agent: s(row.agent),
     status: s(row.status),
     lane: s(row.lane),
+    workflowKind: row.workflow_kind ? s(row.workflow_kind) : null,
     description: s(row.description),
     input: tryParse(row.input),
     output: reconcileTaskOutput(row.output, row.error, row.project_id),
@@ -61,6 +91,34 @@ function formatTask(row: Row) {
     startedAt: row.started_at != null ? n(row.started_at) : null,
     completedAt: row.completed_at != null ? n(row.completed_at) : null,
     error: row.error ? s(row.error) : null,
+    parentTaskId: row.parent_task_id ? s(row.parent_task_id) : null,
+    projectId: s(row.project_id),
+    createdAt: n(row.created_at),
+  };
+}
+
+function formatTaskList(row: Row, options: { includeSummary: boolean; includePayload: boolean }) {
+  if (options.includePayload) return formatTask(row);
+
+  const outputSummary = options.includeSummary
+    ? compactText(summarizeTaskOutput(row.output, row.error, row.project_id))
+    : null;
+
+  return {
+    id: s(row.id),
+    agent: s(row.agent),
+    status: s(row.status),
+    lane: s(row.lane),
+    workflowKind: row.workflow_kind ? s(row.workflow_kind) : null,
+    description: s(row.description),
+    input: options.includeSummary ? pickTaskInputFlags(row.input) : null,
+    output: outputSummary,
+    outputSummary,
+    tokensUsed: row.tokens_used != null ? n(row.tokens_used) : null,
+    costUsd: row.cost_usd != null ? n(row.cost_usd) : null,
+    startedAt: row.started_at != null ? n(row.started_at) : null,
+    completedAt: row.completed_at != null ? n(row.completed_at) : null,
+    error: row.error ? compactText(s(row.error), 500) : null,
     parentTaskId: row.parent_task_id ? s(row.parent_task_id) : null,
     projectId: s(row.project_id),
     createdAt: n(row.created_at),
@@ -201,6 +259,8 @@ export async function getTasks(filters: {
   lane?: string;
   limit?: number;
   offset?: number;
+  includeSummary?: boolean;
+  includePayload?: boolean;
 }) {
   const client = getClient();
   if (!client) return { tasks: [], total: 0 };
@@ -223,17 +283,41 @@ export async function getTasks(filters: {
   if (filters.lane) where.push(`lane='${esc(filters.lane)}'`);
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-  const limit = filters.limit ?? 50;
-  const offset = filters.offset ?? 0;
+  const limit = clampListLimit(filters.limit);
+  const offset = clampListOffset(filters.offset);
+  const includeSummary = filters.includeSummary === true;
+  const includePayload = filters.includePayload === true;
+  const taskColumns = includePayload
+    ? '*'
+    : [
+        'id',
+        'agent',
+        'status',
+        'lane',
+        'workflow_kind',
+        'description',
+        includeSummary ? 'input' : null,
+        includeSummary ? 'output' : null,
+        'error',
+        'tokens_used',
+        'cost_usd',
+        'started_at',
+        'completed_at',
+        'parent_task_id',
+        'project_id',
+        'created_at',
+      ].filter(Boolean).join(', ');
 
   const [totalResult, tasksResult] = await Promise.all([
     scalar(client, `SELECT COUNT(*) as c FROM tasks ${whereClause}`),
-    client.execute(`SELECT * FROM tasks ${whereClause} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`),
+    client.execute(`SELECT ${taskColumns} FROM tasks ${whereClause} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`),
   ]);
 
   return {
-    tasks: tasksResult.rows.map(formatTask),
+    tasks: tasksResult.rows.map((row) => formatTaskList(row, { includeSummary, includePayload })),
     total: totalResult,
+    limit,
+    offset,
   };
 }
 

@@ -28,8 +28,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         authenticated: data.authenticated,
       });
     } catch {
-      // If auth check fails, assume no auth required (dev mode)
-      setState({ loading: false, authRequired: false, authenticated: true });
+      setError('Unable to verify dashboard access.');
+      setState({ loading: false, authRequired: true, authenticated: false });
     }
   }, []);
 

@@ -3,13 +3,16 @@
 ## Orchestration Rule
 
 Paperclip (`packages/core/`) is the only orchestrator. PraisonAI (`packages/mcp-sidecar/`) is a restricted MCP tool provider with exactly 5 tools. Never let PraisonAI create tasks, schedule work, or call other agents.
+Runtime model access goes through the PraisonAI sidecar contract first. The embedded sidecar transport is the current default runtime boundary; the Python sidecar transport is optional parity work, not a place for orchestration logic.
 
 ## Quality Pipeline
 
 All output goes through the risk-based review pipeline:
 - LOW: Quality Agent → auto-ship
-- MEDIUM: Domain Model → Quality Agent → Codex Review → auto-ship
-- HIGH: full pipeline → G4 Board Gate (Rafael approves)
+- MEDIUM: Quality Agent → Codex Review → auto-ship
+- HIGH: Quality Agent → Codex Review → Quality Guardian → G4 Board Gate (Rafael approves)
+
+Domain Model is a shaping lane used before execution when a task needs extra framing, ADR guidance, or domain challenge work. It is not the canonical post-execution review gate.
 
 ## Model Discipline
 
@@ -22,14 +25,15 @@ All output goes through the risk-based review pipeline:
 
 ## New Agents
 
-All new agents start as `status: 'shadow'` in `knowledge/capability-registry.json`. Shadow runs for 10 tasks before promotion via `scripts/shadow-promote.ts`.
+All new agents start as `status: 'shadow'` in `knowledge/capability-registry.json`. Promotion requires 10 shadow runs plus 10 scored shadow runs before `scripts/shadow-promote.ts` can move an agent to active.
 
 ## Code Rules
 
 - TypeScript strict mode throughout
 - All errors use `OrganismError` enum from `packages/shared/src/error-taxonomy.ts`
-- All state in `state/tasks.db` (SQLite)
-- Audit log is append-only JSONL at `state/audit.log`
+- Canonical runtime state lives in `$HOME/.organism/state` unless `ORGANISM_STATE_DIR` overrides it
+- SQLite lives at `$STATE_DIR/tasks.db`
+- Audit log is append-only JSONL at `$STATE_DIR/audit.log`, written through `packages/core/src/audit.ts`
 - Never commit secrets — use `packages/shared/src/secrets.ts`
 
 ## Engineering Agent Rules
