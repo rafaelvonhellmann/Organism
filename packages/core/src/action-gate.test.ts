@@ -28,6 +28,13 @@ function buildPolicy(overrides: Partial<ProjectPolicy> = {}): ProjectPolicy {
     },
     envRequirements: [],
     workspaceMode: 'isolated_worktree',
+    branchLifecycle: {
+      dirtyWorktreeStrategy: 'stash_and_remove',
+      archiveBeforeCleanup: true,
+      deleteLocalBranchAfterPush: true,
+      maxPreservedWorktreeAgeHours: 24,
+      maxPreservedWorktrees: 3,
+    },
     launchGuards: {
       minimumHealthyRunsForDeploy: 3,
       initialWorkflowLimit: 0,

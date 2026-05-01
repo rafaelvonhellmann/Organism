@@ -53,6 +53,11 @@ export interface WorkspaceCleanupResult {
   removed: boolean;
   path: string;
   reason: string;
+  archivedRef?: string;
+  stashRef?: string;
+  dirtyFiles?: string[];
+  localBranchDeleted?: boolean;
+  localBranchDeleteReason?: string;
 }
 
 function slugify(input: string): string {
@@ -187,6 +192,57 @@ function previewDirtyFiles(entries: GitStatusEntry[]): string {
 
 function quoteForCmd(value: string): string {
   return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function cleanupTimestamp(): string {
+  return new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+}
+
+function archiveWorkspaceHead(workspace: EngineeringWorkspace, label: string): string | undefined {
+  if (!workspace.policy.branchLifecycle.archiveBeforeCleanup) return undefined;
+  const head = tryRunGit(['rev-parse', 'HEAD'], workspace.projectPath);
+  if (!head) return undefined;
+  const ref = `refs/archive/workspace-cleanup/${cleanupTimestamp()}/${label}/${workspace.branchName}`;
+  runGit(['update-ref', ref, head], workspace.repoRootPath);
+  return ref;
+}
+
+function stashWorkspaceChanges(workspace: EngineeringWorkspace, reason: string): string | undefined {
+  const dirtyEntries = listStatus(workspace.projectPath);
+  if (dirtyEntries.length === 0) return undefined;
+
+  const message = `[workspace-cleanup ${cleanupTimestamp()}] ${workspace.branchName}: ${reason}`;
+  runGit(['stash', 'push', '-u', '-m', message], workspace.projectPath);
+  return tryRunGit(['stash', 'list', '--format=%gd|%H|%gs', '-n', '1'], workspace.projectPath) || undefined;
+}
+
+function remoteBranchExists(workspace: EngineeringWorkspace): boolean {
+  return Boolean(tryRunGit(['rev-parse', '--verify', `refs/remotes/origin/${workspace.branchName}`], workspace.repoRootPath));
+}
+
+function deleteLocalBranchAfterCleanup(workspace: EngineeringWorkspace, allowUnpushedArchive: boolean): {
+  deleted: boolean;
+  reason: string;
+} {
+  if (!workspace.policy.branchLifecycle.deleteLocalBranchAfterPush) {
+    return { deleted: false, reason: 'Project policy keeps local task branches after cleanup.' };
+  }
+  if (workspace.branchName === workspace.defaultBranch || workspace.branchName === 'master' || workspace.branchName === 'main') {
+    return { deleted: false, reason: `Refused to delete protected branch ${workspace.branchName}.` };
+  }
+  if (tryRunGit(['rev-parse', '--abbrev-ref', 'HEAD'], workspace.repoRootPath) === workspace.branchName) {
+    return { deleted: false, reason: `Refused to delete current branch ${workspace.branchName}.` };
+  }
+  if (!remoteBranchExists(workspace) && !allowUnpushedArchive) {
+    return { deleted: false, reason: `Kept local branch ${workspace.branchName} because it has no remote branch yet.` };
+  }
+
+  try {
+    runGit(['branch', '-D', workspace.branchName], workspace.repoRootPath);
+    return { deleted: true, reason: `Deleted local task branch ${workspace.branchName}.` };
+  } catch (err) {
+    return { deleted: false, reason: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 function currentRun(task: Task) {
@@ -399,21 +455,72 @@ export function cleanupEngineeringWorkspace(workspace: EngineeringWorkspace): Wo
 
   const dirtyEntries = listStatus(workspace.projectPath);
   if (dirtyEntries.length > 0) {
-    return {
-      attempted: true,
-      removed: false,
-      path: workspace.projectPath,
-      reason: `Preserved isolated worktree because it still has ${dirtyEntries.length} uncommitted change(s).`,
-    };
+    if (workspace.policy.branchLifecycle.dirtyWorktreeStrategy === 'preserve') {
+      const archivedRef = archiveWorkspaceHead(workspace, 'preserved-dirty');
+      return {
+        attempted: true,
+        removed: false,
+        path: workspace.projectPath,
+        reason: `Preserved isolated worktree because it still has ${dirtyEntries.length} uncommitted change(s).`,
+        archivedRef,
+        dirtyFiles: dirtyEntries.map((entry) => entry.path),
+      };
+    }
+
+    const archivedRef = archiveWorkspaceHead(workspace, 'dirty-stash');
+    const stashRef = stashWorkspaceChanges(workspace, `stashing ${dirtyEntries.length} dirty entr${dirtyEntries.length === 1 ? 'y' : 'ies'} before cleanup`);
+    const remainingDirtyEntries = listStatus(workspace.projectPath);
+    if (remainingDirtyEntries.length > 0) {
+      return {
+        attempted: true,
+        removed: false,
+        path: workspace.projectPath,
+        reason: `Preserved isolated worktree because stash cleanup left ${remainingDirtyEntries.length} uncommitted change(s).`,
+        archivedRef,
+        stashRef,
+        dirtyFiles: remainingDirtyEntries.map((entry) => entry.path),
+      };
+    }
+
+    try {
+      runGit(['worktree', 'remove', '--force', workspace.projectPath], workspace.repoRootPath);
+      const branchDelete = deleteLocalBranchAfterCleanup(workspace, true);
+      return {
+        attempted: true,
+        removed: true,
+        path: workspace.projectPath,
+        reason: `Stashed ${dirtyEntries.length} dirty entr${dirtyEntries.length === 1 ? 'y' : 'ies'} and removed isolated worktree.`,
+        archivedRef,
+        stashRef,
+        dirtyFiles: dirtyEntries.map((entry) => entry.path),
+        localBranchDeleted: branchDelete.deleted,
+        localBranchDeleteReason: branchDelete.reason,
+      };
+    } catch (err) {
+      return {
+        attempted: true,
+        removed: false,
+        path: workspace.projectPath,
+        reason: err instanceof Error ? err.message : String(err),
+        archivedRef,
+        stashRef,
+        dirtyFiles: dirtyEntries.map((entry) => entry.path),
+      };
+    }
   }
 
+  const archivedRef = archiveWorkspaceHead(workspace, 'clean-remove');
   try {
     runGit(['worktree', 'remove', '--force', workspace.projectPath], workspace.repoRootPath);
+    const branchDelete = deleteLocalBranchAfterCleanup(workspace, false);
     return {
       attempted: true,
       removed: true,
       path: workspace.projectPath,
       reason: 'Removed clean isolated worktree after controller handoff.',
+      archivedRef,
+      localBranchDeleted: branchDelete.deleted,
+      localBranchDeleteReason: branchDelete.reason,
     };
   } catch (err) {
     return {
@@ -421,6 +528,7 @@ export function cleanupEngineeringWorkspace(workspace: EngineeringWorkspace): Wo
       removed: false,
       path: workspace.projectPath,
       reason: err instanceof Error ? err.message : String(err),
+      archivedRef,
     };
   }
 }

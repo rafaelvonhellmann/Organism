@@ -103,6 +103,7 @@ export type RuntimeActionGateReasonCode =
   | 'missing_secret'
   | 'inconclusive';
 export type WorkspaceMode = 'direct' | 'clean_required' | 'isolated_worktree';
+export type DirtyWorktreeStrategy = 'preserve' | 'stash_and_remove';
 export type MiniMaxCommand = 'search' | 'speech' | 'vision';
 export type AgentEnvelopeKind =
   | 'finding'
@@ -147,6 +148,13 @@ export interface ProjectConfig {
   };
   envRequirements?: string[];
   workspaceMode?: WorkspaceMode;
+  branchLifecycle?: {
+    dirtyWorktreeStrategy?: DirtyWorktreeStrategy;
+    archiveBeforeCleanup?: boolean;
+    deleteLocalBranchAfterPush?: boolean;
+    maxPreservedWorktreeAgeHours?: number;
+    maxPreservedWorktrees?: number;
+  };
   launchGuards?: {
     minimumHealthyRunsForDeploy?: number;
     initialWorkflowLimit?: number;
@@ -438,6 +446,13 @@ export interface ProjectPolicy {
   };
   envRequirements: string[];
   workspaceMode: WorkspaceMode;
+  branchLifecycle: {
+    dirtyWorktreeStrategy: DirtyWorktreeStrategy;
+    archiveBeforeCleanup: boolean;
+    deleteLocalBranchAfterPush: boolean;
+    maxPreservedWorktreeAgeHours: number;
+    maxPreservedWorktrees: number;
+  };
   launchGuards: {
     minimumHealthyRunsForDeploy: number;
     initialWorkflowLimit: number;

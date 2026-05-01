@@ -23,6 +23,7 @@
     "stixdb": "python packages/stixdb/start.py",
     "organism": "node node_modules/tsx/dist/cli.mjs --experimental-sqlite scripts/cli.ts",
     "sync-turso": "node node_modules/tsx/dist/cli.mjs --experimental-sqlite scripts/sync-turso.ts",
+    "worktree-janitor": "node node_modules/tsx/dist/cli.mjs --experimental-sqlite scripts/worktree-janitor.ts",
     "execute": "node node_modules/tsx/dist/cli.mjs --experimental-sqlite scripts/execute-actions.ts",
     "clear-stuck": "node node_modules/tsx/dist/cli.mjs --experimental-sqlite scripts/clear-stuck-tasks.ts",
     "sync-agentation": "node node_modules/tsx/dist/cli.mjs --experimental-sqlite scripts/cli.ts sync-agentation",

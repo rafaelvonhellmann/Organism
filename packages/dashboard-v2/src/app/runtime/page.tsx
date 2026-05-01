@@ -133,6 +133,20 @@ interface AutonomyHealth {
   coreAgents: string[];
 }
 
+interface BranchHygiene {
+  projectId: string;
+  repoPath: string;
+  stateDir: string;
+  localBranches: number;
+  remoteBranches: number;
+  worktreeRecords: number;
+  detachedWorktrees: number;
+  stateWorktreeDirs: number;
+  cleanupStashes: number;
+  archiveRefs: number;
+  warnings: string[];
+}
+
 interface RuntimeSnapshot {
   generatedAt: number;
   goals: RuntimeGoal[];
@@ -161,6 +175,7 @@ interface RuntimeSnapshot {
   recentEvents: RuntimeEvent[];
   compareTargets: CompareTarget[];
   autonomy: AutonomyHealth[];
+  hygiene: BranchHygiene | null;
   daemon: {
     runtime: {
       modelBackend: string | null;
@@ -483,6 +498,7 @@ export default function RuntimePage() {
     if (!snapshot?.autonomy?.length) return null;
     return snapshot.autonomy.find((item) => item.projectId === project) ?? null;
   }, [localDaemonStatus, project, snapshot]);
+  const hygiene = snapshot?.hygiene ?? null;
   const daemonAgeMs = snapshot?.daemon?.observedAt ? Math.max(0, Date.now() - snapshot.daemon.observedAt) : null;
   const daemonLooksStale = daemonAgeMs != null && daemonAgeMs > 90_000;
   const localBridgeLooksFresh = (localBridge?.daemon.observedAt ?? 0) > 0
@@ -687,6 +703,44 @@ export default function RuntimePage() {
               Daemon state: {daemonStateLabel}
             </div>
           </div>
+          {hygiene && (
+            <div className={`mt-3 rounded-lg border p-3 text-xs ${
+              hygiene.warnings.length > 0
+                ? 'border-amber-500/30 bg-amber-500/5'
+                : 'border-edge bg-surface-alt/20'
+            }`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">Branch hygiene</div>
+                  <div className={hygiene.warnings.length > 0 ? 'mt-1 font-semibold text-amber-300' : 'mt-1 font-semibold text-emerald-400'}>
+                    {hygiene.warnings.length > 0 ? 'attention' : 'clean'}
+                  </div>
+                </div>
+                <span className="text-zinc-500">{hygiene.projectId}</span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2 text-zinc-300">
+                <div className="rounded-lg bg-surface-alt/30 p-2">Local branches: {hygiene.localBranches}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">Remote branches: {hygiene.remoteBranches}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">Worktrees: {hygiene.worktreeRecords}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">Detached: {hygiene.detachedWorktrees}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">State dirs: {hygiene.stateWorktreeDirs}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">Cleanup stashes: {hygiene.cleanupStashes}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">Archive refs: {hygiene.archiveRefs}</div>
+                <div className="rounded-lg bg-surface-alt/30 p-2">State: {hygiene.warnings.length > 0 ? 'watch' : 'clear'}</div>
+              </div>
+              <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-2 text-zinc-500">
+                <div className="break-all">Repo: {hygiene.repoPath}</div>
+                <div className="break-all">State: {hygiene.stateDir}</div>
+              </div>
+              {hygiene.warnings.length > 0 && (
+                <div className="mt-3 space-y-1 text-amber-300">
+                  {hygiene.warnings.map((warning) => (
+                    <div key={warning}>{warning}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {preferLocalBridge && (
             <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
               {localSyncBlocked

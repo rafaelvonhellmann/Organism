@@ -31,15 +31,23 @@ function classifyExecutionFailure(
   projectId: string,
   errorMsg: string,
   workspace: ReturnType<typeof prepareEngineeringWorkspace>,
+  cleanup?: ReturnType<typeof cleanupEngineeringWorkspace>,
 ): {
   severity: 'HIGH' | 'MEDIUM';
   summary: string;
   remediation: string;
   evidence: string;
 } {
-  const preservedWorkspace = workspace.isolatedWorktree
+  const cleanupRecovery = cleanup?.removed
+    ? cleanup.stashRef
+      ? `cleanup stash \`${cleanup.stashRef}\``
+      : cleanup.archivedRef
+        ? `archive ref \`${cleanup.archivedRef}\``
+        : 'controller cleanup archive'
+    : null;
+  const preservedWorkspace = cleanupRecovery ?? (workspace.isolatedWorktree
     ? `preserved isolated worktree \`${workspace.projectPath}\``
-    : `workspace \`${workspace.projectPath}\``;
+    : `workspace \`${workspace.projectPath}\``);
   const branchContext = `branch \`${workspace.branchName}\` in ${preservedWorkspace}`;
   const lower = errorMsg.toLowerCase();
 
@@ -341,7 +349,7 @@ After making changes, output:
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       const cleanup = cleanupEngineeringWorkspace(workspace);
-      const failure = classifyExecutionFailure(task, projectId, errorMsg, workspace);
+      const failure = classifyExecutionFailure(task, projectId, errorMsg, workspace, cleanup);
       return {
         output: {
           summary: `Execution failed for ${projectId}: ${errorMsg.slice(0, 120)}`,

@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { AutonomyMode, MiniMaxCommand, ProjectAction, ProjectConfig, ProjectPolicy, RiskLane, WorkflowKind, WorkspaceMode } from '../../shared/src/types.js';
+import { AutonomyMode, DirtyWorktreeStrategy, MiniMaxCommand, ProjectAction, ProjectConfig, ProjectPolicy, RiskLane, WorkflowKind, WorkspaceMode } from '../../shared/src/types.js';
 
 function getProjectsDir(): string {
   return path.resolve(process.cwd(), 'knowledge', 'projects');
@@ -38,6 +38,27 @@ const DEFAULT_SAFE_IMPLEMENTATION_WORKFLOWS: WorkflowKind[] = ['review', 'plan',
 function normalizeWorkspaceMode(raw: unknown, autonomyMode: AutonomyMode): WorkspaceMode {
   if (raw === 'direct' || raw === 'clean_required' || raw === 'isolated_worktree') return raw;
   return autonomyMode === 'stabilization' ? 'isolated_worktree' : 'direct';
+}
+
+function normalizeBranchLifecycle(raw: unknown): ProjectPolicy['branchLifecycle'] {
+  const record = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const dirtyWorktreeStrategy: DirtyWorktreeStrategy = record.dirtyWorktreeStrategy === 'preserve'
+    ? 'preserve'
+    : 'stash_and_remove';
+  const rawMaxAge = typeof record.maxPreservedWorktreeAgeHours === 'number'
+    ? Math.trunc(record.maxPreservedWorktreeAgeHours)
+    : 72;
+  const rawMaxWorktrees = typeof record.maxPreservedWorktrees === 'number'
+    ? Math.trunc(record.maxPreservedWorktrees)
+    : 6;
+
+  return {
+    dirtyWorktreeStrategy,
+    archiveBeforeCleanup: record.archiveBeforeCleanup !== false,
+    deleteLocalBranchAfterPush: record.deleteLocalBranchAfterPush !== false,
+    maxPreservedWorktreeAgeHours: Math.max(1, rawMaxAge),
+    maxPreservedWorktrees: Math.max(0, rawMaxWorktrees),
+  };
 }
 
 function normalizeLaunchGuards(raw: unknown, autonomyMode: AutonomyMode): ProjectPolicy['launchGuards'] {
@@ -284,6 +305,7 @@ function coerceConfig(projectId: string, raw: Record<string, unknown>): ProjectP
 
   const deployTargets = normalizeDeployTargets(raw.deployTargets);
   const workspaceMode = normalizeWorkspaceMode(raw.workspaceMode, autonomyMode);
+  const branchLifecycle = normalizeBranchLifecycle(raw.branchLifecycle);
   const launchGuards = normalizeLaunchGuards(raw.launchGuards, autonomyMode);
   const toolProviders = raw.toolProviders && typeof raw.toolProviders === 'object'
     ? raw.toolProviders as Record<string, unknown>
@@ -313,6 +335,7 @@ function coerceConfig(projectId: string, raw: Record<string, unknown>): ProjectP
       ? raw.envRequirements.filter((item): item is string => typeof item === 'string')
       : [],
     workspaceMode,
+    branchLifecycle,
     launchGuards,
     autonomySurfaces,
     selfAudit: normalizeSelfAudit(raw.selfAudit, projectId),
@@ -504,6 +527,10 @@ export function mergeProjectConfig(config: ProjectConfig, policy: ProjectPolicy)
     approvalThresholds: config.approvalThresholds ?? policy.approvalThresholds,
     envRequirements: config.envRequirements ?? policy.envRequirements,
     workspaceMode: config.workspaceMode ?? policy.workspaceMode,
+    branchLifecycle: {
+      ...policy.branchLifecycle,
+      ...(config.branchLifecycle ?? {}),
+    },
     launchGuards: mergedLaunchGuards,
     autonomySurfaces: {
       ...policy.autonomySurfaces,

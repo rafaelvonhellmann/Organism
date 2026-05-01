@@ -10,6 +10,10 @@ describe('project-policy', () => {
     assert.equal(isActionBlocked(policy, 'purchase'), true);
     assert.equal(isActionBlocked(policy, 'create_account'), true);
     assert.equal(policy.workspaceMode, 'isolated_worktree');
+    assert.equal(policy.branchLifecycle.dirtyWorktreeStrategy, 'stash_and_remove');
+    assert.equal(policy.branchLifecycle.archiveBeforeCleanup, true);
+    assert.equal(policy.branchLifecycle.deleteLocalBranchAfterPush, true);
+    assert.equal(policy.branchLifecycle.maxPreservedWorktrees, 3);
     assert.equal(policy.launchGuards.minimumHealthyRunsForDeploy, 3);
     assert.equal(policy.launchGuards.autoDeployAfterHealthyStreak, false);
   });

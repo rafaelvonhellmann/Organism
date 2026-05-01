@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import type { Client, Row } from '@libsql/client';
 import { getClient, ensureTables } from './db';
 import { summarizeTaskOutput } from './task-output';
@@ -127,6 +128,23 @@ function workspacePath(...segments: string[]): string {
   return resolve(process.cwd(), '..', '..', ...segments);
 }
 
+function runGit(args: string[], cwd: string): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  }).trim();
+}
+
+function tryGit(args: string[], cwd: string): string {
+  try {
+    return runGit(args, cwd);
+  } catch {
+    return '';
+  }
+}
+
 const HOME = process.env.USERPROFILE ?? process.env.HOME ?? '.';
 const STATE_DIR = process.env.ORGANISM_STATE_DIR ?? resolve(HOME, '.organism', 'state');
 const DEFAULT_CORE_AGENTS = ['ceo', 'product-manager', 'engineering', 'devops', 'quality-agent', 'security-audit', 'legal', 'quality-guardian', 'codex-review'];
@@ -144,26 +162,114 @@ const NON_TERMINAL_STATUSES = new Set(['pending', 'running', 'paused', 'retry_sc
 function readProjectConfig(projectId: string): {
   autonomyMode: string;
   coreAgents: string[];
+  repoPath: string | null;
 } {
   const configPath = workspacePath('knowledge', 'projects', projectId, 'config.json');
   if (!existsSync(configPath)) {
-    return { autonomyMode: 'stabilization', coreAgents: DEFAULT_CORE_AGENTS };
+    return { autonomyMode: 'stabilization', coreAgents: DEFAULT_CORE_AGENTS, repoPath: null };
   }
 
   try {
     const raw = JSON.parse(readFileSync(configPath, 'utf8')) as {
       autonomyMode?: string;
       agents?: { generalist?: string[] };
+      repoPath?: string;
+      projectPath?: string;
     };
     return {
       autonomyMode: raw.autonomyMode ?? 'stabilization',
       coreAgents: Array.isArray(raw.agents?.generalist) && raw.agents.generalist.length > 0
         ? raw.agents.generalist
         : DEFAULT_CORE_AGENTS,
+      repoPath: raw.repoPath ?? raw.projectPath ?? null,
     };
   } catch {
-    return { autonomyMode: 'stabilization', coreAgents: DEFAULT_CORE_AGENTS };
+    return { autonomyMode: 'stabilization', coreAgents: DEFAULT_CORE_AGENTS, repoPath: null };
   }
+}
+
+function slugify(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^\w]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'project';
+}
+
+function shortProjectToken(projectId: string): string {
+  const compact = slugify(projectId).replace(/-/g, '').slice(0, 10);
+  if (compact.length >= 4) return compact;
+  return projectId.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 10) || 'project';
+}
+
+function countDirectories(dirPath: string): number {
+  if (!existsSync(dirPath)) return 0;
+  try {
+    return readdirSync(dirPath, { withFileTypes: true }).filter((entry) => entry.isDirectory()).length;
+  } catch {
+    return 0;
+  }
+}
+
+function countLines(output: string): number {
+  return output.split(/\r?\n/).filter(Boolean).length;
+}
+
+function getBranchHygieneSnapshot(projectId: string) {
+  const config = readProjectConfig(projectId);
+  const repoPath = config.repoPath ? resolve(config.repoPath) : resolve(process.cwd(), '..', '..');
+  const warnings: string[] = [];
+  const stateWorktreeDirs = countDirectories(resolve(STATE_DIR, 'wt', shortProjectToken(projectId)))
+    + countDirectories(resolve(STATE_DIR, 'worktrees', projectId));
+
+  if (!existsSync(resolve(repoPath, '.git'))) {
+    return {
+      projectId,
+      repoPath,
+      stateDir: STATE_DIR,
+      localBranches: 0,
+      remoteBranches: 0,
+      worktreeRecords: 0,
+      detachedWorktrees: 0,
+      stateWorktreeDirs,
+      cleanupStashes: 0,
+      archiveRefs: 0,
+      warnings: [`Repo path is not readable: ${repoPath}`],
+    };
+  }
+
+  const localBranches = countLines(tryGit(['branch', '--format=%(refname:short)'], repoPath));
+  const remoteBranches = countLines(tryGit(['branch', '-r', '--format=%(refname:short)'], repoPath));
+  const worktreeList = tryGit(['worktree', 'list', '--porcelain'], repoPath);
+  const worktreeRecords = countLines(worktreeList.split(/\r?\n/).filter((line) => line.startsWith('worktree ')).join('\n'));
+  const detachedWorktrees = countLines(worktreeList.split(/\r?\n/).filter((line) => line === 'detached').join('\n'));
+  const cleanupStashes = countLines(
+    tryGit(['stash', 'list', '--format=%gs'], repoPath)
+      .split(/\r?\n/)
+      .filter((line) => /branch-cleanup|worktree-disk-cleanup|worktree-janitor|workspace-cleanup/.test(line))
+      .join('\n'),
+  );
+  const archiveRefs = countLines(tryGit(['for-each-ref', 'refs/archive', '--format=%(refname)'], repoPath));
+
+  if (localBranches > 6) warnings.push(`${localBranches} local branches remain`);
+  if (detachedWorktrees > 0) warnings.push(`${detachedWorktrees} detached worktree record(s) remain`);
+  if (stateWorktreeDirs > 0) {
+    warnings.push(`${stateWorktreeDirs} state worktree ${stateWorktreeDirs === 1 ? 'directory remains' : 'directories remain'}`);
+  }
+
+  return {
+    projectId,
+    repoPath,
+    stateDir: STATE_DIR,
+    localBranches,
+    remoteBranches,
+    worktreeRecords,
+    detachedWorktrees,
+    stateWorktreeDirs,
+    cleanupStashes,
+    archiveRefs,
+    warnings,
+  };
 }
 
 interface RecentGoalSnapshotRow {
@@ -1188,6 +1294,7 @@ export async function getRuntimeSnapshot(projectId?: string) {
     recentEvents: eventsRows.map(formatEvent).reverse(),
     compareTargets,
     autonomy,
+    hygiene: getBranchHygieneSnapshot(projectId ?? 'organism'),
     daemon,
   };
 }
