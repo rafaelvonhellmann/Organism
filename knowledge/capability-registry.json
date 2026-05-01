@@ -60,7 +60,10 @@
       "status": "active",
       "model": "gpt5.4",
       "frequencyTier": "daily",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/product/playbooks/prd-to-agent-slices.md"
+      ]
     },
     {
       "id": "product.prioritization",
@@ -73,7 +76,10 @@
       "status": "active",
       "model": "gpt5.4",
       "frequencyTier": "daily",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/product/playbooks/prd-to-agent-slices.md"
+      ]
     },
     {
       "id": "quality.review",
@@ -152,6 +158,7 @@
       "projectScope": "all",
       "knowledgeSources": [
         "knowledge/marketing/popularize-playbook.md",
+        "knowledge/growth/playbooks/experiment-design.md",
         "knowledge/business-model/roi-framework.md"
       ]
     },
@@ -170,7 +177,8 @@
       "frequencyTier": "2-3x-week",
       "projectScope": "all",
       "knowledgeSources": [
-        "knowledge/marketing/popularize-playbook.md"
+        "knowledge/marketing/popularize-playbook.md",
+        "knowledge/growth/playbooks/experiment-design.md"
       ]
     },
     {
@@ -185,7 +193,10 @@
       "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "daily",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/growth/playbooks/experiment-design.md"
+      ]
     },
     {
       "id": "marketing.seo",
@@ -212,7 +223,10 @@
       "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "2-3x-week",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/growth/playbooks/experiment-design.md"
+      ]
     },
     {
       "id": "design.ui",
@@ -288,7 +302,10 @@
       "status": "suspended",
       "model": "gpt5.4",
       "frequencyTier": "weekly",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/security/playbooks/launch-security-review.md"
+      ]
     },
     {
       "id": "legal.compliance",
@@ -298,10 +315,13 @@
       ],
       "reviewerLane": "HIGH",
       "description": "Legal compliance, terms of service, privacy policy",
-      "status": "suspended",
+      "status": "active",
       "model": "gpt5.4",
       "frequencyTier": "on-demand",
-      "projectScope": "all"
+      "projectScope": "all",
+      "knowledgeSources": [
+        "knowledge/legal/playbooks/organism-legal-review-playbook.md"
+      ]
     },
     {
       "id": "intel.competitive",
@@ -344,6 +364,9 @@
       "frequencyTier": "on-demand",
       "projectScope": [
         "synapse"
+      ],
+      "knowledgeSources": [
+        "knowledge/medical/playbooks/synapse-content-review.md"
       ]
     },
     {

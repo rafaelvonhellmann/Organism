@@ -5,6 +5,7 @@ export interface AgentRuntimeContext {
   agentName: string;
   capability: AgentCapability;
   skillSystemPrompt?: string;
+  verifiabilitySystemPrompt?: string;
 }
 
 const agentRuntime = new AsyncLocalStorage<AgentRuntimeContext>();

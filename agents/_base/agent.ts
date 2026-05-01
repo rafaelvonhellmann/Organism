@@ -13,6 +13,7 @@ import { recordBetSpend, checkBetCircuitBreaker } from '../../packages/core/src/
 import { resolveTaskSources, loadDistilledSources } from '../../packages/core/src/palate.js';
 import { buildAgentSkillRuntime } from './agent-skills.js';
 import { withAgentRuntime } from './agent-runtime.js';
+import { buildVerifiabilityRuntime } from './verifiability.js';
 import { canAgentExecute, loadRegistry } from '../../packages/core/src/registry.js';
 import { normalizeAgentEnvelope, extractEnvelopeText } from '../../packages/core/src/agent-envelope.js';
 import { createArtifact, createRunSession, getLatestRunForGoal, mapProviderFailure, updateRunStatus, createRunStep, updateRunStep } from '../../packages/core/src/run-state.js';
@@ -565,11 +566,31 @@ export abstract class BaseAgent {
       console.log(`[${this.name}] Skills loaded: ${skillNames}`);
     }
 
+    // Verifiability runtime: make LLM jaggedness explicit. Agents get a
+    // capability-specific posture for what they can verify directly, what
+    // needs citations, and what requires Rafael/professional approval.
+    const verifiabilityRuntime = buildVerifiabilityRuntime({
+      agentName: this.name,
+      capability: this.config.capability,
+    });
+
+    if (verifiabilityRuntime) {
+      const currentInput = task.input;
+      const input = currentInput && typeof currentInput === 'object' && !Array.isArray(currentInput)
+        ? currentInput as Record<string, unknown>
+        : { value: currentInput };
+      input.verifiabilityRuntime = verifiabilityRuntime.context;
+      (task as { input: unknown }).input = input;
+
+      console.log(`[${this.name}] Verifiability: ${verifiabilityRuntime.context.class}`);
+    }
+
     try {
       const result = await withAgentRuntime({
         agentName: this.name,
         capability: this.config.capability,
         skillSystemPrompt: skillRuntime?.systemPrompt,
+        verifiabilitySystemPrompt: verifiabilityRuntime?.systemPrompt,
       }, () => this.execute(task));
       clearTimeout(timeoutHandle);
       const envelope = normalizeAgentEnvelope(this.name, task, result.output);

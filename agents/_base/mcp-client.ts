@@ -464,8 +464,8 @@ async function callSidecarTool<T>(tool: SidecarToolName, args: Record<string, un
 
 function withRuntimeSystemPrompt(systemPrompt: string | undefined): string | undefined {
   const runtime = getAgentRuntime();
-  if (!runtime?.skillSystemPrompt) return systemPrompt;
-  return [systemPrompt, runtime.skillSystemPrompt].filter(Boolean).join('\n\n');
+  if (!runtime?.skillSystemPrompt && !runtime?.verifiabilitySystemPrompt) return systemPrompt;
+  return [systemPrompt, runtime?.skillSystemPrompt, runtime?.verifiabilitySystemPrompt].filter(Boolean).join('\n\n');
 }
 
 export async function routeModelViaSidecar(

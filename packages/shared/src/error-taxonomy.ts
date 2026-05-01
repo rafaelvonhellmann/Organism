@@ -28,6 +28,7 @@ export enum OrganismError {
   BET_CIRCUIT_BREAKER = 'E008',         // Bet exceeded its budget/token/scope boundaries
   BET_BOUNDARY_VIOLATION = 'E009',      // Task hit a no-go or rabbit-hole boundary
   SHAPING_REQUIRED = 'E010',            // MEDIUM/HIGH task submitted without approved bet
+  VERIFIABILITY_MATRIX_INVALID = 'E011', // Agent verifiability matrix is missing or malformed
 
   // E2xx — Integrations (continued)
   AGENTATION_UNREACHABLE = 'E210',      // Agentation sidecar server did not respond
